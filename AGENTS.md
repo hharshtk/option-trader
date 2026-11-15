@@ -7,3 +7,9 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## Server and deployment
+
+- The frontend deploys to Vercel; only the engine runs on the OCI VM, behind Caddy at `https://<public IP>`.
+- To set up or move the server, follow [docs/server-setup.md](docs/server-setup.md) step by step. It lists which steps need the person and which change what the internet can reach.
+- How the engine works: [docs/engine.md](docs/engine.md). What is planned: [docs/engine-plan.md](docs/engine-plan.md).
