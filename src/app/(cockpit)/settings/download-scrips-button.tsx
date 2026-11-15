@@ -4,6 +4,8 @@ import { useActionState } from "react";
 import { buttonClass } from "@/components/ui";
 import { downloadOptionScripsAction } from "./actions";
 
+const TONE = { ok: "text-up", warn: "text-warn", error: "text-down" } as const;
+
 export function DownloadScripsButton() {
   const [state, formAction, pending] = useActionState(downloadOptionScripsAction, undefined);
 
@@ -12,7 +14,7 @@ export function DownloadScripsButton() {
       <button type="submit" disabled={pending} className={buttonClass}>
         {pending ? "Downloading…" : "Download option instruments"}
       </button>
-      <p aria-live="polite" className={`empty:hidden ${state?.ok ? "text-up" : "text-down"}`}>
+      <p aria-live="polite" className={`empty:hidden ${TONE[state?.tone ?? "ok"]}`}>
         {pending ? null : state?.message}
       </p>
     </form>

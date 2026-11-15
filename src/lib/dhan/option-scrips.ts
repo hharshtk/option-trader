@@ -1,6 +1,6 @@
 // Filters Dhan's detailed instrument master down to the options this app trades.
 // Source and column meanings: dhanhq.co/docs/v2/instruments/. Pure functions only, so tests
-// can run them without the server; downloading and saving live in option-scrips-file.ts.
+// can run them without the server; downloading and storing live in option-scrips-store.ts.
 
 export const SCRIP_MASTER_URL = "https://images.dhan.co/api-data/api-scrip-master-detailed.csv";
 

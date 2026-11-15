@@ -15,7 +15,13 @@ import {
 import { SESSION_MAX_AGE } from "@/lib/auth";
 import { requireSession, settle, tokenExpiryIso } from "@/lib/cockpit";
 import { getProfile, INDEX } from "@/lib/dhan";
-import { readOptionScripsMeta, todayIst, type OptionScripsMeta } from "@/lib/dhan/option-scrips-file";
+import {
+  isSourceCurrent,
+  optionScripsLocation,
+  readOptionScripsMeta,
+  todayIst,
+  type OptionScripsMeta,
+} from "@/lib/dhan/option-scrips-store";
 import { istDateTime, quantity } from "@/lib/format";
 import { DownloadScripsButton } from "./download-scrips-button";
 
@@ -38,7 +44,13 @@ export default function SettingsPage() {
 
 async function Settings() {
   await requireSession();
-  const [profile, scrips] = await Promise.all([settle(getProfile()), readOptionScripsMeta()]);
+  const [profile, scrips] = await Promise.all([
+    settle(getProfile()),
+    readOptionScripsMeta().then(
+      (meta) => ({ meta, error: null }),
+      (error: unknown) => ({ meta: null, error: error instanceof Error ? error.message : String(error) }),
+    ),
+  ]);
   const tokenExpiry = profile.ok ? tokenExpiryIso() : null;
   const segments = profile.ok
     ? profile.value.activeSegment
@@ -106,7 +118,7 @@ async function Settings() {
           )}
         </Panel>
 
-        <OptionInstruments meta={scrips} />
+        <OptionInstruments meta={scrips.meta} error={scrips.error} location={optionScripsLocation()} />
 
         <Panel title="App session">
           <p className="text-muted">
@@ -126,8 +138,17 @@ async function Settings() {
 
 const INDEX_EXCHANGE: Record<string, string> = { SENSEX: "BSE", BANKEX: "BSE" };
 
-function OptionInstruments({ meta }: { meta: OptionScripsMeta | null }) {
+function OptionInstruments({
+  meta,
+  error,
+  location,
+}: {
+  meta: OptionScripsMeta | null;
+  error: string | null;
+  location: string;
+}) {
   const current = meta?.tradingDate === todayIst();
+  const sourceCurrent = meta ? isSourceCurrent(meta) : true;
   const count = (exchange: string, instrument: string) =>
     quantity.format(meta?.byExchange[exchange]?.[instrument] ?? 0);
 
@@ -146,7 +167,15 @@ function OptionInstruments({ meta }: { meta: OptionScripsMeta | null }) {
             }
           />
           {meta.sourceUpdatedAt && (
-            <StatRow label="Dhan file updated" value={istDateTime.format(new Date(meta.sourceUpdatedAt))} />
+            <StatRow
+              label="Dhan file published"
+              value={
+                <span className="inline-flex items-center gap-1.5">
+                  {!sourceCurrent && <StatusDot tone="warn" />}
+                  {istDateTime.format(new Date(meta.sourceUpdatedAt))}
+                </span>
+              }
+            />
           )}
           <StatRow
             label="NSE options"
@@ -175,12 +204,26 @@ function OptionInstruments({ meta }: { meta: OptionScripsMeta | null }) {
       ) : (
         <EmptyState>Not downloaded yet.</EmptyState>
       )}
+      {error && <p className="mt-3 text-down">Couldn&apos;t read the stored download: {error}</p>}
+      {meta && !current && (
+        <p className="mt-3 text-warn">
+          Downloaded for {meta.tradingDate}. Option lookups refuse an earlier day&apos;s download, so
+          download again before trading.
+        </p>
+      )}
+      {meta && current && !sourceCurrent && (
+        <p className="mt-3 text-warn">
+          This is Dhan&apos;s file from an earlier day: Dhan hadn&apos;t published today&apos;s yet. On a
+          trading day, download again once it has.
+        </p>
+      )}
       <div className="mt-3 border-t border-line pt-3">
         <DownloadScripsButton />
         <p className="mt-2 text-muted">
-          Fetches Dhan&apos;s instrument master (about 38 MB) and saves unexpired NSE and BSE index and
-          stock options to <span className="font-mono">data/instruments/options-scrip-master.csv</span>.
-          Press it each trading day before the open.
+          Fetches Dhan&apos;s instrument master (about 38 MB), keeps unexpired NSE and BSE index and
+          stock options, and stores them as Parquet in{" "}
+          <span className="font-mono break-all">{location}</span>. Press it each trading day before the
+          open.
         </p>
       </div>
     </Panel>
