@@ -138,7 +138,7 @@ export function createDhanFeed({
 
   function afterClose(dhanReason: number | null, why: string) {
     if (dhanReason !== null && AUTH_ERROR_CODES.has(dhanReason)) {
-      setState({ state: "stopped", reason: `${why}: access token rejected. Renew it, then reload the feed.` });
+      setState({ state: "stopped", reason: `${why}: access token rejected. Renew it in .env.local, then reload the page.` });
       return;
     }
     if (subscribed.size === 0) {

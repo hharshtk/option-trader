@@ -7,6 +7,7 @@ import {
   ActivityIcon,
   FundsIcon,
   HoldingsIcon,
+  LiveFeedIcon,
   MarketWatchIcon,
   OptionsChainIcon,
   OrdersIcon,
@@ -43,6 +44,7 @@ const NAV: NavItem[][] = [
   ],
   [
     { href: "/activity", label: "Activity", icon: ActivityIcon, built: false },
+    { href: "/live-feed", label: "Live Feed", icon: LiveFeedIcon, built: true },
     { href: "/settings", label: "Settings", icon: SettingsIcon, built: true },
   ],
 ];

@@ -7,8 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "feed": "node services/feed/main.ts",
-    "test:feed": "node --test services/feed/*.test.ts"
+    "test:feed": "node --test src/lib/live/feed/*.test.ts"
   },
   "dependencies": {
     "lightweight-charts": "5.2.1",

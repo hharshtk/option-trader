@@ -42,4 +42,4 @@ yarn-error.log*
 next-env.d.ts
 
 # raw market feed frames (FEED_CAPTURE=1)
-/services/feed/captures/
+/captures/

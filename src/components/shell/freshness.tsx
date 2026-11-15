@@ -102,7 +102,7 @@ function timeLeft(ms: number) {
   return `${hours}h ${minutes}m`;
 }
 
-function formatAge(ms: number) {
+export function formatAge(ms: number) {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
