@@ -1,7 +1,7 @@
 "use client";
 
-import { Tabs } from "@ui-sdk/react/tabs";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { Tabs } from "@/components/tabs";
 import { IndexChart } from "./index-chart";
 
 interface WorkspaceIndex {
@@ -31,9 +31,7 @@ function createSelection(initial: string) {
 
 type Selection = ReturnType<typeof createSelection>;
 
-// @ui-sdk/react 0.1.0-beta.1 leaves every panel hidden after a switch when `value` is
-// controlled together with `hiddenUntilFound`, so the tabs stay uncontrolled and only
-// report the selection, which the chart reads.
+// The tabs stay uncontrolled and only report the selection, which the chart reads.
 export function IndexWorkspace({
   indices,
   tiles,

@@ -1,7 +1,5 @@
 "use client";
 
-import { usePreference } from "@ui-sdk/react/preferences";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@ui-sdk/react/tooltip";
 import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import type { ComponentType } from "react";
@@ -19,8 +17,9 @@ import {
   StrategiesIcon,
   type IconProps,
 } from "@/components/icons";
+import { Tooltip } from "@/components/tooltip";
 import { tooltipClass } from "./header-controls";
-import { sidebarPreference } from "./preferences";
+import { setSidebarState, useSidebarState } from "./preferences";
 
 interface NavItem {
   href: string;
@@ -50,8 +49,7 @@ const NAV: NavItem[][] = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { value } = usePreference(sidebarPreference);
-  const collapsed = value === "collapsed";
+  const collapsed = useSidebarState() === "collapsed";
 
   return (
     <nav
@@ -77,12 +75,7 @@ export function Sidebar() {
         type="button"
         aria-controls="sidebar"
         aria-expanded={!collapsed}
-        onClick={(event) =>
-          sidebarPreference.set(collapsed ? "expanded" : "collapsed", {
-            reason: "press",
-            event: event.nativeEvent,
-          })
-        }
+        onClick={() => setSidebarState(collapsed ? "expanded" : "collapsed")}
         className="mx-1.5 mb-2 hidden h-8 items-center gap-2.5 rounded-sm px-2 text-muted hover:bg-raised hover:text-fg md:flex"
       >
         <SidebarIcon className="shrink-0" />
@@ -106,9 +99,17 @@ function NavLink({
   const Icon = item.icon;
 
   return (
-    <Tooltip disabled={!showTooltip} type="label">
-      <TooltipTrigger
-        render={<Link href={item.href} aria-current={active ? "page" : undefined} />}
+    <Tooltip
+      disabled={!showTooltip}
+      type="label"
+      side="right"
+      sideOffset={10}
+      className={tooltipClass}
+      content={item.built ? item.label : `${item.label} (not built)`}
+    >
+      <Link
+        href={item.href}
+        aria-current={active ? "page" : undefined}
         className="group relative mx-1.5 flex h-8 items-center gap-2.5 rounded-sm px-2 text-muted hover:bg-raised hover:text-fg aria-[current=page]:bg-raised aria-[current=page]:text-fg"
       >
         <span
@@ -123,10 +124,7 @@ function NavLink({
           </span>
         )}
         <PendingBar />
-      </TooltipTrigger>
-      <TooltipContent side="right" sideOffset={10} className={tooltipClass}>
-        {item.built ? item.label : `${item.label} (not built)`}
-      </TooltipContent>
+      </Link>
     </Tooltip>
   );
 }

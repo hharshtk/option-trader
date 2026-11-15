@@ -1,19 +1,8 @@
 "use client";
 
-import {
-  Menu,
-  MenuContent,
-  MenuGroup,
-  MenuGroupLabel,
-  MenuItem,
-  MenuItemIcon,
-  MenuSeparator,
-  MenuTrigger,
-} from "@ui-sdk/react/menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@ui-sdk/react/tooltip";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useTransition } from "react";
+import { useId, useRef, useState, useTransition, type KeyboardEvent } from "react";
 import { logout } from "@/app/login/actions";
 import {
   ChevronDownIcon,
@@ -23,6 +12,7 @@ import {
   UserIcon,
 } from "@/components/icons";
 import { useStreamStatus } from "@/components/live/live-quote";
+import { Tooltip } from "@/components/tooltip";
 import { StatusDot } from "@/components/ui";
 import type { IndexQuotes } from "@/lib/cockpit";
 import { istTime } from "@/lib/format";
@@ -35,7 +25,7 @@ export const popupClass =
 export const tooltipClass = `${popupClass} px-2 py-1 text-label`;
 
 const menuItemClass =
-  "flex h-7 cursor-default items-center gap-2 rounded-sm px-2 text-body outline-none data-highlighted:bg-line-strong/70 data-pending:opacity-60";
+  "flex h-7 cursor-default items-center gap-2 rounded-sm px-2 text-body outline-none focus:bg-line-strong/70";
 
 export function BrokerStatus({
   connected,
@@ -47,18 +37,20 @@ export function BrokerStatus({
   error: string | null;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={<Link href="/settings" />}
+    <Tooltip
+      side="bottom"
+      sideOffset={6}
+      className={`${tooltipClass} max-w-72`}
+      content={connected ? `Connected, client ${clientId}` : `Not connected: ${error}`}
+    >
+      <Link
+        href="/settings"
         className="flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-1.5 text-label font-medium hover:bg-raised"
       >
         <StatusDot tone={connected ? "up" : "down"} />
         <span>Dhan</span>
         <span className="sr-only">{connected ? "connected" : "not connected"}</span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6} className={`${tooltipClass} max-w-72`}>
-        {connected ? `Connected, client ${clientId}` : `Not connected: ${error}`}
-      </TooltipContent>
+      </Link>
     </Tooltip>
   );
 }
@@ -138,8 +130,15 @@ export function RefreshButton() {
   const [pending, startTransition] = useTransition();
 
   return (
-    <Tooltip>
-      <TooltipTrigger
+    <Tooltip
+      type="label"
+      side="bottom"
+      sideOffset={6}
+      className={tooltipClass}
+      content={pending ? "Refreshing…" : "Refresh account and market data"}
+    >
+      <button
+        type="button"
         onClick={() => {
           if (!pending) startTransition(() => router.refresh());
         }}
@@ -147,49 +146,140 @@ export function RefreshButton() {
         className="grid size-7 place-items-center rounded-sm text-muted hover:bg-raised hover:text-fg aria-disabled:opacity-60"
       >
         <RefreshIcon className={pending ? "motion-safe:animate-spin" : undefined} />
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6} className={tooltipClass}>
-        {pending ? "Refreshing…" : "Refresh account and market data"}
-      </TooltipContent>
+      </button>
     </Tooltip>
   );
 }
 
+function menuItems(menu: HTMLElement | null) {
+  return Array.from(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+}
+
 export function AccountMenu({ clientId }: { clientId: string | null }) {
   const [signingOut, startTransition] = useTransition();
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
+  const labelId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const focusFirstItem = useRef(false);
+
+  function onTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "Enter" || event.key === " ") focusFirstItem.current = true;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusFirstItem.current = true;
+      menuRef.current?.showPopover();
+    }
+  }
+
+  function onMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const items = menuItems(menuRef.current);
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    const last = items.length - 1;
+    let next: number | null = null;
+    if (event.key === "ArrowDown") next = current === -1 || current === last ? 0 : current + 1;
+    else if (event.key === "ArrowUp") next = current <= 0 ? last : current - 1;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = last;
+    else if (event.key === "Tab") menuRef.current?.hidePopover();
+    else if (event.key === " " && event.target instanceof HTMLAnchorElement) {
+      event.preventDefault();
+      event.target.click();
+    }
+    if (next !== null) {
+      event.preventDefault();
+      items[next]?.focus();
+    }
+  }
 
   return (
-    <Menu
-      onAction={(value) => {
-        if (value === "sign-out") startTransition(() => logout());
-      }}
-    >
-      <MenuTrigger className="flex h-7 items-center gap-1.5 rounded-sm px-2 text-label text-muted hover:bg-raised hover:text-fg data-open:bg-raised data-open:text-fg">
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        popoverTarget={menuId}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        data-open={open ? "" : undefined}
+        onKeyDown={onTriggerKeyDown}
+        className="flex h-7 items-center gap-1.5 rounded-sm px-2 text-label text-muted hover:bg-raised hover:text-fg data-open:bg-raised data-open:text-fg"
+      >
         <UserIcon />
         <span className="sr-only">Account</span>
         <span className="font-mono max-sm:hidden">{clientId ?? "Account"}</span>
         <ChevronDownIcon className="size-3.5" />
-      </MenuTrigger>
-      <MenuContent side="bottom" align="end" sideOffset={6} className={`${popupClass} min-w-52 p-1`}>
-        <MenuGroup>
-          <MenuGroupLabel className="px-2 pt-1 pb-1.5 text-label text-muted">
+      </button>
+      <div
+        ref={menuRef}
+        id={menuId}
+        popover="auto"
+        role="menu"
+        tabIndex={-1}
+        onBeforeToggle={(event) => {
+          const trigger = triggerRef.current;
+          if (event.newState !== "open" || !trigger) return;
+          // Below the trigger, right edges aligned.
+          const rect = trigger.getBoundingClientRect();
+          Object.assign(event.currentTarget.style, {
+            position: "fixed",
+            inset: "auto",
+            top: `${rect.bottom + 6}px`,
+            right: `${document.documentElement.clientWidth - rect.right}px`,
+          });
+        }}
+        onToggle={(event) => {
+          const menu = event.currentTarget;
+          const isOpen = event.newState === "open";
+          setOpen(isOpen);
+          if (isOpen) {
+            (focusFirstItem.current ? menuItems(menu)[0] : menu)?.focus();
+          } else if (menu.contains(document.activeElement)) {
+            triggerRef.current?.focus();
+          }
+          focusFirstItem.current = false;
+        }}
+        onKeyDown={onMenuKeyDown}
+        onClick={(event) => {
+          if ((event.target as Element).closest('[role="menuitem"]')) {
+            menuRef.current?.hidePopover();
+          }
+        }}
+        className={`${popupClass} min-w-52 p-1 outline-none`}
+      >
+        <div role="group" aria-labelledby={labelId}>
+          <div id={labelId} className="px-2 pt-1 pb-1.5 text-label text-muted">
             {clientId ? `Dhan client ${clientId}` : "Dhan not connected"}
-          </MenuGroupLabel>
-          <MenuItem render={<Link href="/settings" />} className={menuItemClass}>
-            <MenuItemIcon>
+          </div>
+          <Link
+            href="/settings"
+            role="menuitem"
+            tabIndex={-1}
+            onPointerMove={(event) => event.currentTarget.focus()}
+            className={menuItemClass}
+          >
+            <span aria-hidden>
               <SettingsIcon />
-            </MenuItemIcon>
+            </span>
             Settings
-          </MenuItem>
-        </MenuGroup>
-        <MenuSeparator className="my-1 h-px bg-line" />
-        <MenuItem value="sign-out" className={menuItemClass}>
-          <MenuItemIcon>
+          </Link>
+        </div>
+        <div role="separator" className="my-1 h-px bg-line" />
+        <button
+          type="button"
+          role="menuitem"
+          tabIndex={-1}
+          onPointerMove={(event) => event.currentTarget.focus()}
+          onClick={() => startTransition(() => logout())}
+          className={`${menuItemClass} w-full`}
+        >
+          <span aria-hidden>
             <LogOutIcon />
-          </MenuItemIcon>
+          </span>
           {signingOut ? "Signing out…" : "Sign out"}
-        </MenuItem>
-      </MenuContent>
-    </Menu>
+        </button>
+      </div>
+    </>
   );
 }

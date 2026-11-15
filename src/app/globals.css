@@ -1,4 +1,3 @@
-@layer ui-sdk;
 @import "tailwindcss";
 
 @custom-variant sidebar-collapsed (&:where([data-sidebar="collapsed"] *));

@@ -1,10 +1,10 @@
-import { TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs";
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { ConstituentsPanel } from "@/components/index-constituents";
 import { IndexWorkspace } from "@/components/live/index-workspace";
 import { LiveChange, LivePrice } from "@/components/live/live-quote";
 import { DataAge } from "@/components/shell/freshness";
+import { TabsList, TabsPanel, TabsTab } from "@/components/tabs";
 import { EmptyState, InlineError, PageHeader, Panel, Tag } from "@/components/ui";
 import { getIndexQuotes, MARKET_INDICES, requireSession, type IndexKey } from "@/lib/cockpit";
 import { INDEX_CONSTITUENTS } from "@/lib/index-constituents";
