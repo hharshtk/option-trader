@@ -10,6 +10,7 @@ import {
   getOptionContract,
   importOptionScrips,
   importOptionScripsParquet,
+  listOptionChain,
   listOptionExpiries,
   listOptionStrikes,
   listOptionUnderlyings,
@@ -157,4 +158,17 @@ test("a Parquet copy reloads into an identical table", async () => {
   } finally {
     fresh.closeSync();
   }
+});
+
+test("full chain for an expiry, including one-sided strikes", async () => {
+  const chain = await listOptionChain(db, "NIFTY", "2026-11-24");
+  assert.deepEqual(chain.map((s) => [s.strike, s.CE?.optionType ?? null, s.PE?.optionType ?? null]), [
+    [24900, "CE", "PE"],
+    [24950, "CE", "PE"],
+    [25000, "CE", "PE"],
+    [25050, "CE", "PE"],
+    [25100, "CE", "PE"],
+    [25150, "CE", null],
+  ]);
+  assert.deepEqual(await listOptionChain(db, "SENSEX", "2026-11-24"), []);
 });

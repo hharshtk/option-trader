@@ -4,6 +4,7 @@ import { withDb } from "@/lib/db/duckdb";
 import {
   findOptionContract as findIn,
   getOptionContract as getIn,
+  listOptionChain as chainForExpiryIn,
   listOptionExpiries as expiriesIn,
   listOptionStrikes as strikesIn,
   listOptionUnderlyings as underlyingsIn,
@@ -122,4 +123,13 @@ export function optionChainAround(
   options?: LookupOptions,
 ) {
   return lookup(options, (db, today) => chainIn(db, query, today));
+}
+
+export function listOptionChain(
+  underlying: string,
+  expiry: string,
+  exchange?: OptionExchange,
+  options?: LookupOptions,
+) {
+  return lookup(options, (db) => chainForExpiryIn(db, underlying, expiry, exchange));
 }

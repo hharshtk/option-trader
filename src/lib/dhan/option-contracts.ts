@@ -327,3 +327,26 @@ export async function optionChainAround(
   }
   return { atmStrike, strikes: [...byStrike.values()] };
 }
+
+/** Every strike listed for an expiry, ascending, with its CE and PE contracts. */
+export async function listOptionChain(
+  connection: DuckDBConnection,
+  underlying: string,
+  expiry: string,
+  exchange: OptionExchange = "NSE",
+): Promise<ChainStrike[]> {
+  const contracts = await rows<OptionContract>(
+    connection,
+    `SELECT ${CONTRACT_COLUMNS} FROM ${TABLE}
+     WHERE exchange = $exchange AND underlying = $underlying AND expiry = CAST($expiry AS DATE)
+     ORDER BY strike, option_type`,
+    { exchange, underlying, expiry },
+  );
+  const byStrike = new Map<number, ChainStrike>();
+  for (const contract of contracts) {
+    const entry = byStrike.get(contract.strike) ?? { strike: contract.strike };
+    entry[contract.optionType] = contract;
+    byStrike.set(contract.strike, entry);
+  }
+  return [...byStrike.values()];
+}
