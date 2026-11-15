@@ -1,15 +1,21 @@
-import { Card } from "@/components/ui";
+import type { Metadata } from "next";
+import { LogoMark } from "@/components/icons";
+import { Panel } from "@/components/ui";
 import { LoginForm } from "./login-form";
+
+export const metadata: Metadata = { title: "Sign in" };
 
 export default function LoginPage() {
   return (
-    <main className="mx-auto w-full max-w-sm flex-1 px-4 py-24">
-      <h1 className="text-2xl font-semibold tracking-tight">Option Trader</h1>
-      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">Sign in to continue</p>
-      <div className="mt-8">
-        <Card>
+    <main className="grid min-h-full place-items-center px-4 py-16">
+      <div className="w-full max-w-xs">
+        <div className="mb-5 flex items-center gap-2">
+          <LogoMark />
+          <h1 className="text-base font-semibold tracking-tight">Option Trader</h1>
+        </div>
+        <Panel title="Sign in">
           <LoginForm />
-        </Card>
+        </Panel>
       </div>
     </main>
   );

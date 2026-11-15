@@ -1,26 +1,51 @@
+@layer ui-sdk;
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant sidebar-collapsed (&:where([data-sidebar="collapsed"] *));
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@theme static {
+  --color-canvas: #0a0d10;
+  --color-panel: #101418;
+  --color-raised: #171c22;
+  --color-itm: #141a20;
+  --color-line: #1e252d;
+  --color-line-strong: #2b343e;
+  --color-fg: #e3e7eb;
+  --color-muted: #8a949f;
+  --color-up: #2ebd85;
+  --color-down: #f6465d;
+  --color-warn: #e8b339;
+  --color-accent: #4d8dff;
+
+  --text-label: 0.6875rem;
+  --text-label--line-height: 1rem;
+  --text-body: 0.8125rem;
+  --text-body--line-height: 1.25rem;
+}
+
+:root {
+  color-scheme: dark;
+  scrollbar-color: var(--color-line-strong) transparent;
+  scrollbar-width: thin;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-fg);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }

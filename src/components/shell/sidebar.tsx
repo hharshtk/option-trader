@@ -1,0 +1,144 @@
+"use client";
+
+import { usePreference } from "@ui-sdk/react/preferences";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@ui-sdk/react/tooltip";
+import Link, { useLinkStatus } from "next/link";
+import { usePathname } from "next/navigation";
+import type { ComponentType } from "react";
+import {
+  ActivityIcon,
+  FundsIcon,
+  HoldingsIcon,
+  MarketWatchIcon,
+  OptionsChainIcon,
+  OrdersIcon,
+  OverviewIcon,
+  PositionsIcon,
+  SettingsIcon,
+  SidebarIcon,
+  StrategiesIcon,
+  type IconProps,
+} from "@/components/icons";
+import { tooltipClass } from "./header-controls";
+import { sidebarPreference } from "./preferences";
+
+interface NavItem {
+  href: string;
+  label: string;
+  icon: ComponentType<IconProps>;
+  built: boolean;
+}
+
+const NAV: NavItem[][] = [
+  [
+    { href: "/", label: "Overview", icon: OverviewIcon, built: true },
+    { href: "/market-watch", label: "Market Watch", icon: MarketWatchIcon, built: true },
+    { href: "/options-chain", label: "Options Chain", icon: OptionsChainIcon, built: true },
+    { href: "/strategies", label: "Strategies", icon: StrategiesIcon, built: false },
+  ],
+  [
+    { href: "/orders", label: "Orders", icon: OrdersIcon, built: true },
+    { href: "/positions", label: "Positions", icon: PositionsIcon, built: true },
+    { href: "/holdings", label: "Holdings", icon: HoldingsIcon, built: true },
+    { href: "/funds", label: "Funds", icon: FundsIcon, built: true },
+  ],
+  [
+    { href: "/activity", label: "Activity", icon: ActivityIcon, built: false },
+    { href: "/settings", label: "Settings", icon: SettingsIcon, built: true },
+  ],
+];
+
+export function Sidebar() {
+  const pathname = usePathname();
+  const { value } = usePreference(sidebarPreference);
+  const collapsed = value === "collapsed";
+
+  return (
+    <nav
+      id="sidebar"
+      aria-label="Sections"
+      className="flex w-12 shrink-0 flex-col border-r border-line bg-panel md:w-52 md:sidebar-collapsed:w-12"
+    >
+      <div className="flex-1 overflow-x-hidden overflow-y-auto py-2">
+        {NAV.map((group, index) => (
+          <ul
+            key={group[0].href}
+            className={index > 0 ? "mt-2 border-t border-line pt-2" : undefined}
+          >
+            {group.map((item) => (
+              <li key={item.href}>
+                <NavLink item={item} active={pathname === item.href} showTooltip={collapsed} />
+              </li>
+            ))}
+          </ul>
+        ))}
+      </div>
+      <button
+        type="button"
+        aria-controls="sidebar"
+        aria-expanded={!collapsed}
+        onClick={(event) =>
+          sidebarPreference.set(collapsed ? "expanded" : "collapsed", {
+            reason: "press",
+            event: event.nativeEvent,
+          })
+        }
+        className="mx-1.5 mb-2 hidden h-8 items-center gap-2.5 rounded-sm px-2 text-muted hover:bg-raised hover:text-fg md:flex"
+      >
+        <SidebarIcon className="shrink-0" />
+        <span className="truncate md:sidebar-collapsed:sr-only">
+          {collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        </span>
+      </button>
+    </nav>
+  );
+}
+
+function NavLink({
+  item,
+  active,
+  showTooltip,
+}: {
+  item: NavItem;
+  active: boolean;
+  showTooltip: boolean;
+}) {
+  const Icon = item.icon;
+
+  return (
+    <Tooltip disabled={!showTooltip} type="label">
+      <TooltipTrigger
+        render={<Link href={item.href} aria-current={active ? "page" : undefined} />}
+        className="group relative mx-1.5 flex h-8 items-center gap-2.5 rounded-sm px-2 text-muted hover:bg-raised hover:text-fg aria-[current=page]:bg-raised aria-[current=page]:text-fg"
+      >
+        <span
+          aria-hidden
+          className="absolute inset-y-1.5 -left-1.5 w-0.5 rounded-r-sm bg-accent opacity-0 group-aria-[current=page]:opacity-100"
+        />
+        <Icon className={`shrink-0 ${item.built ? "" : "opacity-60"}`} />
+        <span className="truncate max-md:sr-only md:sidebar-collapsed:sr-only">{item.label}</span>
+        {!item.built && (
+          <span className="ml-auto shrink-0 text-[0.625rem] leading-4 tracking-wide text-muted uppercase max-md:sr-only md:sidebar-collapsed:sr-only">
+            Not built
+          </span>
+        )}
+        <PendingBar />
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={10} className={tooltipClass}>
+        {item.built ? item.label : `${item.label} (not built)`}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function PendingBar() {
+  const { pending } = useLinkStatus();
+  return (
+    <span
+      aria-hidden
+      className={`absolute inset-x-2 bottom-0.5 h-px bg-accent transition-opacity ${
+        pending ? "opacity-100 motion-safe:animate-pulse" : "opacity-0"
+      }`}
+    />
+  );
+}
