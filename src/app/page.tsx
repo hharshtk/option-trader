@@ -1,5 +1,7 @@
 import { Suspense } from "react";
+import { redirect } from "next/navigation";
 import { connection } from "next/server";
+import { logout } from "@/app/login/actions";
 import { Holdings, Positions } from "@/components/portfolio";
 import { Card, EmptyState, Field, InlineError } from "@/components/ui";
 import {
@@ -14,6 +16,7 @@ import {
   INDEX,
   type DhanErrorDescription,
 } from "@/lib/dhan";
+import { isSignedIn } from "@/lib/auth";
 import { inr, istDateTime, price } from "@/lib/format";
 
 const SEGMENT_NAMES: Record<string, string> = {
@@ -26,10 +29,22 @@ const SEGMENT_NAMES: Record<string, string> = {
 export default function Home() {
   return (
     <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-12 sm:px-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Option Trader</h1>
-      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-        Broker connection and portfolio
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Option Trader</h1>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            Broker connection and portfolio
+          </p>
+        </div>
+        <form action={logout}>
+          <button
+            type="submit"
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+          >
+            Sign out
+          </button>
+        </form>
+      </div>
       <Suspense fallback={<StatusSkeleton />}>
         <DhanStatus />
       </Suspense>
@@ -39,6 +54,7 @@ export default function Home() {
 
 async function DhanStatus() {
   await connection();
+  if (!(await isSignedIn())) redirect("/login");
 
   const nifty = INDEX.NIFTY.securityId;
   const bankNifty = INDEX.BANKNIFTY.securityId;

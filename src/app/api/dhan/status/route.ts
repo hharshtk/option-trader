@@ -1,8 +1,12 @@
 import { connection } from "next/server";
+import { isSignedIn } from "@/lib/auth";
 import { describeDhanError, getProfile } from "@/lib/dhan";
 
 export async function GET() {
   await connection();
+  if (!(await isSignedIn())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   try {
     const profile = await getProfile();
