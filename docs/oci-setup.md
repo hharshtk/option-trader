@@ -148,7 +148,7 @@ The account is allowed A1 and has the quota (41 cores free), but Hyderabad had n
 - [ ] Confirm VS Code Remote-SSH connects to `oci-option-trading`.
 - [ ] Install Node, clone the repo, and set up DuckDB on `option-trading-e5`.
 - [ ] Decide on a **reserved public IP** if Dhan requires a whitelisted static IP.
-- [ ] Open extra ports in the subnet security list only if a web UI must be reachable (default is port 22 only).
+- [x] Port 443 opened (2026-11-15) in the security list and the VM's iptables, for Caddy in front of the engine. See [engine.md](engine.md#reaching-it-from-vercel). No other ports besides 22.
 - [ ] Retry an Always Free **A1** instance (script or manual) as the long-term home, then migrate off the paid E5.
 - [ ] Before **2026-12-14**: upgrade to Pay As You Go, or move to the free tier and delete `option-trading-e5`.
 - [ ] Consider a budget alert so any unexpected charge is flagged.

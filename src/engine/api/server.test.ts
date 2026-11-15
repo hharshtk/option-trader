@@ -98,13 +98,20 @@ test("control API", { timeout: 15_000 }, async (t) => {
   });
 
   await t.test("telemetry sends hello, then the backlog, then live messages", async () => {
-    const reading = readEvents("/v1/telemetry?topics=status,log", 4);
+    const buffered = telemetry.backlog(new Set(["status", "log"] as const), 0).length;
+    const reading = readEvents("/v1/telemetry?topics=status,log", buffered + 2);
     // Give the connection a moment to subscribe before publishing live.
     await new Promise((resolve) => setTimeout(resolve, 50));
     telemetry.publish("status", { overall: "ok" } as EngineStatus);
     const events = await reading;
-    // hello, the two buffered log lines, then the live status.
-    assert.deepEqual(events.map((e) => e.event), ["hello", "log", "log", "status"]);
+    // hello, every buffered log line in seq order, then the live status.
+    assert.ok(buffered >= 2);
+    assert.deepEqual(
+      events.map((e) => e.event),
+      ["hello", ...Array<string>(buffered).fill("log"), "status"],
+    );
+    const ids = events.slice(1).map((e) => Number(e.id));
+    assert.deepEqual(ids, [...ids].sort((a, b) => a - b));
   });
 
   await t.test("telemetry resumes after Last-Event-ID and skips other topics", async () => {
@@ -115,5 +122,19 @@ test("control API", { timeout: 15_000 }, async (t) => {
     assert.equal(events[1].event, "log");
     assert.equal(Number(events[1].id), seqBefore + 1);
     assert.equal((events[1].data as { data: { message: string } }).data.message, "after");
+  });
+
+  await t.test("blocks a client after repeated bad tokens, while others still get in", async () => {
+    for (let i = 0; i < 10; i += 1) {
+      await fetch(`http://127.0.0.1:${PORT}/v1/status`, {
+        headers: { Authorization: "Bearer wrong", "X-Forwarded-For": "203.0.113.50" },
+      });
+    }
+    const blocked = await fetch(`http://127.0.0.1:${PORT}/v1/status`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, "X-Forwarded-For": "203.0.113.50" },
+    });
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get("retry-after")) > 0);
+    assert.equal((await get("/v1/status")).status, 200);
   });
 });

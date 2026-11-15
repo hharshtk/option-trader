@@ -1,0 +1,40 @@
+# Caddy in front of the engine: HTTPS on the server's public IP, forwarding only the control
+# API (/v1/*) to the engine on 127.0.0.1:3100. Everything else gets 404.
+#
+# Install (replace the IP with the server's public IP):
+#   sed 's/ENGINE_PUBLIC_IP/140.245.240.9/' deploy/Caddyfile | sudo tee /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# The certificate is a Let's Encrypt IP-address certificate. Those are always short-lived
+# (about 6 days); Caddy renews it automatically. Needs port 443 open in the OCI security list
+# and in the VM's iptables.
+
+{
+	# Clients send no SNI when connecting to a bare IP, so tell Caddy which certificate to use.
+	# Without this the TLS handshake fails with "internal error".
+	default_sni ENGINE_PUBLIC_IP
+}
+
+https://ENGINE_PUBLIC_IP {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+
+	handle /v1/* {
+		# Caddy flushes text/event-stream responses immediately, so telemetry streams live.
+		reverse_proxy 127.0.0.1:3100
+	}
+
+	handle {
+		respond 404
+	}
+
+	log {
+		output file /var/log/caddy/engine-access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

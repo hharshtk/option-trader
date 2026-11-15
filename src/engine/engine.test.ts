@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import type { IncomingMessage } from "node:http";
+import { clientAddress, createAuthThrottle } from "./api/auth-throttle.ts";
 import { parseDhanDate } from "./dhan-watch.ts";
 import { acquireLock, EngineLockedError } from "./lock.ts";
 import { createHealth } from "./telemetry/health.ts";
@@ -63,6 +65,37 @@ test("lock refuses a second live engine and replaces a stale lock", () => {
   const releaseAgain = acquireLock(file);
   assert.equal(readFileSync(file, "utf8").trim(), String(process.pid));
   releaseAgain();
+});
+
+test("auth throttle blocks a client after repeated failures, until the window passes", () => {
+  let clock = 0;
+  const throttle = createAuthThrottle({ now: () => clock, maxFailures: 3, windowMs: 1_000 });
+  assert.equal(throttle.fail("a"), false);
+  assert.equal(throttle.fail("a"), false);
+  assert.equal(throttle.blockedFor("a"), 0);
+  assert.equal(throttle.fail("a"), true, "reports the moment it blocks");
+  assert.equal(throttle.blockedFor("a"), 1_000);
+  assert.equal(throttle.blockedFor("b"), 0, "other clients are unaffected");
+
+  clock = 400;
+  assert.equal(throttle.blockedFor("a"), 600);
+  clock = 1_000;
+  assert.equal(throttle.blockedFor("a"), 0);
+
+  throttle.fail("c");
+  throttle.succeed("c");
+  throttle.fail("c");
+  throttle.fail("c");
+  assert.equal(throttle.blockedFor("c"), 0, "a success resets the count");
+});
+
+test("client address trusts X-Forwarded-For only from a local peer", () => {
+  const request = (peer: string, forwarded?: string) =>
+    ({ socket: { remoteAddress: peer }, headers: forwarded ? { "x-forwarded-for": forwarded } : {} }) as unknown as IncomingMessage;
+  assert.equal(clientAddress(request("127.0.0.1", "203.0.113.9, 10.0.0.1")), "203.0.113.9");
+  assert.equal(clientAddress(request("::ffff:127.0.0.1", "203.0.113.9")), "203.0.113.9");
+  assert.equal(clientAddress(request("198.51.100.4", "1.2.3.4")), "198.51.100.4", "a remote peer can't spoof it");
+  assert.equal(clientAddress(request("127.0.0.1")), "127.0.0.1");
 });
 
 test("parses both of Dhan's date formats as IST", () => {

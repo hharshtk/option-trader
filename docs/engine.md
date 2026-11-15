@@ -9,17 +9,18 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 1. [Status](#status)
 2. [Running it](#running-it)
 3. [Configuration](#configuration)
-4. [What you see on the web](#what-you-see-on-the-web)
-5. [How it fits together](#how-it-fits-together)
-6. [Health checks](#health-checks)
-7. [Control API](#control-api)
-8. [Telemetry stream](#telemetry-stream)
-9. [Logs and metrics](#logs-and-metrics)
-10. [Session calendar](#session-calendar)
-11. [Code layout and rules](#code-layout-and-rules)
-12. [Testing](#testing)
-13. [Extending it](#extending-it)
-14. [Troubleshooting](#troubleshooting)
+4. [Reaching it from Vercel](#reaching-it-from-vercel)
+5. [What you see on the web](#what-you-see-on-the-web)
+6. [How it fits together](#how-it-fits-together)
+7. [Health checks](#health-checks)
+8. [Control API](#control-api)
+9. [Telemetry stream](#telemetry-stream)
+10. [Logs and metrics](#logs-and-metrics)
+11. [Session calendar](#session-calendar)
+12. [Code layout and rules](#code-layout-and-rules)
+13. [Testing](#testing)
+14. [Extending it](#extending-it)
+15. [Troubleshooting](#troubleshooting)
 
 ## Status
 
@@ -76,6 +77,39 @@ All settings come from `.env.local`, which both the engine and the web read.
 | `DHAN_ACCESS_TOKEN` | none | Fallback token when Redis has none |
 
 The web reads `.env.local` changes on its own. The engine reads it at start, so restart the engine after changing it. The access token is the exception: the engine re-reads it from Redis every 30 seconds, so a token saved on the Settings page needs no restart.
+
+## Reaching it from Vercel
+
+The frontend runs on Vercel; only the engine runs on the server. Vercel reaches the engine over HTTPS on the server's public IP:
+
+```
+Vercel (bom1) ──HTTPS──► 140.245.240.9:443 ──► Caddy ──► 127.0.0.1:3100 engine
+```
+
+| Piece | Setting |
+|---|---|
+| Vercel environment | `ENGINE_URL=https://140.245.240.9` and the same `ENGINE_TOKEN` as the server |
+| Vercel region | `bom1` (Mumbai), set in [vercel.json](../vercel.json): the closest region to the server and to Dhan |
+| Caddy | [deploy/Caddyfile](../deploy/Caddyfile): HTTPS with a Let's Encrypt IP certificate, forwards only `/v1/*`, 404 for anything else |
+| Firewalls | Port 443 open in the OCI security list and in the VM's iptables (`/etc/iptables/rules.v4`). Port 3100 stays closed; the engine listens on 127.0.0.1 only |
+| Bad tokens | After 10 in 10 minutes from one address, that address gets 429 until the window passes. The engine reads the address from Caddy's `X-Forwarded-For`, trusted only from localhost |
+
+**Certificate.** Let's Encrypt IP certificates last about 6 days; Caddy renews them on its own through the `tls-alpn-01` challenge on port 443. Port 80 isn't needed. Clients send no SNI to a bare IP, so the Caddyfile sets `default_sni`; without it the handshake fails with "internal error".
+
+```bash
+# Caddy
+sed 's/ENGINE_PUBLIC_IP/140.245.240.9/g' deploy/Caddyfile | sudo tee /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+journalctl -u caddy -f                       # certificate renewals and errors
+sudo tail -f /var/log/caddy/engine-access.log
+
+# From anywhere: 401 means HTTPS and Caddy work and the token check is on
+curl -s -o /dev/null -w '%{http_code}\n' https://140.245.240.9/v1/status
+```
+
+**The IP is ephemeral.** It survives reboots and stop/start, but not terminating the instance. Moving to a reserved IP gives a new address, so it means updating the Caddyfile, Vercel's `ENGINE_URL`, your SSH config and, once set, Dhan's order whitelist (changeable only once every 7 days). Do it from the OCI Console, not over an SSH session to the old address.
+
+**Live quotes on Vercel need E2.** The web's own Dhan feed can't run on Vercel's serverless functions. Until E2 moves the feed into the engine, Market Watch, Live Feed and header prices have no live data on Vercel. Telemetry streams also reconnect when Vercel ends a function at its maximum duration; they resume from the last message, so nothing is lost.
 
 ## What you see on the web
 
@@ -301,6 +335,8 @@ Tests use `node --test`, inject clocks and sockets, and never call Dhan. The con
 | `Port 3100 is in use` | Another process holds the port: `ss -ltnp \| grep 3100` |
 | Header dot grey, "Not configured" | `ENGINE_URL` or `ENGINE_TOKEN` missing from `.env.local` |
 | Header dot red, "Engine offline" | The engine isn't running, or crashed. Check the terminal, `journalctl -u option-trader-engine` or the last lines of `data/engine/logs/` |
+| Vercel can't reach the engine | From any machine, `curl -s -o /dev/null -w '%{http_code}' https://140.245.240.9/v1/status` should print 401. Nothing: port 443 blocked or Caddy down (`systemctl status caddy`). 502: Caddy is up but the engine isn't. 429: that address sent 10 bad tokens; wait 10 minutes and check `ENGINE_TOKEN` in Vercel |
+| TLS "internal error" from the IP | `default_sni` missing from `/etc/caddy/Caddyfile` |
 | `token` failing | No token in Redis or `.env.local`, or it expired. Save a new one on the Settings page; the engine picks it up within 30 seconds |
 | `dhan` failing | Dhan rejected the call; the reason is on the Engine page. Usually the token |
 | `data-plan` degraded or failing | Renew the Data API plan on web.dhan.co. It ends 2026-12-16 |

@@ -14,6 +14,7 @@ import {
 import type { LogHub } from "../telemetry/logger.ts";
 import type { Logger } from "../telemetry/logger.ts";
 import type { TelemetryHub } from "../telemetry/hub.ts";
+import { clientAddress, createAuthThrottle, type AuthThrottle } from "./auth-throttle.ts";
 import { openSse, type SseClient } from "./sse.ts";
 
 const TOPICS: readonly TelemetryTopic[] = ["status", "log", "metrics", "feed", "bars", "gaps"];
@@ -27,6 +28,7 @@ export interface ControlServerOptions {
   telemetry: TelemetryHub;
   logs: LogHub;
   log: Logger;
+  throttle?: AuthThrottle;
 }
 
 export interface ControlServer {
@@ -39,6 +41,7 @@ export function createControlServer(options: ControlServerOptions): ControlServe
   const { host, port, token, status, telemetry, logs, log } = options;
   const expected = sha256(token);
   const clients = new Set<SseClient>();
+  const throttle = options.throttle ?? createAuthThrottle({ now: Date.now });
 
   function authorized(request: IncomingMessage) {
     const header = request.headers.authorization ?? "";
@@ -74,7 +77,18 @@ export function createControlServer(options: ControlServerOptions): ControlServe
 
   const server: Server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://engine");
-    if (!authorized(request)) return json(response, 401, { error: "Unauthorized" });
+    const client = clientAddress(request);
+    const wait = throttle.blockedFor(client);
+    if (wait > 0) {
+      response.setHeader("Retry-After", String(Math.ceil(wait / 1000)));
+      return json(response, 429, { error: "Too many failed attempts" });
+    }
+    if (!authorized(request)) {
+      if (throttle.fail(client)) log.warn("blocking a client after repeated bad tokens", { client });
+      else log.info("rejected a request with a bad token", { client, path: url.pathname });
+      return json(response, 401, { error: "Unauthorized" });
+    }
+    throttle.succeed(client);
     if (request.method !== "GET") return json(response, 405, { error: "Method not allowed" });
 
     try {
