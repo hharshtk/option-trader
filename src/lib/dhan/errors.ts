@@ -64,7 +64,7 @@ export function describeDhanError(error: unknown): DhanErrorDescription {
       hint = `After a rate-limit warning from Dhan, this app stops sending any requests for ${RATE_LIMIT_COOLDOWN_MS / 1000} seconds. Wait before refreshing.`;
     } else if (error.isAuthError) {
       hint =
-        "Generate a new access token at web.dhan.co → My Profile → Access DhanHQ APIs, put it in DHAN_ACCESS_TOKEN in .env.local, then restart the dev server.";
+        "Generate a new access token at web.dhan.co → My Profile → Access DhanHQ APIs, then save it on the Settings page.";
     } else if (error.isDataPlanError) {
       hint =
         "Quotes and option chains need Dhan's Data API subscription, which is separate from trading API access. Subscribe from your DhanHQ API settings on web.dhan.co.";

@@ -1,5 +1,5 @@
 import "server-only";
-import { getDhanCredentials } from "./config";
+import { loadDhanCredentials } from "./config";
 import { DhanApiError } from "./errors";
 import {
   bucketFor,
@@ -60,7 +60,7 @@ export function dhanRequest<T>(
 }
 
 async function send<T>(method: HttpMethod, path: string, body: unknown): Promise<T> {
-  const { clientId, accessToken } = getDhanCredentials();
+  const { clientId, accessToken } = await loadDhanCredentials();
   await waitForSlot(bucketFor(method, path));
 
   let response: Response;

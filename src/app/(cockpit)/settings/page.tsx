@@ -23,9 +23,18 @@ import {
   type OptionScripsMeta,
 } from "@/lib/dhan/option-scrips-store";
 import { istDateTime, quantity } from "@/lib/format";
+import { getTokenStore } from "@/lib/dhan/config";
+import type { TokenSource } from "@/lib/dhan/token-store";
 import { DownloadScripsButton } from "./download-scrips-button";
+import { TokenForm } from "./token-form";
 
 export const metadata: Metadata = { title: "Settings" };
+
+const TOKEN_SOURCE: Record<TokenSource, string> = {
+  redis: "Redis (Settings page)",
+  env: "DHAN_ACCESS_TOKEN in .env.local",
+  none: "None",
+};
 
 const SEGMENT_NAMES: Record<string, string> = {
   E: "Equity",
@@ -52,6 +61,7 @@ async function Settings() {
     ),
   ]);
   const tokenExpiry = profile.ok ? tokenExpiryIso() : null;
+  const tokenStore = getTokenStore();
   const segments = profile.ok
     ? profile.value.activeSegment
         .split(",")
@@ -82,6 +92,7 @@ async function Settings() {
                 value={<span className="font-mono">{profile.value.dhanClientId}</span>}
               />
             )}
+            <StatRow label="Token source" value={TOKEN_SOURCE[tokenStore.source()]} />
             {tokenExpiry && (
               <StatRow label="Access token expires" value={<TokenExpiry expiresAt={tokenExpiry} />} />
             )}
@@ -91,11 +102,22 @@ async function Settings() {
               <InlineError error={profile.error} />
             </div>
           )}
-          <p className="mt-3 border-t border-line pt-3 text-muted">
-            Self-generated tokens last 24 hours. To renew, generate a new token at web.dhan.co →
-            My Profile → Access DhanHQ APIs, put it in DHAN_ACCESS_TOKEN in .env.local, then
-            restart the dev server. The token stays on the server and never reaches the browser.
-          </p>
+          <div className="mt-3 border-t border-line pt-3">
+            {tokenStore.configured ? (
+              <TokenForm />
+            ) : (
+              <p className="text-warn">
+                Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in .env.local to save tokens
+                from this page.
+              </p>
+            )}
+            <p className="mt-3 text-muted">
+              Self-generated tokens last 24 hours. Generate one at web.dhan.co → My Profile →
+              Access DhanHQ APIs and save it here: it is kept in Redis for 24 hours and used
+              within 30 seconds, with no restart. DHAN_ACCESS_TOKEN in .env.local is the fallback
+              when Redis has no token. The token stays on the server and never reaches the browser.
+            </p>
+          </div>
         </Panel>
 
         <Panel title="Dhan account">
