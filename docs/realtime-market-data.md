@@ -4,11 +4,12 @@ Status: built on 2026-11-15. The feed connected to Dhan that day, a Sunday, and 
 
 ## Running it
 
-The feed runs inside the Next server, so `npm run dev` (or `npm start`) is all it needs. It opens the Dhan socket only when the first browser tab subscribes, and closes it after 5 minutes with no subscribers. Feed log lines start with `[feed HH:MM:SS]` in the dev server output.
+The feed runs inside the Next server, so `npm run dev` (or `npm start`) is all it needs. It can run up to 5 Dhan sockets ("connections"), Dhan's per-account limit, with up to 5,000 instruments each. Connection 1, **Main**, carries whatever app pages show. Every connection opens its socket only when its first instrument is subscribed, and closes it after 5 minutes with nothing subscribed. Feed log lines start with `[feed HH:MM:SS]` in the dev server output.
 
 | Task | How |
 |---|---|
-| Watch the stream | The **Live Feed** page (`/live-feed`) shows the socket state, every subscribed instrument with its latest quote, and a log of the last 1,000 decoded packets, subscribe requests and state changes. Watching subscribes to nothing; it reads `/api/market/feed` |
+| Watch the stream | The **Live Feed** page (`/live-feed`) shows how many sockets are open, each connection with its instruments and their latest quotes, why each instrument is subscribed (shown on N tabs, added by you), and a log of the last 1,000 decoded packets, subscribe requests and state changes, tagged by connection. Watching subscribes to nothing; it reads `/api/market/feed` |
+| Stream another instrument | On the Live Feed page, use **Add an instrument**: pick one of the indices or their stocks, or type `SEGMENT:SECURITY_ID` (for example `NSE_FNO:43854`), and choose an existing connection or **+ New connection**. Added instruments stay subscribed until you remove them, but only until the server restarts; they aren't saved. Closing a connection you created disconnects its socket; instruments that open pages still show move to Main |
 | Pick up a renewed token | Update `DHAN_ACCESS_TOKEN` in `.env.local`, then reload the page. A feed stopped by a rejected token reconnects when a tab subscribes with a different token in the env. Restarting the dev server also works |
 | Record raw frames | Set `FEED_CAPTURE=1` in `.env.local` and restart the server. Frames go to `captures/feed/<date>.jsonl`, which git ignores |
 | Run the parser and reconnect tests | `npm run test:feed` |
@@ -17,22 +18,24 @@ The feed runs inside the Next server, so `npm run dev` (or `npm start`) is all i
 
 ```
 Dhan Live Market Feed v2 (wss, binary, little-endian)
-        │  one socket per server process; credentials read from the env on every connect
+        │  up to 5 sockets per server process; credentials read from the env on every connect
         ▼
 src/lib/live/feed (server only)
   ├─ packets.ts     binary parser and subscribe messages
   ├─ dhan-feed.ts   socket lifecycle: backoff, 805 pause, token stop, idle disconnect
-  ├─ hub.ts         instrument ref-counts, latest quote per instrument, SSE streams
+  ├─ feed-hub.ts    connections, which connection carries each instrument and why, quotes, SSE streams
+  ├─ hub.ts         the globalThis singleton wrapper (server-only)
   └─ monitor.ts     event and health shapes for the Live Feed page
         ▲
         │  src/app/api/market/stream: session check, then returns a stream from the hub
         │  src/app/api/market/feed: the same check, then the hub's monitor stream
+        │  src/app/(cockpit)/live-feed/actions.ts: add / remove instruments, close connections
         │
 browser: src/lib/live/store.ts, one EventSource per tab
          src/components/live/live-quote.tsx: useLiveQuote, <LivePrice>, <LiveChange>
 ```
 
-- **One socket per process.** Dhan's stream has no message rate limit; the limit that matters is 5 connections per user, with a sixth dropping the oldest with code 805. Dev hot reload re-evaluates server modules, and each route bundle can hold its own copy of a module, so the hub lives on `globalThis` and is created once per server process. A server restart closes the old socket with the old process. Because of this, edits to `src/lib/live/feed/*` take effect only after restarting `next dev`, unless `HUB_REVISION` in `hub.ts` is bumped, which makes the running server shut the old hub down and start a new one.
+- **One hub per process.** Dhan's stream has no message rate limit; the limit that matters is 5 connections per user, with a sixth dropping the oldest with code 805. The hub never opens more than 5, but anything else using the same Dhan account (another server, another app) counts against the same 5. Each instrument streams on exactly one connection, so a tick never arrives twice. Dev hot reload re-evaluates server modules, and each route bundle can hold its own copy of a module, so the hub lives on `globalThis` and is created once per server process. A server restart closes the old socket with the old process. Because of this, edits to `src/lib/live/feed/*` take effect only after restarting `next dev`, unless `HUB_REVISION` in `hub.ts` is bumped, which makes the running server shut the old hub down and start a new one.
 - **Rendering cost.** The hub sends each browser at most 4 updates a second per instrument (it flushes every 250 ms). Quotes live outside React, and each component subscribes to one instrument, so a NIFTY tick only re-renders components showing NIFTY.
 - **Access control.** The stream route checks the app session before subscribing anything. The Dhan token never leaves the server; it travels in the feed URL, which is never logged.
 - **Hosting.** The hub needs a long-running Node server (`next dev` or `next start`). It won't work on serverless hosting.
@@ -58,9 +61,10 @@ The REST snapshot stays as the fallback everywhere. Holdings and the option chai
 
 ## Safety rules in the connection manager
 
-All of these are covered by `src/lib/live/feed/dhan-feed.test.ts`:
+All of these are covered by `src/lib/live/feed/dhan-feed.test.ts` (per socket) and `feed-hub.test.ts` (connections):
 
-- One socket at most. Subscribing while a socket is opening or open never opens another.
+- At most 5 connections, one instrument on one connection only.
+- One socket per connection at most. Subscribing while a socket is opening or open never opens another.
 - Reconnects back off from 1 second to 30 seconds with jitter, then resubscribe everything in batches of 100.
 - After Dhan disconnect code 805, wait at least 60 seconds.
 - After 5 failed handshakes in a row, wait 5 minutes between attempts. A bad token surfaces this way when Dhan rejects the upgrade itself.
