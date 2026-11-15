@@ -14,7 +14,10 @@ import {
 } from "@/components/ui";
 import { SESSION_MAX_AGE } from "@/lib/auth";
 import { requireSession, settle, tokenExpiryIso } from "@/lib/cockpit";
-import { getProfile } from "@/lib/dhan";
+import { getProfile, INDEX } from "@/lib/dhan";
+import { readOptionScripsMeta, todayIst, type OptionScripsMeta } from "@/lib/dhan/option-scrips-file";
+import { istDateTime, quantity } from "@/lib/format";
+import { DownloadScripsButton } from "./download-scrips-button";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -35,7 +38,7 @@ export default function SettingsPage() {
 
 async function Settings() {
   await requireSession();
-  const profile = await settle(getProfile());
+  const [profile, scrips] = await Promise.all([settle(getProfile()), readOptionScripsMeta()]);
   const tokenExpiry = profile.ok ? tokenExpiryIso() : null;
   const segments = profile.ok
     ? profile.value.activeSegment
@@ -103,6 +106,8 @@ async function Settings() {
           )}
         </Panel>
 
+        <OptionInstruments meta={scrips} />
+
         <Panel title="App session">
           <p className="text-muted">
             Sign-ins last {SESSION_MAX_AGE / 86_400} days. Changing USER_PASSWORD in .env.local
@@ -116,5 +121,68 @@ async function Settings() {
         </Panel>
       </div>
     </>
+  );
+}
+
+const INDEX_EXCHANGE: Record<string, string> = { SENSEX: "BSE", BANKEX: "BSE" };
+
+function OptionInstruments({ meta }: { meta: OptionScripsMeta | null }) {
+  const current = meta?.tradingDate === todayIst();
+  const count = (exchange: string, instrument: string) =>
+    quantity.format(meta?.byExchange[exchange]?.[instrument] ?? 0);
+
+  return (
+    <Panel title="Option instruments">
+      {meta ? (
+        <dl>
+          <StatRow
+            label="Downloaded"
+            value={
+              <span className="inline-flex items-center gap-1.5">
+                <StatusDot tone={current ? "up" : "warn"} />
+                {istDateTime.format(new Date(meta.downloadedAt))}
+                {!current && <span className="text-warn">· not today</span>}
+              </span>
+            }
+          />
+          {meta.sourceUpdatedAt && (
+            <StatRow label="Dhan file updated" value={istDateTime.format(new Date(meta.sourceUpdatedAt))} />
+          )}
+          <StatRow
+            label="NSE options"
+            value={`${count("NSE", "OPTIDX")} index · ${count("NSE", "OPTSTK")} stock`}
+          />
+          <StatRow
+            label="BSE options"
+            value={`${count("BSE", "OPTIDX")} index · ${count("BSE", "OPTSTK")} stock`}
+          />
+          <StatRow label="Underlyings" value={quantity.format(meta.underlyings)} />
+          <StatRow
+            label="Nearest expiry"
+            value={
+              <span className="font-mono text-label">
+                {Object.keys(INDEX)
+                  .map((name) => {
+                    const expiry = meta.nearestIndexExpiry[`${INDEX_EXCHANGE[name] ?? "NSE"}:${name}`];
+                    return expiry ? `${name} ${expiry.slice(5)}` : null;
+                  })
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            }
+          />
+        </dl>
+      ) : (
+        <EmptyState>Not downloaded yet.</EmptyState>
+      )}
+      <div className="mt-3 border-t border-line pt-3">
+        <DownloadScripsButton />
+        <p className="mt-2 text-muted">
+          Fetches Dhan&apos;s instrument master (about 38 MB) and saves unexpired NSE and BSE index and
+          stock options to <span className="font-mono">data/instruments/options-scrip-master.csv</span>.
+          Press it each trading day before the open.
+        </p>
+      </div>
+    </Panel>
   );
 }

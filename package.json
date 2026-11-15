@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:feed": "node --test src/lib/live/feed/*.test.ts"
+    "test:feed": "node --test src/lib/live/feed/*.test.ts",
+    "test:scrips": "node --test src/lib/dhan/*.test.ts"
   },
   "dependencies": {
     "lightweight-charts": "5.2.1",

@@ -43,3 +43,6 @@ next-env.d.ts
 
 # raw market feed frames (FEED_CAPTURE=1)
 /captures/
+
+# downloaded instrument files (Settings → Option instruments)
+/data/
