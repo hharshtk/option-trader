@@ -3,7 +3,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { formatAge, TokenExpiry, useNow } from "@/components/shell/freshness";
 import { DataTable, EmptyState, PageHeader, Panel, StatRow, StatusDot, Td } from "@/components/ui";
-import type { ComponentHealth, EngineStatus, HealthState, LogEntry, LogLevel, MetricsSnapshot } from "@/lib/engine/protocol";
+import type {
+  ComponentHealth,
+  EngineStatus,
+  HealthState,
+  HistogramSnapshot,
+  LogEntry,
+  LogLevel,
+  MetricsSnapshot,
+} from "@/lib/engine/protocol";
 import { istDateTime, istTime, quantity } from "@/lib/format";
 import type { FeedHealth } from "@/lib/live/feed/monitor";
 import { engineSummary, engineView, VIEW_LABEL, VIEW_TONE } from "./engine-status";
@@ -103,7 +111,9 @@ function Overview({
     <div className="grid gap-2 p-2 sm:p-3 lg:grid-cols-2">
       <HealthPanel components={status.components} />
 
-      <FeedPanel feed={feed} now={status.now} />
+      <FeedPanel feed={feed} now={status.now} universe={status.universe} />
+
+      <JournalPanel status={status} latency={metrics?.histograms["journal.write_ms"]} />
 
       <Panel title="Dhan account">
         <dl>
@@ -178,7 +188,7 @@ function Overview({
 
 const FEED_TONE = { idle: "muted", connecting: "warn", live: "up", reconnecting: "warn", stopped: "down" } as const;
 
-function FeedPanel({ feed, now }: { feed: FeedHealth | null; now: number }) {
+function FeedPanel({ feed, now, universe }: { feed: FeedHealth | null; now: number; universe: EngineStatus["universe"] }) {
   if (!feed) {
     return (
       <Panel title="Dhan feed">
@@ -193,6 +203,12 @@ function FeedPanel({ feed, now }: { feed: FeedHealth | null; now: number }) {
       meta={`${feed.connections.length} of 5 sockets · ${quantity.format(feed.instruments.length)} instruments · ${feed.quoteStreams} tab${feed.quoteStreams === 1 ? "" : "s"}${pinned ? ` · ${pinned} pinned` : ""}${feed.capture ? " · recording" : ""}`}
       flush
     >
+      {universe && (
+        <p className="border-b border-line px-3 py-1.5 text-label text-muted">
+          Always on: {universe.name}, {quantity.format(universe.instruments)} instruments
+          {universe.problems.length > 0 && <span className="text-warn"> · {universe.problems.length} unresolved</span>}
+        </p>
+      )}
       <DataTable
         caption="Dhan feed connections"
         columns={["Socket", { label: "State", align: "left" }, "Instruments", "Frames", "Last tick"]}
@@ -219,6 +235,45 @@ function FeedPanel({ feed, now }: { feed: FeedHealth | null; now: number }) {
           </tr>
         ))}
       </DataTable>
+    </Panel>
+  );
+}
+
+function JournalPanel({ status, latency }: { status: EngineStatus; latency?: HistogramSnapshot }) {
+  const journal = status.journal;
+  return (
+    <Panel title="Journal" meta="raw frames, the source of truth">
+      {journal?.date ? (
+        <dl>
+          <StatRow label="Today's file" value={<span className="font-mono">{journal.date}.bin</span>} />
+          <StatRow label="Size" value={bytes(journal.bytes)} />
+          <StatRow
+            label="This run"
+            value={`${quantity.format(journal.frames)} frames · ${quantity.format(journal.controls)} events · ${quantity.format(journal.gaps)} gap${journal.gaps === 1 ? "" : "s"}`}
+          />
+          <StatRow label="Last write" value={journal.lastWriteAt ? <Ago at={journal.lastWriteAt} now={status.now} /> : "—"} />
+          {latency && latency.count > 0 && <StatRow label="Write latency p99" value={`${latency.p99} ms`} />}
+          {(journal.backlogBytes > 0 || journal.error) && (
+            <StatRow
+              label="Disk"
+              value={<span className="text-warn">{journal.error ?? `${bytes(journal.backlogBytes)} waiting`}</span>}
+            />
+          )}
+          <StatRow
+            label="Recorded days"
+            value={
+              status.journalDays.length === 0
+                ? "None"
+                : `${status.journalDays.length} · ${bytes(status.journalDays.reduce((sum, day) => sum + day.bytes, 0))} total`
+            }
+          />
+          {status.journalDays.slice(0, 5).map((day) => (
+            <StatRow key={day.date} label={<span className="pl-3 font-mono">{day.date}</span>} value={bytes(day.bytes)} />
+          ))}
+        </dl>
+      ) : (
+        <EmptyState>Nothing written yet. The journal opens with the engine&apos;s first record.</EmptyState>
+      )}
     </Panel>
   );
 }
@@ -415,6 +470,13 @@ function Ago({ at, now }: { at: number; now: number }) {
   return <span>{formatAge(Math.max(0, now - at))} ago</span>;
 }
 
-function mb(bytes: number) {
-  return `${Math.round(bytes / 1_048_576)} MB`;
+function mb(value: number) {
+  return `${Math.round(value / 1_048_576)} MB`;
+}
+
+function bytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1_048_576) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1_073_741_824) return `${(value / 1_048_576).toFixed(1)} MB`;
+  return `${(value / 1_073_741_824).toFixed(2)} GB`;
 }

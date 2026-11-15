@@ -268,7 +268,7 @@ Nothing to do for data and REST: the access token comes from Redis. Once order p
    ```bash
    OLD=ubuntu@<OLD_PUBLIC_IP>
    scp -p $OLD:option-trader/.env.local ~/option-trader/.env.local && chmod 600 ~/option-trader/.env.local
-   rsync -a $OLD:option-trader/data/ ~/option-trader/data/          # engine logs; journals from E2 on (important)
+   rsync -a $OLD:option-trader/data/ ~/option-trader/data/          # engine logs and journal: recorded sessions can't be recovered (important)
    rsync -a $OLD:option-trader/captures/ ~/option-trader/captures/  # raw feed captures, if any
    ```
 

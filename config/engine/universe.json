@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Tier 1: NIFTY",
+  "note": "Instruments the engine keeps subscribed at all times, whether or not a page shows them, so every session is journaled. NIFTY futures follow once the instrument download includes futures.",
+  "include": [
+    { "kind": "index", "index": "NIFTY" },
+    { "kind": "constituents", "index": "NIFTY" }
+  ],
+  "instruments": []
+}

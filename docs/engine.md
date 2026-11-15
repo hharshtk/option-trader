@@ -16,11 +16,13 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 8. [Control API](#control-api)
 9. [Telemetry stream](#telemetry-stream)
 10. [Logs and metrics](#logs-and-metrics)
-11. [Session calendar](#session-calendar)
-12. [Code layout and rules](#code-layout-and-rules)
-13. [Testing](#testing)
-14. [Extending it](#extending-it)
-15. [Troubleshooting](#troubleshooting)
+11. [Journal](#journal)
+12. [Always-on universe](#always-on-universe)
+13. [Session calendar](#session-calendar)
+14. [Code layout and rules](#code-layout-and-rules)
+15. [Testing](#testing)
+16. [Extending it](#extending-it)
+17. [Troubleshooting](#troubleshooting)
 
 ## Status
 
@@ -28,10 +30,10 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 |---|---|---|
 | E0 Groundwork | Built | Shared modules run under plain Node; clock, event types, logger, metrics, session calendar |
 | E1 Skeleton and monitoring | Built | `npm run engine`, control API, health checks, Engine page, header status dot |
-| E2 Engine owns Dhan | In progress | Done: the live feed runs in the engine and the web forwards to it. Next: always-on journal, universe, Quote/Full modes, one REST limiter |
+| E2 Engine owns Dhan | In progress | Done: the feed runs in the engine and the web forwards to it; always-on journal; always-on NIFTY universe. Next: Quote/Full modes, NIFTY futures in the universe, one REST limiter, daily scrip snapshot |
 | E3–E7 | Planned | See [engine-plan.md](engine-plan.md#build-steps) |
 
-Today the engine monitors itself and the Dhan account and **owns the live Dhan feed**. With `ENGINE_URL` set, the web never opens Dhan sockets: its quote stream, Live Feed stream and Live Feed actions forward to the engine. Without `ENGINE_URL`, the web runs its own feed as it did before the engine. The engine doesn't place orders.
+Today the engine monitors itself and the Dhan account, **owns the live Dhan feed**, keeps the NIFTY universe subscribed at all times, and **journals every raw frame** to disk. With `ENGINE_URL` set, the web never opens Dhan sockets: its quote stream, Live Feed stream and Live Feed actions forward to the engine. Without `ENGINE_URL`, the web runs its own feed as it did before the engine. The engine doesn't place orders.
 
 **Host:** the OCI VM `option-trading-e5` (Ubuntu 24.04, Node 26.13). See [oci-setup.md](oci-setup.md).
 
@@ -70,7 +72,7 @@ All settings come from `.env.local`, which both the engine and the web read.
 | `ENGINE_URL` | none | Where the web reaches the engine: `http://127.0.0.1:3100`. Without it the header dot is grey and the Engine page says "Not configured" |
 | `ENGINE_PORT` | `3100` | Control API port |
 | `ENGINE_HOST` | `127.0.0.1` | Control API address. Keep it on localhost; the web proxies to it |
-| `ENGINE_DATA_DIR` | `data/engine` | Lock file and logs. Git-ignored |
+| `ENGINE_DATA_DIR` | `data/engine` | Lock file, logs and journal. Git-ignored |
 | `ENGINE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `DHAN_CLIENT_ID` | none | Dhan account |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | none | Where the access token saved on the Settings page lives |
@@ -127,7 +129,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://140.245.240.9/v1/status
 | Panel | Shows |
 |---|---|
 | Health | Each component, its state, the reason and when it changed |
-| Dhan feed | Sockets used of 5, each socket's state (with the reason when stopped or reconnecting), instruments, frames and last tick; open tabs, pinned instruments, and whether raw frames are being recorded |
+| Journal | Today's file, its size, frames, events and gaps written by this run, last write, write latency p99, any disk backlog, and the recorded days |
+| Dhan feed | The always-on universe and its size; sockets used of 5, each socket's state (with the reason when stopped or reconnecting), instruments, frames and last tick; open tabs, pinned instruments, and whether raw frames are being recorded |
 | Dhan account | Token source (Redis or `.env.local`) and expiry, Data API plan and its end date, active segments, last profile check, clock offset from Dhan |
 | Market sessions | Each segment: open, pre-open or closed, today's holiday, the next session in IST |
 | Process | Git version, host, pid, Node version, start time, memory, CPU, event-loop delay p99 |
@@ -168,6 +171,7 @@ Each component reports `ok`, `degraded` or `failing`. The overall state is the w
 | Component | Degraded | Failing | Checked |
 |---|---|---|---|
 | `engine` | — | — | Always ok while running |
+| `journal` | The disk is more than 8 MB behind | A write failed (for example disk full) | Every second |
 | `feed` | A socket is reconnecting | A socket stopped (for example a rejected token); it reconnects on its own once a new token is saved | Every second |
 | `api` | — | — | Ok once the control API listens |
 | `token` | Less than 2 hours left, or expiry unreadable | Missing or expired | Every second |
@@ -213,6 +217,8 @@ curl -sN -H "Authorization: Bearer $T" "http://127.0.0.1:3100/v1/telemetry?topic
 | `dhan` | Last profile check: client id, data plan and validity, token validity, active segments. `null` before the first check |
 | `clock` | `offsetMs` (Dhan minus ours), `uncertaintyMs`, `measuredAt`. `null` before the first Dhan call |
 | `sessions` | Per segment: `phase`, `next` session, today's `holiday` |
+| `journal`, `journalDays` | Today's file and counts (see [Journal](#journal)); recorded days with sizes, newest first |
+| `universe` | Name, instrument count and any entries that couldn't be resolved |
 | `process` | `rssBytes`, `heapUsedBytes`, `cpuPercent`, `eventLoopDelayP99Ms` |
 
 ## Telemetry stream
@@ -266,6 +272,26 @@ Each component may log at most 50 lines a second. Extra `debug`, `info` and `war
 
 Histogram buckets run from 0.05 ms to 30 s; percentiles report the bucket's upper bound, capped at the largest value seen. Current metrics: `log.debug`, `log.info`, `log.warn`, `log.error`, `api.clients`, and for the feed `feed.connections`, `feed.live_connections`, `feed.instruments`, `feed.quote_streams` and the `feed.frames` counter.
 
+## Journal
+
+Full explanation: [journal.md](journal.md). In short: every raw WebSocket frame, exactly as Dhan sent it, is appended to `data/engine/journal/<IST date>.bin` before anything parses it. This is the source of truth: if the parser changes, a day can be decoded again, and replays (E4) feed these files through the same code as the live run.
+
+- **One order.** Records are numbered as they arrive, across every socket, so a day has a single sequence. The number restarts at each engine start (marked by an `engine-start` record) and at each new day.
+- **What else is recorded.** Control records, as JSON: `file-open` (engine version and the subscriptions in force, so a day replays on its own), `engine-start`, `engine-stop`, `subscribe` and `unsubscribe` (instrument keys), `state` (connecting, live, reconnecting, stopped), and `gap`.
+- **Gaps.** A socket that drops and reconnects gets a `gap` record from the moment it went down to the moment it was live again. A status tick more than 5 seconds late (process suspended or starved) gets a `gap` with reason `suspend`. Both are logged as warnings.
+- **Restarts.** A restart on the same day appends to that day's file.
+- **Crashes.** At most the last unflushed write is lost; a cut-off last record is detected and skipped when reading.
+- **Format.** [format.ts](../src/engine/journal/format.ts): an 8-byte magic `OTJRNL01`, then records of `length u32 | type u8 | reserved u8 | connection u16 | seq f64 | recvTs f64 | payload`, little-endian. `decodeJournal()` reads a file back.
+- **Size.** About 50 bytes per frame record header plus the frame. Measure a full session before deciding retention; compression and R2 upload come later in E2. The disk has about 90 GB free.
+
+`FEED_CAPTURE` no longer applies to the engine: the journal replaces it.
+
+## Always-on universe
+
+[config/engine/universe.json](../config/engine/universe.json) lists instruments the engine subscribes at start and never releases, so sessions are journaled even with no page open. Pages still add what they show on top. Today: the NIFTY index and its 50 constituents (51 instruments, one socket). NIFTY futures follow once the instrument download includes futures.
+
+Entries are `{ "kind": "index", "index": "NIFTY" }`, `{ "kind": "constituents", "index": "NIFTY" }`, `{ "kind": "instrument", "key": "NSE_EQ:1333" }`, or plain keys in `instruments`. Anything that can't be resolved is logged and shown on the Engine page. Restart the engine after editing it.
+
 ## Session calendar
 
 [config/engine/calendar.json](../config/engine/calendar.json) holds trading hours per segment and exchange holidays; [session-calendar.ts](../src/engine/market/session-calendar.ts) answers questions about it.
@@ -289,6 +315,10 @@ src/engine/
   kernel/clock.ts         live and virtual Clock
   kernel/events.ts        MarketEvent types
   market/session-calendar.ts
+  feed.ts                 the Dhan feed hub inside the engine, wired to the journal and universe
+  journal/                journal format (encode/decode) and writer
+  market/universe.ts      always-on universe from config/engine/universe.json
+  api/feed-routes.ts      quote stream, Live Feed stream and actions
   telemetry/              logger, log file, metrics, health, telemetry hub, process stats, ring buffer
 src/lib/engine/protocol.ts    types shared by engine and web (the web imports only this)
 src/lib/engine/web.ts         web side: reads ENGINE_URL and ENGINE_TOKEN
@@ -297,7 +327,7 @@ src/app/(cockpit)/engine/     Engine page
 src/components/engine/        header dot, Engine page, telemetry hook
 config/engine/                checked-in configuration
 deploy/                       systemd unit
-data/engine/                  runtime files, git-ignored: lock, logs
+data/engine/                  runtime files, git-ignored: lock, logs, journal
 ```
 
 The engine runs TypeScript directly with Node's type stripping: no build step. That brings rules, enforced by `tsconfig.json` and ESLint:
@@ -350,6 +380,8 @@ Tests use `node --test`, inject clocks and sockets, and never call Dhan. The con
 | TLS "internal error" from the IP | `default_sni` missing from `/etc/caddy/Caddyfile` |
 | `token` failing | No token in Redis or `.env.local`, or it expired. Save a new one on the Settings page; the engine picks it up within 30 seconds |
 | `dhan` failing | Dhan rejected the call; the reason is on the Engine page. Usually the token |
+| `journal` failing | A write failed; the reason is on the Engine page. Usually a full disk: `df -h /` |
+| Nothing journaled while the market is open | Check the Dhan feed panel: the Main socket should be live with the universe's instruments. A stopped socket usually means an expired token |
 | `feed` failing | A socket stopped, usually a rejected token. Save a new token on the Settings page: it reconnects within 30 seconds |
 | Local `next dev` still logs `[feed ...] Main: live` | It started before `ENGINE_URL` was set, or kept a hub from before this change. Restart `next dev`; with `ENGINE_URL` set it never opens Dhan sockets |
 | `data-plan` degraded or failing | Renew the Data API plan on web.dhan.co. It ends 2026-12-16 |

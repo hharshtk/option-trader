@@ -93,6 +93,39 @@ export interface SegmentSession {
   holiday: string | null;
 }
 
+export interface JournalStatus {
+  /** IST date of the file being written, or null before the first record. */
+  date: string | null;
+  file: string | null;
+  /** Size of today's file, including what earlier runs wrote. */
+  bytes: number;
+  /** Records written by this engine run today. */
+  frames: number;
+  controls: number;
+  gaps: number;
+  /** Last sequence number written. Restarts at each engine start. */
+  seq: number;
+  lastWriteAt: number | null;
+  /** Data accepted but not yet on disk. */
+  backlogBytes: number;
+  error: string | null;
+  /** The backlog is large: the disk isn't keeping up. */
+  slow: boolean;
+}
+
+export interface JournalDay {
+  date: string;
+  bytes: number;
+}
+
+export interface UniverseStatus {
+  name: string;
+  /** Instruments the engine keeps subscribed whether or not a page shows them. */
+  instruments: number;
+  /** Entries in config/engine/universe.json that couldn't be resolved. */
+  problems: string[];
+}
+
 export interface EngineStatus {
   protocol: number;
   /** Git commit the engine runs, with -dirty for uncommitted changes, or "unknown". */
@@ -109,6 +142,10 @@ export interface EngineStatus {
   dhan: DhanAccountStatus | null;
   clock: ClockStatus | null;
   sessions: SegmentSession[];
+  journal: JournalStatus | null;
+  /** Recorded days, newest first. */
+  journalDays: JournalDay[];
+  universe: UniverseStatus | null;
   process: ProcessStats;
 }
 

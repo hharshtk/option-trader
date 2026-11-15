@@ -38,6 +38,10 @@ export interface HubOptions {
   openSocket?: (url: string) => FeedSocket;
   /** Receives each log line, already prefixed with the connection's name where it applies. */
   print?: (message: string) => void;
+  /** Every raw frame as received, before parsing. The engine journals these. */
+  onFrame?: (connection: number, frame: ArrayBuffer, receivedAt: number) => void;
+  /** Subscribe, unsubscribe, state and log events (not packets, which come from frames). */
+  onEvent?: (event: FeedEventBody, at: number) => void;
 }
 
 function printWithTime(message: string) {
@@ -116,6 +120,8 @@ export function createFeedHub({
   captureDir,
   openSocket,
   print = printWithTime,
+  onFrame,
+  onEvent,
 }: HubOptions) {
   const startedAt = Date.now();
   const connections = new Map<number, Connection>();
@@ -133,6 +139,7 @@ export function createFeedHub({
   let capture: WriteStream | null = null;
 
   function record(event: FeedEventBody, at = Date.now()) {
+    if (onEvent && event.type !== "packet") onEvent(event, at);
     const entry = { ...event, id: nextEventId++, at } as FeedEvent;
     history.push(entry);
     if (history.length > EVENT_HISTORY) history.shift();
@@ -203,6 +210,7 @@ export function createFeedHub({
   function handleFrame(connection: Connection, frame: ArrayBuffer, receivedAt: number) {
     connection.frames += 1;
     connection.bytes += frame.byteLength;
+    onFrame?.(connection.id, frame, receivedAt);
     if (!captureDir) return;
     if (!capture) {
       mkdirSync(captureDir, { recursive: true });

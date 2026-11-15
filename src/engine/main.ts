@@ -7,10 +7,12 @@ import path from "node:path";
 import { PROTOCOL_VERSION, type EngineStatus, type LogLevel, type SegmentSession } from "../lib/engine/protocol.ts";
 import { createControlServer } from "./api/server.ts";
 import { createDhanWatch } from "./dhan-watch.ts";
-import { startFeed, type EngineFeed } from "./feed.ts";
+import { startFeed, subscriptionSnapshot, type EngineFeed } from "./feed.ts";
+import { createJournal } from "./journal/writer.ts";
 import { createLiveClock } from "./kernel/clock.ts";
 import { acquireLock, EngineLockedError } from "./lock.ts";
 import { createSessionCalendar } from "./market/session-calendar.ts";
+import { resolveUniverse } from "./market/universe.ts";
 import { createHealth } from "./telemetry/health.ts";
 import { createTelemetryHub } from "./telemetry/hub.ts";
 import { createLogFile } from "./telemetry/log-file.ts";
@@ -22,6 +24,8 @@ const ROOT = path.resolve(import.meta.dirname, "../..");
 const STATUS_INTERVAL_MS = 1_000;
 const METRICS_INTERVAL_MS = 5_000;
 const DHAN_CHECK_INTERVAL_MS = 15 * 60_000;
+/** A status tick this late means the process was suspended or starved: data is missing. */
+const SUSPEND_THRESHOLD_MS = 5_000;
 
 const config = {
   host: process.env.ENGINE_HOST ?? "127.0.0.1",
@@ -79,6 +83,22 @@ const version = readVersion();
 const sampler = createProcessSampler();
 let processStats = sampler.sample();
 let feed: EngineFeed | null = null;
+const universe = resolveUniverse();
+
+const journalLog = logs.logger("journal");
+const journal = createJournal({
+  directory: path.join(config.dataDir, "journal"),
+  istDate: calendar.istDate,
+  now: clock.now,
+  // Each file starts with who wrote it and what was subscribed, so a replay of that day alone
+  // knows its starting point.
+  onOpen: (date) => {
+    journal.control("file-open", { date, version, subscriptions: subscriptionSnapshot(feed?.hub ?? null) }, clock.now());
+    journalLog.info(`writing ${date}.bin`);
+  },
+  onError: (error) => journalLog.error("journal write failed", { error: error.message }),
+  onWriteLatency: (ms) => metrics.observe("journal.write_ms", ms),
+});
 const dhan = createDhanWatch({
   log: logs.logger("dhan"),
   health,
@@ -116,6 +136,9 @@ function status(): EngineStatus {
     dhan: dhan.account(),
     clock: dhan.clock(),
     sessions: sessions(now),
+    journal: journal.status(),
+    journalDays: journal.days(),
+    universe: { name: universe.name, instruments: universe.instruments.length, problems: universe.problems },
     process: processStats,
   };
 }
@@ -158,19 +181,22 @@ async function start() {
 
   await dhan.ready();
   // After the token is loaded, so the first connection doesn't start out "missing a token".
-  feed = startFeed({
-    log: logs.logger("feed"),
-    health,
-    metrics,
-    telemetry,
-    captureDir: process.env.FEED_CAPTURE === "1" ? path.join(ROOT, "captures", "feed") : undefined,
-  });
+  journal.control("engine-start", { version, pid: process.pid, universe: universe.name }, clock.now());
+  feed = startFeed({ log: logs.logger("feed"), health, metrics, telemetry, journal, universe });
   dhan.tick();
   telemetry.publish("status", status());
   void dhan.check();
 
+  let lastTickAt = clock.now();
   timers.push(
     setInterval(() => {
+      const now = clock.now();
+      if (now - lastTickAt > SUSPEND_THRESHOLD_MS) {
+        journal.control("gap", { reason: "suspend", from: lastTickAt, to: now }, now);
+        log.warn("engine was suspended or starved; gap recorded", { seconds: Math.round((now - lastTickAt) / 1000) });
+      }
+      lastTickAt = now;
+      checkJournal();
       processStats = sampler.sample();
       dhan.tick();
       feed?.tick();
@@ -182,6 +208,15 @@ async function start() {
   );
 }
 
+function checkJournal() {
+  const state = journal.status();
+  metrics.gauge("journal.bytes", state.bytes);
+  metrics.gauge("journal.backlog_bytes", state.backlogBytes);
+  if (state.error) health.set("journal", "failing", `Write error: ${state.error}`);
+  else if (state.slow) health.set("journal", "degraded", `Disk is behind by ${Math.round(state.backlogBytes / 1_048_576)} MB`);
+  else health.set("journal", "ok");
+}
+
 async function stop(reason: string, code = 0) {
   if (stopping) return;
   stopping = true;
@@ -189,6 +224,8 @@ async function stop(reason: string, code = 0) {
   for (const timer of timers) clearInterval(timer);
   sampler.stop();
   feed?.shutdown();
+  journal.control("engine-stop", { reason }, clock.now());
+  await journal.close();
   await server.close();
   releaseLock?.();
   log.info("stopped");
