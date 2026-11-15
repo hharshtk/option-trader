@@ -206,6 +206,7 @@ function FeedPanel({ feed, now, universe }: { feed: FeedHealth | null; now: numb
       {universe && (
         <p className="border-b border-line px-3 py-1.5 text-label text-muted">
           Always on: {universe.name}, {quantity.format(universe.instruments)} instruments
+          {universe.byMode && ` (${Object.entries(universe.byMode).map(([mode, count]) => `${count} ${mode}`).join(", ")})`}
           {universe.problems.length > 0 && <span className="text-warn"> · {universe.problems.length} unresolved</span>}
         </p>
       )}

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { instrumentKey } from "../../lib/live/feed/packets.ts";
-import { resolveUniverse } from "../market/universe.ts";
+import { byMode, resolveUniverse } from "../market/universe.ts";
 import { decodeJournal, encodeRecord, JournalFormatError, MAGIC } from "./format.ts";
 import { createJournal } from "./writer.ts";
 
@@ -121,6 +121,31 @@ test("the default universe is the NIFTY index and its constituents", () => {
   assert.ok(keys.includes("NSE_EQ:1333"), "HDFCBANK");
   assert.equal(keys.length, new Set(keys).size, "no duplicates");
   assert.ok(keys.length >= 50);
+});
+
+test("the default universe streams constituents in quote mode and the index in ticker mode", () => {
+  const universe = resolveUniverse();
+  assert.equal(universe.modes.get("IDX_I:13"), "ticker");
+  assert.equal(universe.modes.get("NSE_EQ:1333"), "quote");
+  const groups = Object.fromEntries(byMode(universe).map(([mode, list]) => [mode, list.length]));
+  assert.equal(groups.ticker, 1);
+  assert.equal(groups.quote, universe.instruments.length - 1);
+});
+
+test("an instrument listed twice gets the richer mode; unknown modes fall back to ticker", () => {
+  const universe = resolveUniverse({
+    version: 1,
+    name: "test",
+    include: [
+      { kind: "instrument", key: "NSE_EQ:1333", mode: "quote" },
+      { kind: "instrument", key: "NSE_EQ:1333" },
+      { kind: "instrument", key: "NSE_EQ:2885", mode: "bogus" as never },
+    ],
+    instruments: [],
+  });
+  assert.equal(universe.modes.get("NSE_EQ:1333"), "quote");
+  assert.equal(universe.modes.get("NSE_EQ:2885"), "ticker");
+  assert.equal(universe.problems.length, 1);
 });
 
 test("universe reports entries it can't resolve", () => {

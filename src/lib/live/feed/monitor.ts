@@ -1,7 +1,7 @@
 // What /api/market/feed sends the Live Feed page. Shared by the server hub and the browser.
 
 import type { FeedState } from "./dhan-feed.ts";
-import type { Packet } from "./packets.ts";
+import type { FeedMode, Packet } from "./packets.ts";
 
 /** Dhan's limits, from dhanhq.co/docs/v2/live-market-feed: 5 WebSockets per account, 5,000 instruments each. */
 export const MAX_CONNECTIONS = 5;
@@ -18,7 +18,8 @@ export interface Quote {
 
 export type FeedEventBody = (
   | { type: "packet"; packet: Packet }
-  | { type: "subscribe" | "unsubscribe"; keys: string[] }
+  | { type: "subscribe"; keys: string[]; mode?: FeedMode }
+  | { type: "unsubscribe"; keys: string[] }
   | { type: "state"; state: FeedState }
   | { type: "log"; message: string }
 ) & {
@@ -47,6 +48,8 @@ export interface FeedInstrument {
   /** Name given when it was added on the Live Feed page. */
   name: string | null;
   connection: number;
+  /** What Dhan streams for it: ticker, quote or full. */
+  mode: FeedMode;
   /** Open browser tabs whose pages show this instrument. */
   tabs: number;
   /** Added on the Live Feed page; stays subscribed until removed there. */

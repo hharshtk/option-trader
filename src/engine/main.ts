@@ -12,7 +12,7 @@ import { createJournal } from "./journal/writer.ts";
 import { createLiveClock } from "./kernel/clock.ts";
 import { acquireLock, EngineLockedError } from "./lock.ts";
 import { createSessionCalendar } from "./market/session-calendar.ts";
-import { resolveUniverse } from "./market/universe.ts";
+import { byMode, resolveUniverse } from "./market/universe.ts";
 import { createHealth } from "./telemetry/health.ts";
 import { createTelemetryHub } from "./telemetry/hub.ts";
 import { createLogFile } from "./telemetry/log-file.ts";
@@ -138,7 +138,12 @@ function status(): EngineStatus {
     sessions: sessions(now),
     journal: journal.status(),
     journalDays: journal.days(),
-    universe: { name: universe.name, instruments: universe.instruments.length, problems: universe.problems },
+    universe: {
+      name: universe.name,
+      instruments: universe.instruments.length,
+      byMode: Object.fromEntries(byMode(universe).map(([mode, list]) => [mode, list.length])),
+      problems: universe.problems,
+    },
     process: processStats,
   };
 }

@@ -122,6 +122,8 @@ export interface UniverseStatus {
   name: string;
   /** Instruments the engine keeps subscribed whether or not a page shows them. */
   instruments: number;
+  /** How many of them per mode, e.g. { ticker: 1, quote: 50 }. */
+  byMode: Record<string, number>;
   /** Entries in config/engine/universe.json that couldn't be resolved. */
   problems: string[];
 }

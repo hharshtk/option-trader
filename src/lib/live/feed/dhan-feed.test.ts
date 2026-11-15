@@ -93,6 +93,55 @@ test("connects on the first subscription and subscribes once the socket opens", 
   assert.deepEqual(JSON.parse(sockets[0].sent[0]).InstrumentList, [{ ExchangeSegment: "IDX_I", SecurityId: "13" }]);
 });
 
+const codes = (socket: FakeSocket) =>
+  socket.sent.map((message) => {
+    const { RequestCode, InstrumentList = [] } = JSON.parse(message);
+    return [RequestCode, InstrumentList.map((i: { SecurityId: string }) => i.SecurityId)];
+  });
+
+test("subscribes each mode with its own request code, on connect and later", () => {
+  const { feed, sockets } = setup();
+  feed.subscribe([NIFTY]);
+  feed.subscribe([{ segment: "NSE_EQ", securityId: "1333" }], "quote");
+  sockets[0].open();
+  assert.deepEqual(codes(sockets[0]), [
+    [15, ["13"]],
+    [17, ["1333"]],
+  ]);
+  feed.subscribe([{ segment: "NSE_FNO", securityId: "52175" }], "full");
+  assert.deepEqual(codes(sockets[0]).at(-1), [21, ["52175"]]);
+  assert.equal(feed.modeOf("NSE_EQ:1333"), "quote");
+});
+
+test("switching an instrument's mode unsubscribes the old mode first", () => {
+  const { feed, sockets } = setup();
+  feed.subscribe([NIFTY]);
+  sockets[0].open();
+  feed.subscribe([NIFTY], "quote");
+  feed.subscribe([NIFTY], "quote");
+  assert.deepEqual(codes(sockets[0]), [
+    [15, ["13"]],
+    [16, ["13"]],
+    [17, ["13"]],
+  ]);
+  feed.unsubscribe([NIFTY]);
+  assert.deepEqual(codes(sockets[0]).at(-1), [18, ["13"]], "unsubscribes with the mode it holds");
+});
+
+test("resubscribes every mode after a reconnect", () => {
+  const { feed, sockets } = setup();
+  feed.subscribe([NIFTY]);
+  feed.subscribe([BANKNIFTY], "quote");
+  sockets[0].open();
+  sockets[0].drop();
+  mock.timers.tick(60_000);
+  sockets[1].open();
+  assert.deepEqual(codes(sockets[1]), [
+    [15, ["13"]],
+    [17, ["25"]],
+  ]);
+});
+
 test("never opens a second socket while one exists", () => {
   const { feed, sockets } = setup();
   feed.subscribe([NIFTY]);

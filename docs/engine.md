@@ -30,7 +30,7 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 |---|---|---|
 | E0 Groundwork | Built | Shared modules run under plain Node; clock, event types, logger, metrics, session calendar |
 | E1 Skeleton and monitoring | Built | `npm run engine`, control API, health checks, Engine page, header status dot |
-| E2 Engine owns Dhan | In progress | Done: the feed runs in the engine and the web forwards to it; always-on journal; always-on NIFTY universe. Next: Quote/Full modes, NIFTY futures in the universe, one REST limiter, daily scrip snapshot |
+| E2 Engine owns Dhan | In progress | Done: the feed runs in the engine and the web forwards to it; always-on journal; always-on NIFTY universe; per-instrument Ticker/Quote/Full modes (constituents stream in Quote mode). Next: journal upload to S3, NIFTY futures in Full mode, one REST limiter, daily scrip snapshot |
 | E3–E7 | Planned | See [engine-plan.md](engine-plan.md#build-steps) |
 
 Today the engine monitors itself and the Dhan account, **owns the live Dhan feed**, keeps the NIFTY universe subscribed at all times, and **journals every raw frame** to disk. With `ENGINE_URL` set, the web never opens Dhan sockets: its quote stream, Live Feed stream and Live Feed actions forward to the engine. Without `ENGINE_URL`, the web runs its own feed as it did before the engine. The engine doesn't place orders.
@@ -288,9 +288,19 @@ Full explanation: [journal.md](journal.md). In short: every raw WebSocket frame,
 
 ## Always-on universe
 
-[config/engine/universe.json](../config/engine/universe.json) lists instruments the engine subscribes at start and never releases, so sessions are journaled even with no page open. Pages still add what they show on top. Today: the NIFTY index and its 50 constituents (51 instruments, one socket). NIFTY futures follow once the instrument download includes futures.
+[config/engine/universe.json](../config/engine/universe.json) lists instruments the engine subscribes at start and never releases, so sessions are journaled even with no page open. Pages still add what they show on top. Today: the NIFTY index in Ticker mode and its 50 constituents in Quote mode (51 instruments, one socket). NIFTY futures follow, in Full mode, once the instrument download includes futures.
 
-Entries are `{ "kind": "index", "index": "NIFTY" }`, `{ "kind": "constituents", "index": "NIFTY" }`, `{ "kind": "instrument", "key": "NSE_EQ:1333" }`, or plain keys in `instruments`. Anything that can't be resolved is logged and shown on the Engine page. Restart the engine after editing it.
+Entries are `{ "kind": "index", "index": "NIFTY" }`, `{ "kind": "constituents", "index": "NIFTY" }`, `{ "kind": "instrument", "key": "NSE_EQ:1333" }`, or plain keys in `instruments` (always Ticker). Each entry takes an optional `"mode"`:
+
+| Mode | Dhan request codes | What Dhan streams | Packet |
+|---|---|---|---|
+| `ticker` (default) | 15 / 16 | Last price and time | 16 bytes |
+| `quote` | 17 / 18 | Adds last traded quantity, average traded price (the exchange's VWAP), volume, total buy and sell quantity, day open, high, low and (after the close) close | 50 bytes |
+| `full` | 21 / 22 | Adds open interest and five levels of market depth | 162 bytes |
+
+Indices carry no volume, so Ticker is enough for them. An instrument listed twice gets the richer mode. In the hub an instrument keeps the richest mode anyone asked for: a page asking for Ticker never downgrades a universe instrument in Quote. Switching a mode unsubscribes the old one first, since Dhan doesn't document what a second subscription in a different mode does.
+
+**Known effect:** in Quote mode Dhan doesn't send the previous-close packet (checked 15 November 2026), so the Live Feed page shows no change % for the 50 constituents. The header, Overview and Market Watch show change % for indices only, which stay in Ticker mode and are unaffected. Anything that can't be resolved is logged and shown on the Engine page. Restart the engine after editing it.
 
 ## Session calendar
 

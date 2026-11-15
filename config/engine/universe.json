@@ -1,10 +1,18 @@
 {
   "version": 1,
   "name": "Tier 1: NIFTY",
-  "note": "Instruments the engine keeps subscribed at all times, whether or not a page shows them, so every session is journaled. NIFTY futures follow once the instrument download includes futures.",
+  "note": "Instruments the engine keeps subscribed at all times, whether or not a page shows them, so every session is journaled. mode: ticker (last price), quote (adds volume, VWAP, day OHLC, buy/sell quantity) or full (adds OI and depth). Indices carry no volume, so ticker is enough for them. NIFTY futures follow once the instrument download includes futures.",
   "include": [
-    { "kind": "index", "index": "NIFTY" },
-    { "kind": "constituents", "index": "NIFTY" }
+    {
+      "kind": "index",
+      "index": "NIFTY",
+      "mode": "ticker"
+    },
+    {
+      "kind": "constituents",
+      "index": "NIFTY",
+      "mode": "quote"
+    }
   ],
   "instruments": []
 }

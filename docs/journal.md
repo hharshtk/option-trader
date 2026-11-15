@@ -39,7 +39,7 @@ Dhan's history API keeps candles, not ticks. A session not recorded on the day i
 
 Two kinds of records, interleaved in arrival order.
 
-**Frames.** Each WebSocket message from Dhan, unchanged. A frame holds a binary packet: a ticker (last price), a previous close, a quote, OI, market depth and so on, depending on the subscription mode. Today the feed uses ticker mode, so frames are 16-byte ticker and previous-close packets. When Quote and Full modes arrive (next in E2), the same journal records their larger packets with no change.
+**Frames.** Each WebSocket message from Dhan, unchanged. A frame holds a binary packet: a ticker (last price), a previous close, a quote, OI, market depth and so on, depending on the subscription mode. Today the NIFTY index streams in Ticker mode (16-byte packets) and its 50 constituents in Quote mode (50-byte packets with volume, VWAP, last traded quantity, buy/sell quantity and day OHLC). Full mode (162 bytes, adding OI and depth) is recorded the same way when used.
 
 **Control records**, as small JSON objects:
 
@@ -48,7 +48,7 @@ Two kinds of records, interleaved in arrival order.
 | `file-open` | A new day's file is opened (engine start, or the first record after midnight IST) | The engine's version and every subscription in force, so a day replays on its own |
 | `engine-start` | The engine starts | Version, pid, universe name |
 | `engine-stop` | The engine stops cleanly | The reason (SIGINT, SIGTERM, crash) |
-| `subscribe` / `unsubscribe` | Instruments are added to or removed from a socket | The instrument keys and the socket |
+| `subscribe` / `unsubscribe` | Instruments are added to or removed from a socket | The instrument keys, the socket, and for `subscribe` the mode (`ticker`, `quote`, `full`) |
 | `state` | A socket changes state | `connecting`, `live`, `reconnecting` (with the reason), `stopped` (with the reason), `idle` |
 | `gap` | Data is known to be missing | `reason` (`reconnect` or `suspend`), `from` and `to` times |
 
@@ -86,7 +86,8 @@ seq …  control  subscribe     keys from a browser tab (Market Watch) on socket
 | Checking the engine's 1-minute bars against Dhan's candles | E3 |
 | **Replay:** a recorded day through the same engine code, on a virtual clock, at chosen speed, watchable on the web like live | E4 |
 | **Golden-file tests:** replaying a recorded day must produce exactly the bars the live run built, after every code change | E4 |
-| Tick-level strategy tests and paper trading on recorded days, with fills against recorded bid/ask | E6–E7 (needs Quote/Full mode recordings) |
+| Volume, VWAP and buy/sell pressure for the constituents, from the Quote packets | E3 onwards (recorded from 16 November 2026) |
+| Tick-level strategy tests and paper trading on recorded days, with fills against recorded bid/ask | E6–E7 (bid/ask needs Full mode recordings of the traded contracts) |
 | Measuring how far candle-only backtests are off, by comparing them with a replay of the same day | E5 |
 
 ## What it doesn't do yet
@@ -97,7 +98,7 @@ seq …  control  subscribe     keys from a browser tab (Market Watch) on socket
 | Compression | With the upload. Raw frames compress well |
 | Retention | Decide after measuring a full session. Nothing is deleted today |
 | Replay | E4 |
-| Quote and Full mode data (volume, VWAP, OI, bid/ask) | Next in E2. Today's recordings hold last price and previous close only |
+| OI and bid/ask (Full mode) | With NIFTY futures in the universe, next in E2 |
 
 ## Where to see it
 
@@ -147,9 +148,9 @@ To turn frames back into packets, pass `record.frame` to the feed parser in [pac
 
 ## Size
 
-Measured on 15 November 2026 (ticker mode): every frame was 16 bytes, so 40 bytes per record on disk.
+Measured on 15 November 2026: a Ticker frame is 16 bytes (40 bytes on disk with the 24-byte record header); a Quote frame is 50 bytes (74 on disk). Full frames will be 162 bytes (186 on disk).
 
-Rough estimate for a full session, to be replaced by Monday's real number: the 51-instrument universe ticking about once a second each for 6¼ hours is around 1.1 million records, about 45 MB a day in ticker mode. Quote mode (50-byte packets) and Full mode (162-byte packets) will make it several times larger. The disk has about 90 GB free.
+Rough estimate for a full session, to be replaced by Monday's real number: the 50 constituents updating about once a second each for 6¼ hours is around 1.1 million Quote records, about 80 MB a day. The disk has about 90 GB free.
 
 ## When something goes wrong
 

@@ -2,10 +2,25 @@ import {
   instrumentKey,
   parseFrame,
   REQUEST_CODE,
+  SUBSCRIBE_CODE,
   subscriptionMessages,
+  UNSUBSCRIBE_CODE,
+  type FeedMode,
   type Instrument,
   type Packet,
 } from "./packets.ts";
+
+interface Subscription {
+  instrument: Instrument;
+  mode: FeedMode;
+}
+
+/** One subscribe (or unsubscribe) message set per mode, with that mode's request code. */
+function messagesByMode(subscriptions: Iterable<Subscription>, codes: Record<FeedMode, number>): string[] {
+  const groups = new Map<FeedMode, Instrument[]>();
+  for (const { instrument, mode } of subscriptions) groups.set(mode, [...(groups.get(mode) ?? []), instrument]);
+  return [...groups].flatMap(([mode, instruments]) => subscriptionMessages(codes[mode], instruments));
+}
 
 export type FeedState =
   | { state: "idle" }
@@ -57,7 +72,7 @@ export function createDhanFeed({
   openSocket = (url) => new WebSocket(url) as unknown as FeedSocket,
   random = Math.random,
 }: FeedOptions) {
-  const subscribed = new Map<string, Instrument>();
+  const subscribed = new Map<string, Subscription>();
   let socket: FeedSocket | null = null;
   let state: FeedState = { state: "idle" };
   let attempt = 0;
@@ -105,7 +120,7 @@ export function createDhanFeed({
       attempt = 0;
       failedHandshakes = 0;
       setState({ state: "live", since: Date.now() });
-      send(subscriptionMessages(REQUEST_CODE.subscribeTicker, [...subscribed.values()]));
+      send(messagesByMode(subscribed.values(), SUBSCRIBE_CODE));
     });
 
     ws.addEventListener("message", (event: MessageEvent) => {
@@ -169,20 +184,43 @@ export function createDhanFeed({
   }
 
   return {
-    subscribe(instruments: Instrument[]) {
-      const added = instruments.filter((instrument) => !subscribed.has(instrumentKey(instrument)));
-      for (const instrument of added) subscribed.set(instrumentKey(instrument), instrument);
+    /**
+     * Subscribes instruments in a mode. An instrument already subscribed in another mode is
+     * switched: unsubscribed from the old mode first, since Dhan doesn't document what a
+     * second subscription in a different mode does.
+     */
+    subscribe(instruments: Instrument[], mode: FeedMode = "ticker") {
+      const added: Subscription[] = [];
+      const switched: Subscription[] = [];
+      for (const instrument of instruments) {
+        const key = instrumentKey(instrument);
+        const existing = subscribed.get(key);
+        if (existing?.mode === mode) continue;
+        if (existing) switched.push(existing);
+        const subscription = { instrument, mode };
+        subscribed.set(key, subscription);
+        added.push(subscription);
+      }
       clearTimeout(idleTimer);
       idleTimer = undefined;
 
       if (state.state === "stopped" || retryTimer) return;
-      if (socket) send(subscriptionMessages(REQUEST_CODE.subscribeTicker, added));
-      else connect();
+      if (socket) {
+        send(messagesByMode(switched, UNSUBSCRIBE_CODE));
+        send(messagesByMode(added, SUBSCRIBE_CODE));
+      } else connect();
     },
 
     unsubscribe(instruments: Instrument[]) {
-      const removed = instruments.filter((instrument) => subscribed.delete(instrumentKey(instrument)));
-      send(subscriptionMessages(REQUEST_CODE.unsubscribeTicker, removed));
+      const removed: Subscription[] = [];
+      for (const instrument of instruments) {
+        const key = instrumentKey(instrument);
+        const existing = subscribed.get(key);
+        if (!existing) continue;
+        subscribed.delete(key);
+        removed.push(existing);
+      }
+      send(messagesByMode(removed, UNSUBSCRIBE_CODE));
       if (subscribed.size === 0 && !idleTimer) {
         idleTimer = setTimeout(() => {
           idleTimer = undefined;
@@ -218,6 +256,7 @@ export function createDhanFeed({
 
     getState: () => state,
     subscriptionCount: () => subscribed.size,
+    modeOf: (key: string): FeedMode | null => subscribed.get(key)?.mode ?? null,
   };
 }
 

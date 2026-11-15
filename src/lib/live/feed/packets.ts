@@ -29,11 +29,38 @@ const SEGMENT_BY_CODE = new Map(
   Object.entries(SEGMENT_CODES).map(([segment, code]) => [code, segment as Segment]),
 );
 
+// From Dhan's Annexure (Feed Request Codes).
 export const REQUEST_CODE = {
   disconnect: 12,
   subscribeTicker: 15,
   unsubscribeTicker: 16,
+  subscribeQuote: 17,
+  unsubscribeQuote: 18,
+  subscribeFull: 21,
+  unsubscribeFull: 22,
 } as const;
+
+/**
+ * What Dhan streams for an instrument. Ticker: last price and time. Quote: adds volume, average
+ * traded price (VWAP), last traded quantity, total buy/sell quantity and day OHLC. Full: adds
+ * open interest and five levels of market depth.
+ */
+export type FeedMode = "ticker" | "quote" | "full";
+export const MODE_RANK: Record<FeedMode, number> = { ticker: 0, quote: 1, full: 2 };
+export const SUBSCRIBE_CODE: Record<FeedMode, number> = {
+  ticker: REQUEST_CODE.subscribeTicker,
+  quote: REQUEST_CODE.subscribeQuote,
+  full: REQUEST_CODE.subscribeFull,
+};
+export const UNSUBSCRIBE_CODE: Record<FeedMode, number> = {
+  ticker: REQUEST_CODE.unsubscribeTicker,
+  quote: REQUEST_CODE.unsubscribeQuote,
+  full: REQUEST_CODE.unsubscribeFull,
+};
+
+export function isFeedMode(value: unknown): value is FeedMode {
+  return value === "ticker" || value === "quote" || value === "full";
+}
 
 export const MAX_INSTRUMENTS_PER_MESSAGE = 100;
 
@@ -80,9 +107,18 @@ export type Packet =
       code: number;
       key: string;
       ltp: number;
+      /** Last traded quantity. */
+      ltq: number;
       ltt: number;
+      /** Average traded price for the day: the exchange's VWAP. */
+      atp: number;
       volume: number;
+      totalSellQty: number;
+      totalBuyQty: number;
+      /** Open interest (Full packets only). */
+      oi?: number;
       open: number;
+      /** Day close; Dhan sends it only after the market closes. */
       close: number;
       high: number;
       low: number;
@@ -126,6 +162,7 @@ function readPacket(view: DataView, at: number, code: number, size: number): Pac
 
   const f32 = (offset: number) => view.getFloat32(at + offset, true);
   const i32 = (offset: number) => view.getInt32(at + offset, true);
+  const i16 = (offset: number) => view.getInt16(at + offset, true);
 
   switch (code) {
     case 1:
@@ -137,8 +174,12 @@ function readPacket(view: DataView, at: number, code: number, size: number): Pac
         code,
         key,
         ltp: f32(8),
+        ltq: i16(12),
         ltt: i32(14),
+        atp: f32(18),
         volume: i32(22),
+        totalSellQty: i32(26),
+        totalBuyQty: i32(30),
         open: f32(34),
         close: f32(38),
         high: f32(42),
@@ -154,8 +195,13 @@ function readPacket(view: DataView, at: number, code: number, size: number): Pac
         code,
         key,
         ltp: f32(8),
+        ltq: i16(12),
         ltt: i32(14),
+        atp: f32(18),
         volume: i32(22),
+        totalSellQty: i32(26),
+        totalBuyQty: i32(30),
+        oi: i32(34),
         open: f32(46),
         close: f32(50),
         high: f32(54),

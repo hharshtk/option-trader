@@ -7,7 +7,7 @@ import { getDhanCredentials, getTokenStore } from "../lib/dhan/config.ts";
 import { createFeedHub, type FeedHub } from "../lib/live/feed/feed-hub.ts";
 import type { FeedEventBody, FeedHealth } from "../lib/live/feed/monitor.ts";
 import type { Journal } from "./journal/writer.ts";
-import type { Universe } from "./market/universe.ts";
+import { byMode, type Universe } from "./market/universe.ts";
 import type { Health } from "./telemetry/health.ts";
 import type { TelemetryHub } from "./telemetry/hub.ts";
 import type { Logger } from "./telemetry/logger.ts";
@@ -66,9 +66,10 @@ export function startFeed({
     onEvent,
   });
 
-  if (universe.instruments.length > 0) {
-    hub.acquire(universe.instruments);
-    log.info(`universe "${universe.name}" subscribed`, { instruments: universe.instruments.length });
+  // Held like a tab that never closes, each group in its own mode.
+  for (const [mode, instruments] of byMode(universe)) {
+    hub.acquire(instruments, mode);
+    log.info(`universe "${universe.name}": ${instruments.length} instruments in ${mode} mode`);
   }
   for (const problem of universe.problems) log.warn(`universe: ${problem}`);
 

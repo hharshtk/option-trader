@@ -14,7 +14,7 @@ import {
   type MonitorSnapshot,
   type Quote,
 } from "./monitor.ts";
-import { instrumentKey, parseInstrumentKey, type Instrument, type Packet } from "./packets.ts";
+import { instrumentKey, MODE_RANK, parseInstrumentKey, type FeedMode, type Instrument, type Packet } from "./packets.ts";
 
 // The live feed runs inside the Next server. Dhan allows 5 WebSockets per account with 5,000
 // instruments each. Connection 1, "Main", carries whatever app pages show; the Live Feed page
@@ -75,6 +75,8 @@ interface Connection {
 interface Line {
   instrument: Instrument;
   connection: Connection;
+  /** The richest mode anyone asked for. Never downgraded while subscribed. */
+  mode: FeedMode;
   name: string | null;
   tabs: number;
   pinned: boolean;
@@ -267,10 +269,17 @@ export function createFeedHub({
     return lines.get(key)?.name ?? key;
   }
 
-  function subscribe(connection: Connection, instruments: Instrument[]) {
+  function subscribe(connection: Connection, instruments: Instrument[], mode: FeedMode = "ticker") {
     if (instruments.length === 0) return;
-    record({ type: "subscribe", keys: instruments.map(instrumentKey), connection: connection.id });
-    connection.feed.subscribe(instruments);
+    record({ type: "subscribe", keys: instruments.map(instrumentKey), mode, connection: connection.id });
+    connection.feed.subscribe(instruments, mode);
+  }
+
+  /** Subscribes lines on a connection, one call per mode. */
+  function subscribeLines(connection: Connection, moving: Line[]) {
+    const byMode = new Map<FeedMode, Instrument[]>();
+    for (const line of moving) byMode.set(line.mode, [...(byMode.get(line.mode) ?? []), line.instrument]);
+    for (const [mode, instruments] of byMode) subscribe(connection, instruments, mode);
   }
 
   const wanted = (line: Line) => line.tabs > 0 || line.pinned;
@@ -318,9 +327,13 @@ export function createFeedHub({
     }
   }
 
-  /** A browser tab started showing these instruments. New ones go on Main. */
-  function acquire(instruments: Instrument[]) {
+  /**
+   * A browser tab (or the engine's always-on universe) started showing these instruments, in
+   * `mode`. New ones go on Main. One already subscribed in a poorer mode is upgraded.
+   */
+  function acquire(instruments: Instrument[], mode: FeedMode = "ticker") {
     const added: Instrument[] = [];
+    const upgraded: Line[] = [];
     let onMain = countOn(main);
     for (const instrument of instruments) {
       const key = instrumentKey(instrument);
@@ -328,17 +341,24 @@ export function createFeedHub({
       if (line) {
         cancelRelease(line);
         line.tabs += 1;
+        if (MODE_RANK[mode] > MODE_RANK[line.mode]) {
+          line.mode = mode;
+          upgraded.push(line);
+        }
         continue;
       }
       if (onMain >= MAX_INSTRUMENTS_PER_CONNECTION) {
         log(`full (${MAX_INSTRUMENTS_PER_CONNECTION} instruments); not subscribing ${key}`, main);
         continue;
       }
-      lines.set(key, { instrument, connection: main, name: null, tabs: 1, pinned: false, releaseAt: null });
+      lines.set(key, { instrument, connection: main, mode, name: null, tabs: 1, pinned: false, releaseAt: null });
       onMain += 1;
       added.push(instrument);
     }
-    subscribe(main, added);
+    subscribe(main, added, mode);
+    const upgradedByConnection = new Map<Connection, Line[]>();
+    for (const line of upgraded) upgradedByConnection.set(line.connection, [...(upgradedByConnection.get(line.connection) ?? []), line]);
+    for (const [connection, moving] of upgradedByConnection) subscribeLines(connection, moving);
     retryStopped();
   }
 
@@ -391,7 +411,7 @@ export function createFeedHub({
       return fail(`${target.name} already has ${MAX_INSTRUMENTS_PER_CONNECTION} instruments, Dhan's limit per connection.`);
     }
 
-    lines.set(key, { instrument, connection: target, name, tabs: 0, pinned: true, releaseAt: null });
+    lines.set(key, { instrument, connection: target, mode: "ticker", name, tabs: 0, pinned: true, releaseAt: null });
     subscribe(target, [instrument]);
     retryStopped();
     return ok(`Added ${name ?? key} to ${target.name}.`);
@@ -415,7 +435,7 @@ export function createFeedHub({
     const connection = connections.get(id);
     if (!connection) return fail("That connection is already closed.");
 
-    const moved: Instrument[] = [];
+    const moved: Line[] = [];
     const removed: string[] = [];
     for (const [key, line] of lines) {
       if (line.connection !== connection) continue;
@@ -423,7 +443,7 @@ export function createFeedHub({
       if (line.tabs > 0) {
         line.connection = main;
         line.pinned = false;
-        moved.push(line.instrument);
+        moved.push(line);
       } else {
         lines.delete(key);
         quotes.delete(key);
@@ -436,7 +456,7 @@ export function createFeedHub({
     if (removed.length > 0) record({ type: "unsubscribe", keys: removed, connection: id });
     connection.feed.shutdown();
     log("closed from the Live Feed page", connection);
-    subscribe(main, moved);
+    subscribeLines(main, moved);
     return ok(
       `Closed ${connection.name}.` +
         (moved.length > 0 ? ` ${plural(moved.length, "instrument")} that open pages show moved to Main.` : ""),
@@ -466,6 +486,7 @@ export function createFeedHub({
         key,
         name: line.name,
         connection: line.connection.id,
+        mode: line.mode,
         tabs: line.tabs,
         pinned: line.pinned,
         releaseAt: line.releaseAt,

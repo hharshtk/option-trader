@@ -100,6 +100,45 @@ test("app pages subscribe on Main and release after the grace period", () => {
   );
 });
 
+test("acquiring in a richer mode upgrades the instrument; a poorer mode never downgrades it", () => {
+  const { hub, sockets } = setup();
+  hub.acquire([NIFTY]);
+  sockets[0].open();
+  hub.acquire([NIFTY, BANKNIFTY], "quote");
+  hub.acquire([NIFTY]);
+  assert.deepEqual(sockets[0].requests(), [
+    [15, ["IDX_I:13"]],
+    [17, ["IDX_I:25"]],
+    [16, ["IDX_I:13"]],
+    [17, ["IDX_I:13"]],
+  ]);
+  assert.deepEqual(
+    hub.health().instruments.map(({ key, mode, tabs }) => [key, mode, tabs]),
+    [
+      ["IDX_I:13", "quote", 3],
+      ["IDX_I:25", "quote", 1],
+    ],
+  );
+});
+
+test("subscribe events carry the mode, for the journal", () => {
+  const events: unknown[] = [];
+  const sockets: FakeSocket[] = [];
+  hub = createFeedHub({
+    readCredentials: () => ({ clientId: "1100000000", accessToken: "token" }),
+    currentToken: () => "token",
+    print: () => {},
+    openSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    onEvent: (event) => events.push(event),
+  });
+  hub.acquire([BANKNIFTY], "quote");
+  assert.ok(events.some((e) => JSON.stringify(e) === JSON.stringify({ type: "subscribe", keys: ["IDX_I:25"], mode: "quote", connection: 1 })));
+});
+
 test("a tab coming back within the grace period keeps the subscription", () => {
   const { hub, sockets } = setup();
   hub.acquire([NIFTY]);
