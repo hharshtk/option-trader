@@ -1,4 +1,3 @@
-import "server-only";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";

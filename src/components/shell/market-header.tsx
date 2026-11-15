@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
+import { EngineStatus } from "@/components/engine/engine-status";
 import { LogoMark } from "@/components/icons";
 import { LiveChange, LivePrice } from "@/components/live/live-quote";
 import {
@@ -44,6 +45,7 @@ async function HeaderStatus() {
         clientId={clientId}
         error={profile.ok ? null : profile.error.message}
       />
+      <EngineStatus />
       <div className="flex min-w-0 items-center gap-4 overflow-x-auto [scrollbar-width:none]">
         {HEADLINE_INDICES.map(({ key, name }) => {
           const value = quotes.status === "ok" ? quotes.prices[key] : undefined;

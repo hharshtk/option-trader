@@ -1,4 +1,4 @@
-import { RATE_LIMIT_COOLDOWN_MS } from "./rate-limit";
+import { RATE_LIMIT_COOLDOWN_MS } from "./rate-limit.ts";
 
 const AUTH_ERROR_CODES = new Set(["DH-901", "807", "808", "809", "810"]);
 const RATE_LIMIT_ERROR_CODES = new Set(["DH-904", "805"]);

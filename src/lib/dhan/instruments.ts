@@ -1,4 +1,4 @@
-import type { Underlying } from "./types";
+import type { Underlying } from "./types.ts";
 
 // Security IDs from Dhan's instrument master (images.dhan.co/api-data/api-scrip-master.csv).
 export const INDEX = {

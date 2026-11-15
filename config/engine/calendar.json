@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "timezone": "Asia/Kolkata",
+  "utcOffsetMinutes": 330,
+  "coveredYears": [2026],
+  "segments": {
+    "IDX_I": { "exchange": "NSE", "open": "09:15", "close": "15:30" },
+    "NSE_EQ": { "exchange": "NSE", "open": "09:15", "close": "15:30", "preOpen": { "start": "09:00", "end": "09:08" } },
+    "NSE_FNO": { "exchange": "NSE", "open": "09:15", "close": "15:30" }
+  },
+  "holidays": {
+    "NSE": [
+      { "date": "2026-01-15", "name": "Municipal Corporation elections in Maharashtra (added by NSE circular of 12 Jan 2026)" },
+      { "date": "2026-01-26", "name": "Republic Day" },
+      { "date": "2026-03-03", "name": "Holi" },
+      { "date": "2026-03-26", "name": "Shri Ram Navami" },
+      { "date": "2026-03-31", "name": "Shri Mahavir Jayanti" },
+      { "date": "2026-04-03", "name": "Good Friday" },
+      { "date": "2026-04-14", "name": "Dr. Baba Saheb Ambedkar Jayanti" },
+      { "date": "2026-05-01", "name": "Maharashtra Day" },
+      { "date": "2026-05-28", "name": "Bakri Id" },
+      { "date": "2026-06-26", "name": "Muharram" },
+      { "date": "2026-09-14", "name": "Ganesh Chaturthi" },
+      { "date": "2026-10-02", "name": "Mahatma Gandhi Jayanti" },
+      { "date": "2026-10-20", "name": "Dussehra" },
+      { "date": "2026-11-10", "name": "Diwali Balipratipada" },
+      { "date": "2026-11-24", "name": "Prakash Gurpurb Sri Guru Nanak Dev" },
+      { "date": "2026-12-25", "name": "Christmas" }
+    ]
+  },
+  "specialSessions": [
+    {
+      "date": "2026-11-08",
+      "name": "Muhurat trading (Diwali Laxmi Pujan)",
+      "exchange": "NSE",
+      "open": null,
+      "close": null,
+      "note": "Timings come from a separate NSE circular. Fill in open and close to trade it; until then it is treated as closed."
+    }
+  ],
+  "sources": [
+    "NSE circular NSE/CMTR/71775 (12 Dec 2025): 2026 trading holidays",
+    "NSE circular of 12 Jan 2026: trading holiday on 15 Jan 2026"
+  ]
+}

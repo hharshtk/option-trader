@@ -1,12 +1,11 @@
-import "server-only";
-import { loadDhanCredentials } from "./config";
-import { DhanApiError } from "./errors";
+import { loadDhanCredentials } from "./config.ts";
+import { DhanApiError } from "./errors.ts";
 import {
   bucketFor,
   dhanRateLimiter,
   RATE_LIMIT_COOLDOWN_MS,
   type RateLimitBucket,
-} from "./rate-limit";
+} from "./rate-limit.ts";
 
 const BASE_URL = "https://api.dhan.co/v2";
 const TIMEOUT_MS = 10_000;
@@ -64,6 +63,7 @@ async function send<T>(method: HttpMethod, path: string, body: unknown): Promise
   await waitForSlot(bucketFor(method, path));
 
   let response: Response;
+  const sentAt = Date.now();
   try {
     response = await fetch(`${BASE_URL}${path}`, {
       method,
@@ -84,6 +84,7 @@ async function send<T>(method: HttpMethod, path: string, body: unknown): Promise
     throw new DhanApiError(`Could not reach Dhan (${reason})`, { status: 0, cause });
   }
 
+  recordServerTime(response.headers.get("date"), sentAt, Date.now());
   const text = await response.text();
   const payload = parseJson(text);
   const failure = readFailure(payload);
@@ -99,6 +100,38 @@ async function send<T>(method: HttpMethod, path: string, body: unknown): Promise
   }
 
   return payload as T;
+}
+
+export interface ServerClockSample {
+  /** Dhan's clock minus ours. Positive: ours is behind. */
+  offsetMs: number;
+  /** The estimate is within ± this. */
+  uncertaintyMs: number;
+  measuredAt: number;
+}
+
+const clockStore = globalThis as typeof globalThis & { __dhanServerClock?: ServerClockSample };
+
+/** The latest clock-offset estimate from a Dhan REST response, or null before the first call. */
+export function dhanServerClock(): ServerClockSample | null {
+  return clockStore.__dhanServerClock ?? null;
+}
+
+// The Date header has 1 s resolution: Dhan's true time is in [date, date + 1 s) somewhere
+// between sending and receiving. Taking the middle of both ranges bounds the error.
+function recordServerTime(header: string | null, sentAt: number, receivedAt: number) {
+  const date = header ? Date.parse(header) : Number.NaN;
+  if (Number.isNaN(date)) return;
+  const roundTrip = receivedAt - sentAt;
+  const sample: ServerClockSample = {
+    offsetMs: Math.round(date + 500 - (sentAt + receivedAt) / 2),
+    uncertaintyMs: Math.round(500 + roundTrip / 2),
+    measuredAt: receivedAt,
+  };
+  // Keep the tighter of two recent samples; a slow response says less about the clock.
+  const previous = clockStore.__dhanServerClock;
+  if (previous && receivedAt - previous.measuredAt < 60_000 && previous.uncertaintyMs < sample.uncertaintyMs) return;
+  clockStore.__dhanServerClock = sample;
 }
 
 async function waitForSlot(bucket: RateLimitBucket) {

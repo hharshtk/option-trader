@@ -1,5 +1,4 @@
-import "server-only";
-import { dhanRequest } from "./client";
+import { dhanRequest } from "./client.ts";
 import type {
   DhanFundLimit,
   DhanHolding,
@@ -12,7 +11,7 @@ import type {
   LtpData,
   OptionChain,
   Underlying,
-} from "./types";
+} from "./types.ts";
 
 interface DataEnvelope<T> {
   data: T;

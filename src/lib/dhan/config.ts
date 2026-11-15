@@ -1,5 +1,4 @@
-import "server-only";
-import { DhanConfigError } from "./errors";
+import { DhanConfigError } from "./errors.ts";
 import { createTokenStore, type TokenStore } from "./token-store.ts";
 
 export interface DhanCredentials {

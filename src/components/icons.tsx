@@ -127,6 +127,16 @@ export function LiveFeedIcon(props: IconProps) {
   );
 }
 
+export function EngineIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="6.5" y="6.5" width="11" height="11" rx="1.5" />
+      <rect x="9.5" y="9.5" width="5" height="5" rx="0.5" />
+      <path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3" />
+    </Icon>
+  );
+}
+
 export function InstrumentsIcon(props: IconProps) {
   return (
     <Icon {...props}>

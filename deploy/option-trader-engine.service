@@ -1,0 +1,28 @@
+# systemd unit for the engine. Install:
+#   sudo cp deploy/option-trader-engine.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now option-trader-engine
+# Logs: journalctl -u option-trader-engine -f   (also data/engine/logs/ and the web's Engine page)
+# Stop any engine started by hand first: the lock file allows only one.
+
+[Unit]
+Description=option-trader engine
+After=network-online.target
+Wants=network-online.target
+# Give up after 5 failed starts in a minute (for example a bad ENGINE_TOKEN) instead of looping.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/option-trader
+ExecStart=/usr/bin/node --env-file-if-exists=.env.local src/engine/main.ts
+# The engine closes its sockets and releases its lock on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

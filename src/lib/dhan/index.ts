@@ -1,3 +1,4 @@
+import "server-only";
 export * from "./api";
 export { dhanRequest } from "./client";
 export { getAccessTokenExpiry, getDhanCredentials } from "./config";

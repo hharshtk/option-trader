@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ComponentType } from "react";
 import {
   ActivityIcon,
+  EngineIcon,
   FundsIcon,
   HoldingsIcon,
   InstrumentsIcon,
@@ -45,6 +46,7 @@ const NAV: NavItem[][] = [
   ],
   [
     { href: "/activity", label: "Activity", icon: ActivityIcon, built: false },
+    { href: "/engine", label: "Engine", icon: EngineIcon, built: true },
     { href: "/live-feed", label: "Live Feed", icon: LiveFeedIcon, built: true },
     { href: "/instruments", label: "Instruments", icon: InstrumentsIcon, built: true },
     { href: "/settings", label: "Settings", icon: SettingsIcon, built: true },
