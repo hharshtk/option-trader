@@ -25,7 +25,18 @@ export interface DhanWatch {
   clock(): ClockStatus | null;
 }
 
-export function createDhanWatch({ log, health, now }: { log: Logger; health: Health; now: () => number }): DhanWatch {
+export function createDhanWatch({
+  log,
+  health,
+  now,
+  onTokenChange,
+}: {
+  log: Logger;
+  health: Health;
+  now: () => number;
+  /** Called when the token in Redis or .env.local changes, e.g. to reconnect stopped sockets. */
+  onTokenChange?: () => void;
+}): DhanWatch {
   let account: DhanAccountStatus | null = null;
   let lastToken: string | undefined;
   const store = getTokenStore();
@@ -39,8 +50,12 @@ export function createDhanWatch({ log, health, now }: { log: Logger; health: Hea
   function checkToken() {
     const token = store.current();
     if (token !== lastToken) {
-      if (lastToken !== undefined) log.info("access token changed", { source: store.source() });
+      const changed = lastToken !== undefined;
       lastToken = token;
+      if (changed) {
+        log.info("access token changed", { source: store.source() });
+        onTokenChange?.();
+      }
     }
     const { expiresAt } = tokenStatus();
     if (!token) return health.set("token", "failing", "No access token. Save one on the Settings page.");

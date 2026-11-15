@@ -1,5 +1,5 @@
-// The engine process: `npm run engine`. In E1 it monitors itself and the Dhan account and
-// reports everything to the web; later steps add the feed, journal and runs.
+// The engine process: `npm run engine`. It monitors itself and the Dhan account, owns the live
+// Dhan feed, and reports everything to the web. Later steps add the journal and runs.
 
 import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
@@ -7,6 +7,7 @@ import path from "node:path";
 import { PROTOCOL_VERSION, type EngineStatus, type LogLevel, type SegmentSession } from "../lib/engine/protocol.ts";
 import { createControlServer } from "./api/server.ts";
 import { createDhanWatch } from "./dhan-watch.ts";
+import { startFeed, type EngineFeed } from "./feed.ts";
 import { createLiveClock } from "./kernel/clock.ts";
 import { acquireLock, EngineLockedError } from "./lock.ts";
 import { createSessionCalendar } from "./market/session-calendar.ts";
@@ -77,7 +78,14 @@ try {
 const version = readVersion();
 const sampler = createProcessSampler();
 let processStats = sampler.sample();
-const dhan = createDhanWatch({ log: logs.logger("dhan"), health, now: clock.now });
+let feed: EngineFeed | null = null;
+const dhan = createDhanWatch({
+  log: logs.logger("dhan"),
+  health,
+  now: clock.now,
+  // A socket stopped by a rejected token reconnects as soon as a new token is saved.
+  onTokenChange: () => feed?.hub.retryStopped(),
+});
 
 function sessions(now: number): SegmentSession[] {
   const today = calendar.istDate(now);
@@ -120,6 +128,7 @@ const server = createControlServer({
   telemetry,
   logs,
   log: logs.logger("api"),
+  feed: () => feed?.hub ?? null,
 });
 
 health.set("engine", "ok");
@@ -148,6 +157,14 @@ async function start() {
   }
 
   await dhan.ready();
+  // After the token is loaded, so the first connection doesn't start out "missing a token".
+  feed = startFeed({
+    log: logs.logger("feed"),
+    health,
+    metrics,
+    telemetry,
+    captureDir: process.env.FEED_CAPTURE === "1" ? path.join(ROOT, "captures", "feed") : undefined,
+  });
   dhan.tick();
   telemetry.publish("status", status());
   void dhan.check();
@@ -156,6 +173,7 @@ async function start() {
     setInterval(() => {
       processStats = sampler.sample();
       dhan.tick();
+      feed?.tick();
       metrics.gauge("api.clients", server.clients);
       telemetry.publish("status", status());
     }, STATUS_INTERVAL_MS),
@@ -170,6 +188,7 @@ async function stop(reason: string, code = 0) {
   log.info(`stopping (${reason})`);
   for (const timer of timers) clearInterval(timer);
   sampler.stop();
+  feed?.shutdown();
   await server.close();
   releaseLock?.();
   log.info("stopped");

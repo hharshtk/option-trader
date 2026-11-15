@@ -1,5 +1,7 @@
 // Types shared by the engine and the web. The web imports only this file, never engine
-// internals. Plain TypeScript with no imports, so both sides can load it.
+// internals. Plain TypeScript with type-only imports, so both sides can load it.
+
+import type { FeedHealth } from "../live/feed/monitor.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -116,7 +118,7 @@ export interface TelemetryData {
   status: EngineStatus;
   log: LogEntry;
   metrics: MetricsSnapshot;
-  feed: unknown;
+  feed: FeedHealth;
   bars: unknown;
   gaps: unknown;
 }

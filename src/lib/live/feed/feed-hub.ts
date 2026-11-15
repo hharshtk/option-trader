@@ -36,7 +36,13 @@ export interface HubOptions {
   currentToken: () => string | undefined;
   captureDir?: string;
   openSocket?: (url: string) => FeedSocket;
+  /** Receives each log line, already prefixed with the connection's name where it applies. */
   print?: (message: string) => void;
+}
+
+function printWithTime(message: string) {
+  const time = new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
+  console.log(`[feed ${time}] ${message}`);
 }
 
 export interface PinRequest {
@@ -109,7 +115,7 @@ export function createFeedHub({
   currentToken,
   captureDir,
   openSocket,
-  print = (message) => console.log(message),
+  print = printWithTime,
 }: HubOptions) {
   const startedAt = Date.now();
   const connections = new Map<number, Connection>();
@@ -134,8 +140,7 @@ export function createFeedHub({
   }
 
   function log(message: string, connection?: Connection) {
-    const time = new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
-    print(`[feed ${time}]${connection ? ` ${connection.name}:` : ""} ${message}`);
+    print(`${connection ? `${connection.name}: ` : ""}${message}`);
     record({ type: "log", message, connection: connection?.id });
   }
 
@@ -588,7 +593,7 @@ export function createFeedHub({
   }
 
   log(`ready${captureDir ? ", recording raw frames" : ""}; connects to Dhan when the first instrument is subscribed`);
-  return { stream, monitor, pin, unpin, closeConnection, health, acquire, release, shutdown };
+  return { stream, monitor, pin, unpin, closeConnection, health, acquire, release, retryStopped, shutdown };
 }
 
 export type FeedHub = ReturnType<typeof createFeedHub>;

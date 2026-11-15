@@ -28,10 +28,10 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 |---|---|---|
 | E0 Groundwork | Built | Shared modules run under plain Node; clock, event types, logger, metrics, session calendar |
 | E1 Skeleton and monitoring | Built | `npm run engine`, control API, health checks, Engine page, header status dot |
-| E2 Engine owns Dhan | Next | Feed and always-on journal move into the engine |
+| E2 Engine owns Dhan | In progress | Done: the live feed runs in the engine and the web forwards to it. Next: always-on journal, universe, Quote/Full modes, one REST limiter |
 | E3–E7 | Planned | See [engine-plan.md](engine-plan.md#build-steps) |
 
-Today the engine monitors itself and the Dhan account. It doesn't open Dhan sockets or place orders yet. The web still runs its own feed, as before.
+Today the engine monitors itself and the Dhan account and **owns the live Dhan feed**. With `ENGINE_URL` set, the web never opens Dhan sockets: its quote stream, Live Feed stream and Live Feed actions forward to the engine. Without `ENGINE_URL`, the web runs its own feed as it did before the engine. The engine doesn't place orders.
 
 **Host:** the OCI VM `option-trading-e5` (Ubuntu 24.04, Node 26.13). See [oci-setup.md](oci-setup.md).
 
@@ -109,7 +109,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://140.245.240.9/v1/status
 
 **The IP is ephemeral.** It survives reboots and stop/start, but not terminating the instance. Moving to a reserved IP gives a new address, so it means updating the Caddyfile, Vercel's `ENGINE_URL`, your SSH config and, once set, Dhan's order whitelist (changeable only once every 7 days). Do it from the OCI Console, not over an SSH session to the old address.
 
-**Live quotes on Vercel need E2.** The web's own Dhan feed can't run on Vercel's serverless functions. Until E2 moves the feed into the engine, Market Watch, Live Feed and header prices have no live data on Vercel. Telemetry streams also reconnect when Vercel ends a function at its maximum duration; they resume from the last message, so nothing is lost.
+**Live quotes on Vercel come from the engine.** Vercel's functions can't hold a Dhan socket, so with `ENGINE_URL` set the web forwards quote and Live Feed streams to the engine, which owns the socket. Telemetry streams also reconnect when Vercel ends a function at its maximum duration; they resume from the last message, so nothing is lost.
 
 ## What you see on the web
 
@@ -127,6 +127,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://140.245.240.9/v1/status
 | Panel | Shows |
 |---|---|
 | Health | Each component, its state, the reason and when it changed |
+| Dhan feed | Sockets used of 5, each socket's state (with the reason when stopped or reconnecting), instruments, frames and last tick; open tabs, pinned instruments, and whether raw frames are being recorded |
 | Dhan account | Token source (Redis or `.env.local`) and expiry, Data API plan and its end date, active segments, last profile check, clock offset from Dhan |
 | Market sessions | Each segment: open, pre-open or closed, today's holiday, the next session in IST |
 | Process | Git version, host, pid, Node version, start time, memory, CPU, event-loop delay p99 |
@@ -149,6 +150,7 @@ Browser ──► Next.js (session cookie) ──► /api/engine/v1/* ──► 
 ```
 
 - **The browser never talks to the engine.** The route [src/app/api/engine/[...path]/route.ts](../src/app/api/engine/[...path]/route.ts) checks the session cookie, adds the token and streams the response through. It allows only `v1/status`, `v1/logs` and `v1/telemetry`. Closing the tab aborts the upstream request.
+- **Market data goes through the engine too.** `/api/market/stream` (quotes for a tab), `/api/market/feed` (Live Feed page) and the Live Feed Server Actions forward to the engine's `/v1/quotes`, `/v1/feed` and `/v1/feed/*` when `ENGINE_URL` is set ([web.ts](../src/lib/engine/web.ts)). Browser code is unchanged. Closing a tab releases its instruments in the engine.
 - **The engine never waits for the web.** A browser that falls behind loses its oldest messages and gets a `gap` notice; the engine carries on.
 - **Each side works without the other.** The engine runs with no browser attached. The web works without the engine, minus the engine panels.
 
@@ -166,6 +168,7 @@ Each component reports `ok`, `degraded` or `failing`. The overall state is the w
 | Component | Degraded | Failing | Checked |
 |---|---|---|---|
 | `engine` | — | — | Always ok while running |
+| `feed` | A socket is reconnecting | A socket stopped (for example a rejected token); it reconnects on its own once a new token is saved | Every second |
 | `api` | — | — | Ok once the control API listens |
 | `token` | Less than 2 hours left, or expiry unreadable | Missing or expired | Every second |
 | `dhan` | Network error reaching Dhan | Dhan rejected the profile call (for example a bad token) | At start, then every 15 minutes |
@@ -183,7 +186,14 @@ Plain HTTP on `127.0.0.1:3100`. Every request needs `Authorization: Bearer <ENGI
 |---|---|
 | `GET /v1/status` | One `EngineStatus` snapshot (below) |
 | `GET /v1/logs?level=&component=&limit=` | `{ entries: LogEntry[] }`, newest last. `limit` defaults to 500, at most 2,000 |
-| `GET /v1/telemetry?topics=status,log,metrics&since=` | Server-sent events (below) |
+| `GET /v1/telemetry?topics=status,log,metrics,feed&since=` | Server-sent events (below) |
+| `GET /v1/quotes?i=IDX_I:13,NSE_EQ:1333` | Server-sent quotes for up to 200 instruments, the same events the web's `/api/market/stream` always sent. Subscribes them on Dhan; disconnecting releases them after a 30-second grace period |
+| `GET /v1/feed` | Server-sent Live Feed monitor: a `snapshot`, then `health` every second and `events` |
+| `POST /v1/feed/pin` | `{ key, connection: number \| "new", name?, connectionName? }`: keep an instrument subscribed |
+| `POST /v1/feed/unpin` | `{ key }` |
+| `POST /v1/feed/connections/:id/close` | Close a socket other than Main |
+
+Feed routes answer 503 for the second or so after start-up, before the feed exists.
 
 From the server itself:
 
@@ -229,7 +239,8 @@ data: {"run":"live","seq":42,"topic":"log","at":1794758217612,"wall":17947582176
 | `status` | `EngineStatus` | 1 a second | The latest |
 | `metrics` | `MetricsSnapshot` | Every 5 seconds | The last 12 (one minute) |
 | `log` | `LogEntry` | As they happen | The last 500 |
-| `feed`, `bars`, `gaps` | Reserved for E2 and E3 | — | — |
+| `feed` | `FeedHealth`: sockets, instruments, tabs, capture | 1 a second | The latest |
+| `bars`, `gaps` | Reserved for E3 | — | — |
 
 A client that can't keep up gets up to 1,000 queued messages, then loses the oldest.
 
@@ -253,7 +264,7 @@ Each component may log at most 50 lines a second. Extra `debug`, `info` and `war
 | Gauge | `metrics.gauge("sockets", 2)` | Latest value |
 | Latency histogram | `metrics.observe("kernel.lag", ms)` | p50, p90, p99, max and count over the last 5-second window |
 
-Histogram buckets run from 0.05 ms to 30 s; percentiles report the bucket's upper bound, capped at the largest value seen. Current metrics: `log.debug`, `log.info`, `log.warn`, `log.error` and `api.clients`.
+Histogram buckets run from 0.05 ms to 30 s; percentiles report the bucket's upper bound, capped at the largest value seen. Current metrics: `log.debug`, `log.info`, `log.warn`, `log.error`, `api.clients`, and for the feed `feed.connections`, `feed.live_connections`, `feed.instruments`, `feed.quote_streams` and the `feed.frames` counter.
 
 ## Session calendar
 
@@ -339,6 +350,8 @@ Tests use `node --test`, inject clocks and sockets, and never call Dhan. The con
 | TLS "internal error" from the IP | `default_sni` missing from `/etc/caddy/Caddyfile` |
 | `token` failing | No token in Redis or `.env.local`, or it expired. Save a new one on the Settings page; the engine picks it up within 30 seconds |
 | `dhan` failing | Dhan rejected the call; the reason is on the Engine page. Usually the token |
+| `feed` failing | A socket stopped, usually a rejected token. Save a new token on the Settings page: it reconnects within 30 seconds |
+| Local `next dev` still logs `[feed ...] Main: live` | It started before `ENGINE_URL` was set, or kept a hub from before this change. Restart `next dev`; with `ENGINE_URL` set it never opens Dhan sockets |
 | `data-plan` degraded or failing | Renew the Data API plan on web.dhan.co. It ends 2026-12-16 |
 | `calendar` degraded | The year's holidays are missing from `config/engine/calendar.json` |
 | Node warns about module type | Old checkout without `"type": "module"` in package.json |

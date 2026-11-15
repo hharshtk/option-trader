@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useReducer } from "react";
+import type { FeedHealth } from "@/lib/live/feed/monitor";
 import type {
   EngineStatus,
   LogEntry,
@@ -26,6 +27,8 @@ export interface EngineTelemetry {
   /** Wall-clock ms in this browser when the last status arrived. */
   statusReceivedAt: number | null;
   metrics: MetricsSnapshot | null;
+  /** The engine's Dhan feed: sockets, instruments, tick flow. */
+  feed: FeedHealth | null;
   logs: LogEntry[];
   /** Messages the engine dropped because this tab fell behind. */
   dropped: number;
@@ -35,6 +38,7 @@ type Action =
   | { type: "link"; link: EngineLink; error?: string | null }
   | { type: "status"; status: EngineStatus; at: number }
   | { type: "metrics"; metrics: MetricsSnapshot }
+  | { type: "feed"; feed: FeedHealth }
   | { type: "logs"; entries: LogEntry[] }
   | { type: "gap"; dropped: number };
 
@@ -44,6 +48,7 @@ const INITIAL: EngineTelemetry = {
   status: null,
   statusReceivedAt: null,
   metrics: null,
+  feed: null,
   logs: [],
   dropped: 0,
 };
@@ -63,10 +68,13 @@ function reduce(state: EngineTelemetry, action: Action): EngineTelemetry {
         statusReceivedAt: action.at,
         logs: restarted ? [] : state.logs,
         metrics: restarted ? null : state.metrics,
+        feed: restarted ? null : state.feed,
       };
     }
     case "metrics":
       return { ...state, metrics: action.metrics };
+    case "feed":
+      return { ...state, feed: action.feed };
     case "logs": {
       const logs = state.logs.concat(action.entries);
       return { ...state, logs: logs.length > MAX_LOGS ? logs.slice(-MAX_LOGS) : logs };
@@ -131,6 +139,7 @@ export function useEngineTelemetry(topics: readonly TelemetryTopic[]): EngineTel
         dispatch({ type: "status", status: read<EngineStatus>(event), at: Date.now() }),
       );
       source.addEventListener("metrics", (event) => dispatch({ type: "metrics", metrics: read<MetricsSnapshot>(event) }));
+      source.addEventListener("feed", (event) => dispatch({ type: "feed", feed: read<FeedHealth>(event) }));
       source.addEventListener("log", (event) => {
         pendingLogs.push(read<LogEntry>(event));
         if (!flushScheduled) {

@@ -5,10 +5,11 @@ import { formatAge, TokenExpiry, useNow } from "@/components/shell/freshness";
 import { DataTable, EmptyState, PageHeader, Panel, StatRow, StatusDot, Td } from "@/components/ui";
 import type { ComponentHealth, EngineStatus, HealthState, LogEntry, LogLevel, MetricsSnapshot } from "@/lib/engine/protocol";
 import { istDateTime, istTime, quantity } from "@/lib/format";
+import type { FeedHealth } from "@/lib/live/feed/monitor";
 import { engineSummary, engineView, VIEW_LABEL, VIEW_TONE } from "./engine-status";
 import { useEngineTelemetry } from "./use-engine-telemetry";
 
-const TOPICS = ["status", "metrics", "log"] as const;
+const TOPICS = ["status", "metrics", "log", "feed"] as const;
 const HEALTH_TONE: Record<HealthState, "up" | "warn" | "down"> = { ok: "up", degraded: "warn", failing: "down" };
 const SEGMENT_NAMES: Record<string, string> = { E: "Equity", D: "Derivatives", C: "Currency", M: "Commodity" };
 const TABS = ["Overview", "Logs"] as const;
@@ -64,7 +65,12 @@ export function EngineConsole() {
       )}
 
       {tab === "Overview" ? (
-        <Overview status={view === "offline" ? null : status} metrics={telemetry.metrics} dropped={telemetry.dropped} />
+        <Overview
+          status={view === "offline" ? null : status}
+          metrics={telemetry.metrics}
+          feed={view === "offline" ? null : telemetry.feed}
+          dropped={telemetry.dropped}
+        />
       ) : (
         <Logs entries={telemetry.logs} />
       )}
@@ -72,7 +78,17 @@ export function EngineConsole() {
   );
 }
 
-function Overview({ status, metrics, dropped }: { status: EngineStatus | null; metrics: MetricsSnapshot | null; dropped: number }) {
+function Overview({
+  status,
+  metrics,
+  feed,
+  dropped,
+}: {
+  status: EngineStatus | null;
+  metrics: MetricsSnapshot | null;
+  feed: FeedHealth | null;
+  dropped: number;
+}) {
   if (!status) {
     return (
       <div className="p-2 sm:p-3">
@@ -86,6 +102,8 @@ function Overview({ status, metrics, dropped }: { status: EngineStatus | null; m
   return (
     <div className="grid gap-2 p-2 sm:p-3 lg:grid-cols-2">
       <HealthPanel components={status.components} />
+
+      <FeedPanel feed={feed} now={status.now} />
 
       <Panel title="Dhan account">
         <dl>
@@ -155,6 +173,53 @@ function Overview({ status, metrics, dropped }: { status: EngineStatus | null; m
 
       <MetricsPanel metrics={metrics} />
     </div>
+  );
+}
+
+const FEED_TONE = { idle: "muted", connecting: "warn", live: "up", reconnecting: "warn", stopped: "down" } as const;
+
+function FeedPanel({ feed, now }: { feed: FeedHealth | null; now: number }) {
+  if (!feed) {
+    return (
+      <Panel title="Dhan feed">
+        <EmptyState>The feed reports within a second of the engine starting.</EmptyState>
+      </Panel>
+    );
+  }
+  const pinned = feed.instruments.filter((i) => i.pinned).length;
+  return (
+    <Panel
+      title="Dhan feed"
+      meta={`${feed.connections.length} of 5 sockets · ${quantity.format(feed.instruments.length)} instruments · ${feed.quoteStreams} tab${feed.quoteStreams === 1 ? "" : "s"}${pinned ? ` · ${pinned} pinned` : ""}${feed.capture ? " · recording" : ""}`}
+      flush
+    >
+      <DataTable
+        caption="Dhan feed connections"
+        columns={["Socket", { label: "State", align: "left" }, "Instruments", "Frames", "Last tick"]}
+      >
+        {feed.connections.map((c) => (
+          <tr key={c.id}>
+            <Td>{c.name}</Td>
+            <Td className="whitespace-normal">
+              <span className="inline-flex items-start gap-1.5">
+                <span className="mt-1.5">
+                  <StatusDot tone={FEED_TONE[c.feed.state]} />
+                </span>
+                <span>
+                  {c.feed.state}
+                  {(c.feed.state === "stopped" || c.feed.state === "reconnecting") && (
+                    <span className="text-muted"> · {c.feed.reason}</span>
+                  )}
+                </span>
+              </span>
+            </Td>
+            <Td numeric>{quantity.format(c.instruments)}</Td>
+            <Td numeric>{quantity.format(c.frames)}</Td>
+            <Td numeric>{c.lastTickAt ? `${formatAge(Math.max(0, now - c.lastTickAt))} ago` : "—"}</Td>
+          </tr>
+        ))}
+      </DataTable>
+    </Panel>
   );
 }
 

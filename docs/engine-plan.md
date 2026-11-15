@@ -1,6 +1,6 @@
 # Engine plan
 
-Status: proposed on 2026-11-15. Steps E0 and E1 are built; see [engine.md](engine.md) for how the engine runs today. The engine now runs on the OCI VM described in [oci-setup.md](oci-setup.md), not the laptop this plan assumes. This plan turns the `engine` process from [architecture-plan.md](architecture-plan.md) into build steps, for running it on the development laptop next to the web app. It covers three things the architecture plan leaves open:
+Status: proposed on 2026-11-15. Steps E0 and E1 are built, and E2 is under way (the feed runs in the engine); see [engine.md](engine.md) for how the engine runs today. The engine now runs on the OCI VM described in [oci-setup.md](oci-setup.md), not the laptop this plan assumes. This plan turns the `engine` process from [architecture-plan.md](architecture-plan.md) into build steps, for running it on the development laptop next to the web app. It covers three things the architecture plan leaves open:
 
 - running on a laptop instead of a VPS
 - seeing everything the engine does on the web

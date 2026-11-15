@@ -14,7 +14,9 @@ import {
 import type { LogHub } from "../telemetry/logger.ts";
 import type { Logger } from "../telemetry/logger.ts";
 import type { TelemetryHub } from "../telemetry/hub.ts";
+import type { FeedHub } from "../../lib/live/feed/feed-hub.ts";
 import { clientAddress, createAuthThrottle, type AuthThrottle } from "./auth-throttle.ts";
+import { handleFeedRoute } from "./feed-routes.ts";
 import { openSse, type SseClient } from "./sse.ts";
 
 const TOPICS: readonly TelemetryTopic[] = ["status", "log", "metrics", "feed", "bars", "gaps"];
@@ -29,6 +31,8 @@ export interface ControlServerOptions {
   logs: LogHub;
   log: Logger;
   throttle?: AuthThrottle;
+  /** The live feed, once started. Its routes answer 503 until then. */
+  feed?: () => FeedHub | null;
 }
 
 export interface ControlServer {
@@ -89,9 +93,18 @@ export function createControlServer(options: ControlServerOptions): ControlServe
       return json(response, 401, { error: "Unauthorized" });
     }
     throttle.succeed(client);
-    if (request.method !== "GET") return json(response, 405, { error: "Method not allowed" });
+    if (request.method !== "GET" && request.method !== "POST") return json(response, 405, { error: "Method not allowed" });
+    void route(request, response, url);
+  });
 
+  async function route(request: IncomingMessage, response: ServerResponse, url: URL) {
     try {
+      if (options.feed && (url.pathname === "/v1/quotes" || url.pathname.startsWith("/v1/feed"))) {
+        const hub = options.feed();
+        if (!hub) return json(response, 503, { ok: false, message: "The engine's feed is starting. Try again in a moment." });
+        if (await handleFeedRoute(request, response, url, hub)) return;
+      }
+      if (request.method !== "GET") return json(response, 404, { error: `No route ${request.method} ${url.pathname}` });
       switch (url.pathname) {
         case "/v1/status":
           return json(response, 200, status());
@@ -115,7 +128,7 @@ export function createControlServer(options: ControlServerOptions): ControlServe
       log.error("request failed", { path: url.pathname, error: String(error) });
       if (!response.headersSent) json(response, 500, { error: "Internal error" });
     }
-  });
+  }
 
   return {
     listen() {
