@@ -36,7 +36,7 @@ function getSnapshot() {
 
 // One shared one-second clock. The server snapshot is null so nothing
 // time-relative renders until hydration, which keeps server and client HTML equal.
-function useNow(): number | null {
+export function useNow(): number | null {
   return useSyncExternalStore(subscribe, getSnapshot, () => null);
 }
 

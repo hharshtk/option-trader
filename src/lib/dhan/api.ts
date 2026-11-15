@@ -7,6 +7,8 @@ import type {
   DhanPosition,
   DhanProfile,
   InstrumentsBySegment,
+  IntradayCandleRequest,
+  IntradayCandles,
   LtpData,
   OptionChain,
   Underlying,
@@ -58,6 +60,13 @@ export async function getOptionExpiries(underlying: Underlying) {
     },
   );
   return data;
+}
+
+export function getIntradayCandles(request: IntradayCandleRequest) {
+  return dhanRequest<IntradayCandles>("POST", "/charts/intraday", {
+    body: { ...request, oi: false },
+    cacheTtlMs: 60_000,
+  });
 }
 
 /** `expiry` is "YYYY-MM-DD", taken from getOptionExpiries. */

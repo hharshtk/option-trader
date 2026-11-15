@@ -1,80 +1,96 @@
-# Real-time market data (Phase 5 proposal)
+# Real-time market data
 
-Status: proposal, not implemented. The cockpit UI shipped without any streaming changes.
+Status: built on 2026-11-15. The feed connected to Dhan that day, a Sunday, and decoded the ticker and previous-close packets Dhan sends on subscribe. Live ticks during a trading session haven't been observed yet.
 
-## Where prices come from today
+## Running it
 
-Every index price on screen comes from one REST call, `POST /marketfeed/ltp`, made during a server render (`getIndexQuotes` in `src/lib/cockpit.ts`). The header labels it "LTP snapshot", shows the fetch time, and ticks its age. After 60 seconds it turns amber and says "stale". The refresh button re-renders the route with `router.refresh()`. The client cache in `src/lib/dhan/client.ts` shares an LTP response for 1 second, and the limiter allows 1 quote request per second.
+```bash
+npm run dev    # the app, as before
+npm run feed   # the feed service, in a second terminal
+```
 
-The REST path can't provide:
+The feed service listens on `127.0.0.1:3010` (`FEED_PORT` in `.env.local` changes it). It opens the Dhan socket only when the first browser tab subscribes, and closes it after 5 minutes with no subscribers. Without it, the app works as before: prices are page-load snapshots, and the header says "feed offline".
 
-- Day change. The LTP endpoint returns only `last_price`.
-- LTP for open positions. Dhan's positions response has no price field.
-- Market open/closed status.
-- Intraday charts.
+| Task | How |
+|---|---|
+| Check the service | `curl http://127.0.0.1:3010/health` shows state, clients, subscriptions and packet counts |
+| Pick up a renewed token | Update `DHAN_ACCESS_TOKEN` in `.env.local`, then `curl -X POST http://127.0.0.1:3010/reload` (or send the process `SIGHUP`) |
+| Record raw frames | Set `FEED_CAPTURE=1` in `.env.local` and restart the service. Frames go to `services/feed/captures/<date>.jsonl`, which git ignores |
+| Run the parser and reconnect tests | `npm run test:feed` |
 
-The live feed fixes the first three. Charts need one extra REST endpoint plus the feed.
-
-## Recommended shape
+## How it fits together
 
 ```
 Dhan Live Market Feed v2 (wss, binary, little-endian)
-        │  one socket; token read from server env
+        │  one socket; token read from .env.local on every connect
         ▼
-feed service: long-running Node process, services/feed/
-  ├─ subscription registry: instrument → reference count
-  ├─ packet parser: binary → { segment, securityId, ltp, ltt, prevClose, ... }
-  ├─ latest value per instrument
-  └─ GET /stream?i=IDX_I:13,IDX_I:25  (Server-Sent Events, localhost only)
+services/feed (plain Node 26, no dependencies)
+  ├─ packets.ts     binary parser and subscribe messages
+  ├─ dhan-feed.ts   socket lifecycle: backoff, 805 pause, token stop, idle disconnect
+  └─ main.ts        instrument ref-counts, latest quote per instrument, SSE on /stream
         ▲
-        │  proxied by a Next route handler that checks the session cookie
+        │  src/app/api/market/stream: session check, then pipes the SSE response
         │
-browser: one EventSource per tab → external store → components subscribe per instrument
+browser: src/lib/live/store.ts, one EventSource per tab
+         src/components/live/live-quote.tsx: useLiveQuote, <LivePrice>, <LiveChange>
 ```
 
-### Why a separate process instead of a Next route
+- **Why a separate process.** Hot reload in `next dev` re-evaluates server modules, which could open duplicate sockets. Dhan allows 5 feed connections per user and drops the oldest with error 805 when a sixth opens. This account received an 805 warning once already.
+- **Rendering cost.** The service sends each browser at most 4 updates a second per instrument (it flushes every 250 ms). Quotes live outside React, and each component subscribes to one instrument, so a NIFTY tick only re-renders components showing NIFTY.
+- **Access control.** The service binds to 127.0.0.1 and rejects any request with an `Origin` header or a foreign `Host`. Web pages can't drive it, and DNS rebinding is blocked. The Next route checks the app session before proxying. The Dhan token never leaves the server; it travels in the feed URL, which is never logged.
 
-- **Hot reload.** Hot reload re-evaluates server modules in `next dev`. A socket opened inside the Next server can be duplicated on every edit. Dhan allows 5 feed connections per user and disconnects the oldest with error 805 when a sixth opens. 805 is the warning this account already received once.
-- **Hosting.** Serverless hosting can't hold a socket at all. If the app ever moves to Vercel or similar, the feed service stays as is.
-- **Isolation.** Reconnect loops and binary parsing stay out of the request path, so a stuck feed can't slow page renders.
+### Where live data shows
 
-The service lives in this repo, imports nothing from Next, and starts next to `next dev` (for example `npm run feed`). For a single user, the in-memory latest-value map is all the state it needs. Redis or Kafka would add nothing until there are several app instances.
+| Place | What it shows |
+|---|---|
+| Header tickers | Live NIFTY 50 and BANK NIFTY with day change. The status reads "Live" while ticks arrive, "Feed connected · last update HH:MM:SS" when they pause, or the snapshot age with "feed offline / reconnecting / stopped" |
+| Overview market panel | Live price and day change |
+| Market Watch | Live price and day change on all six index cards, and 5-minute candles for the selected index |
+| Positions, on Overview and the Positions page | New LTP column for open positions, "—" without the feed |
 
-### Browser side
+The REST snapshot stays as the fallback everywhere. Holdings and the option chain are still REST snapshots.
 
-- **One stream per tab.** A client provider in `src/app/(cockpit)/layout.tsx` opens one `EventSource` to `/api/market/stream`. That route handler checks `isSignedIn()` and pipes the feed service's SSE response. The browser never sees the Dhan token or the feed service's address.
-- **Store outside React.** Quotes live in a `Map` keyed by `SEGMENT:securityId`, with listeners per key. `useQuote(key)` uses `useSyncExternalStore` and subscribes to that key only, so a NIFTY tick re-renders only the components showing NIFTY.
-- **Coalesce ticks on the server.** The feed service keeps the latest value per instrument and flushes changed instruments every 250 ms. That caps any instrument at 4 updates a second however fast Dhan sends.
-- **Live state stays separate from REST state.** Account, funds, positions and holdings stay as Server Components. Live prices overlay them through small client components such as `<LivePrice instrument fallback={snapshotLtp} />`. These show the REST snapshot until the first tick arrives, and say "Live" only while the stream is connected and the last tick is under 15 seconds old.
+### Charts
+
+`GET /api/market/candles?index=NIFTY` calls Dhan's `POST /charts/intraday` (`getIntradayCandles` in `src/lib/dhan/api.ts`) for the last 7 days of 5-minute candles. It goes through the existing limiter's `data` bucket with a 60-second cache, and returns only the latest session. Times shift by +5:30 so Lightweight Charts, which labels axes in UTC, reads in IST.
+
+- **Library loading.** `src/components/live/index-chart.tsx` loads `lightweight-charts` 5.2.1 with a dynamic import, so other pages don't download it. It calls `setData` once and `update` for each tick.
+- **Live candles.** Ticks extend the chart only during 09:15–15:30 IST on weekdays, so the snapshot Dhan sends on subscribing on a weekend can't start a fake candle. A tick's candle comes from its arrival time, not Dhan's `ltt` (see open questions).
+- **One chart at a time.** Market Watch controls its index tabs, so only the selected index mounts a chart and fetches candles.
+
+## Safety rules in the connection manager
+
+All of these are covered by `services/feed/dhan-feed.test.ts`:
+
+- One socket at most. Subscribing while a socket is opening or open never opens another.
+- Reconnects back off from 1 second to 30 seconds with jitter, then resubscribe everything in batches of 100.
+- After Dhan disconnect code 805, wait at least 60 seconds.
+- After 5 failed handshakes in a row, wait 5 minutes between attempts. A bad token surfaces this way when Dhan rejects the upgrade itself.
+- Disconnect codes 807 to 810 (token or auth) stop the feed until a reload, rather than retrying with a dead token.
+- No subscribers for 5 minutes closes the socket. Browser tabs leaving release instruments after a 30-second grace period, so moving between sections doesn't churn subscriptions.
 
 ## Dhan Live Market Feed v2 facts
 
 Sources: dhanhq.co/docs/v2/live-market-feed and the Annexure, read on 2026-11-15.
 
-**Connection:** `wss://api-feed.dhan.co?version=2&token=<access token>&clientId=<client id>&authType=2`. The token is in the URL, so never log the URL.
+**Connection:** `wss://api-feed.dhan.co?version=2&token=<access token>&clientId=<client id>&authType=2`.
 
 **Limits:**
 - 5 connections per user. A sixth disconnects the first with 805.
 - 5,000 instruments per connection.
 - 100 instruments per subscribe message.
 
-**Subscribe message:**
-
-```json
-{"RequestCode":15,"InstrumentCount":2,"InstrumentList":[{"ExchangeSegment":"IDX_I","SecurityId":"13"},{"ExchangeSegment":"IDX_I","SecurityId":"25"}]}
-```
-
 **Request codes:**
 
 | Code | Meaning |
 |---|---|
-| 15 / 16 | Ticker subscribe / unsubscribe |
+| 15 / 16 | Ticker subscribe / unsubscribe (the only mode the service uses) |
 | 17 / 18 | Quote subscribe / unsubscribe |
 | 21 / 22 | Full subscribe / unsubscribe |
 | 23 / 24 | Full market depth subscribe / unsubscribe |
 | 12 | Disconnect |
 
-**Response header:** 8 bytes, little-endian. Offsets below are 0-based for `DataView`.
+**Response header:** 8 bytes. Offsets below are 0-based.
 
 | Offset | Type | Field |
 |---|---|---|
@@ -102,66 +118,23 @@ There is no 6.
 
 | Code | Packet | Body (0-based offset, type) |
 |---|---|---|
-| 2 | Ticker | 8 LTP float32, 12 last trade time int32 epoch |
-| 4 | Quote | 8 LTP f32, 12 LTQ i16, 14 LTT i32, 18 avg price f32, 22 volume i32, 26 total sell qty i32, 30 total buy qty i32, 34 open f32, 38 close f32 (post-market only), 42 high f32, 46 low f32 |
+| 2 | Ticker | 8 LTP float32, 12 last trade time int32. Confirmed live |
+| 4 | Quote | 8 LTP f32, 12 LTQ i16, 14 LTT i32, 18 avg price f32, 22 volume i32, 26 total sell qty i32, 30 total buy qty i32, 34 open f32, 38 close f32, 42 high f32, 46 low f32 |
 | 5 | OI | 8 open interest int32 |
-| 6 | Previous close | 8 previous close float32, 12 previous OI int32. Sent whenever an instrument is subscribed, for any mode |
-| 7 | Market status | Listed in the Annexure; the feed page doesn't document its layout |
-| 8 | Full | Quote fields plus OI, day OI high/low (NSE_FNO only) and 5 depth levels of 20 bytes each |
-| 50 | Disconnect | 8 reason code int16 (Data API errors: 805 too many connections, 807 token expired, 808 to 810 auth failures) |
-| 1 | Index | Listed in the Annexure only |
+| 6 | Previous close | 8 previous close float32, 12 previous OI int32. Sent on subscribe in every mode; this is where day change comes from. Confirmed live |
+| 7 | Market status | Listed in the Annexure without a layout. The service logs it as unparsed |
+| 8 | Full | Quote fields with OI at 34 and OHLC at 46 to 61, then 5 depth levels of 20 bytes |
+| 50 | Disconnect | 8 reason code int16 |
+| 1 | Index | Listed without a layout; parsed as a ticker until a capture says otherwise |
 
-**Keepalive:** the server pings every 10 seconds. The `ws` package answers pings automatically. After 40 seconds without a response, the server closes the socket.
+**Keepalive:** the server pings every 10 seconds and closes the socket after 40 seconds without a pong. Node's built-in WebSocket answers pings automatically.
 
-Two cautions:
+## Open questions
 
-1. Dhan's byte tables mix 0-based and 1-based numbering. The offsets above assume 0-based. Capture raw frames during market hours and write the parser's tests against them before trusting any field.
-2. The previous-close packet (code 6) gives day change for every subscribed instrument without the quote mode. Use ticker mode (15) plus that packet for the header, Market Watch and position LTPs. Move to quote mode (17) only where day OHLC and volume get displayed.
-
-## Connection lifecycle
-
-States, which the header shows in place of today's "LTP snapshot" label:
-
-| State | Meaning |
-|---|---|
-| `connecting` | First connection attempt in progress |
-| `live` | Connected and receiving ticks |
-| `reconnecting (attempt n)` | Lost the socket; retrying |
-| `stopped: <reason>` | Gave up; needs your action |
-
-- **Normal drop:** reconnect with exponential backoff from 1 second to 30 seconds, with jitter. After reconnecting, resubscribe everything in the registry in batches of 100.
-- **Disconnect 805:** wait at least 60 seconds before reconnecting, the same cooldown the REST limiter uses (`RATE_LIMIT_COOLDOWN_MS`). Never run more than one feed service per account, and remember a dev and a prod copy each count toward the 5-connection limit.
-- **Disconnect 807 to 810 (token or auth):** stop retrying and report `stopped: access token expired`. A self-generated token lasts 24 hours, so renewal stays manual. Update `.env.local`, then send the service a reload signal; it re-reads the env file and reconnects.
-- **Subscriptions:** reference-count each instrument across connected browser tabs. Subscribe on 0 → 1. Unsubscribe on 1 → 0 after a 30-second grace period, so moving between sections doesn't churn subscriptions.
-- **Weekends and holidays:** no ticks arrive. Until packet 7 is verified, the UI shows "No ticks since HH:MM" and never claims the market is closed.
-
-## Charts: TradingView Lightweight Charts
-
-**Recommendation: use it** (`lightweight-charts`, 5.3.0 on npm as of 2026-11-15, Apache-2.0).
-
-- **Series types.** Candlestick, line, area and histogram cover index charts, intraday candles and volume.
-- **Incremental updates.** `series.setData(history)` runs once. After that, `series.update(bar)` either replaces the last bar (same timestamp) or appends a new one. A tick never re-sends the dataset.
-- **Rendering.** It draws on canvas inside a client component. Load it with a dynamic import so pages without charts don't pay for it.
-- **Attribution.** The license requires credit to TradingView. Version 5 shows a small logo by default (`layout.attributionLogo`); leave it on.
-
-**Data:**
-
-- History comes from `POST /charts/intraday`.
-  - Body: `securityId`, `exchangeSegment`, `instrument`, `interval` (1, 5, 15, 25 or 60 minutes), `oi`, `fromDate`, `toDate`.
-  - Response: parallel `open`/`high`/`low`/`close`/`volume`/`timestamp` arrays.
-  - Limits: up to 90 days per call, 5 years back.
-- `POST /charts/historical` covers daily candles.
-- Neither endpoint is wrapped in `src/lib/dhan/api.ts` yet. The limiter already sends `/charts/*` through its `data` bucket (5 per second).
-
-The client folds ticks into the current candle: same interval bucket → `update` the bar, new bucket → append. Charts only appear where Dhan returned real candles. With no data, the panel says so; it never draws placeholder lines.
-
-**Placement:** a 5-minute line series in the Overview market panel, a full candlestick panel when you select an index in Market Watch, and contract charts from the option chain later.
-
-## Order of work
-
-1. **Feed service, no UI.** Connect, keepalive, reconnect, parse ticker and previous-close packets, log NIFTY and BANKNIFTY. Run it through one market session and save raw frames as parser fixtures. Check packet 7's layout here.
-2. **Stream to the header.** SSE endpoint, the Next proxy route with the session check, the client store, `<LivePrice>` in the header and Market Watch. Show day change from the previous-close packet.
-3. **Positions.** Subscribe open positions' NSE_FNO security IDs and add the LTP column to the positions tables. Add the market status chip if packet 7 checked out.
-4. **Charts.** Add `getIntradayCandles` to `src/lib/dhan/api.ts` through the existing limiter, then build the chart component and live candle updates.
-
-Each step ships on its own, and the REST snapshot stays as the fallback whenever the stream isn't live.
+- **What `ltt` measures.** On 2026-11-15 NIFTY's `ltt` was 1794598820. Read as Unix seconds, that is Fri 13 Nov 19:40:20 UTC, 9 h 40 m after the 15:30 IST close. No other reading lines up with the close either. Compare it with the wall clock during a session (with `FEED_CAPTURE=1`) before using it anywhere.
+- **Whether Dhan stamps candles at the start of the interval.** The live candle logic assumes it does. If live ticks land one candle late during a session, Dhan stamps the end instead.
+- **Packet 7 (market status).** Capture one during a session to learn its layout. Once it decodes, the header can show open/closed status from the exchange instead of a clock guess.
+- **Not built yet:**
+  - Overview sparklines.
+  - Live prices in the option chain.
+  - Live holdings P&L. It would change how holdings P&L is calculated, which is still from REST.

@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# raw market feed frames (FEED_CAPTURE=1)
+/services/feed/captures/

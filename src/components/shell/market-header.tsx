@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { LogoMark } from "@/components/icons";
+import { LiveChange, LivePrice } from "@/components/live/live-quote";
 import {
   getIndexQuotes,
   HEADLINE_INDICES,
@@ -9,7 +10,7 @@ import {
   tokenExpiryIso,
 } from "@/lib/cockpit";
 import { getProfile } from "@/lib/dhan";
-import { price } from "@/lib/format";
+import { indexInstrument } from "@/lib/live/instruments";
 import { TokenExpiry } from "./freshness";
 import { AccountMenu, BrokerStatus, MarketDataStatus } from "./header-controls";
 
@@ -49,9 +50,10 @@ async function HeaderStatus() {
           return (
             <div key={key} className="flex shrink-0 items-baseline gap-2">
               <span className="text-label font-medium text-muted">{name}</span>
-              <span className="font-mono text-body tabular-nums">
-                {value === undefined ? "—" : price.format(value)}
+              <span className="font-mono text-body">
+                <LivePrice instrument={indexInstrument(key)} fallback={value} />
               </span>
+              <LiveChange instrument={indexInstrument(key)} className="max-md:hidden" />
             </div>
           );
         })}

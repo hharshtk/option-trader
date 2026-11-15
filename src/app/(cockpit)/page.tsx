@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 import { ArrowRightIcon } from "@/components/icons";
+import { LiveChange, LivePrice } from "@/components/live/live-quote";
 import {
   HoldingsTable,
   PositionsTable,
@@ -29,7 +30,8 @@ import {
   tokenExpiryIso,
 } from "@/lib/cockpit";
 import { getFundLimit, getHoldings, getPositions, getProfile } from "@/lib/dhan";
-import { inr, price, quantity } from "@/lib/format";
+import { inr, quantity } from "@/lib/format";
+import { indexInstrument } from "@/lib/live/instruments";
 
 export const metadata: Metadata = { title: "Overview" };
 
@@ -128,8 +130,11 @@ async function Overview() {
                       key={key}
                       label={name}
                       value={
-                        <span className="font-mono">
-                          {value === undefined ? "—" : price.format(value)}
+                        <span className="flex flex-col items-end">
+                          <span className="font-mono">
+                            <LivePrice instrument={indexInstrument(key)} fallback={value} />
+                          </span>
+                          <LiveChange instrument={indexInstrument(key)} className="font-normal" />
                         </span>
                       }
                       emphasis
@@ -138,8 +143,8 @@ async function Overview() {
                 })}
               </dl>
               <p className="mt-2 text-label text-muted">
-                Last traded price. Dhan&apos;s LTP endpoint doesn&apos;t return the day&apos;s
-                change.
+                Prices update live and show the day&apos;s change while the feed service runs
+                (npm run feed). Without it they&apos;re the snapshot from page load.
               </p>
             </>
           ) : quotes.status === "no-plan" ? (

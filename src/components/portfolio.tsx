@@ -1,5 +1,7 @@
 import type { DhanHolding, DhanPosition } from "@/lib/dhan";
+import { positionInstrument } from "@/lib/live/instruments";
 import { inr, price, quantity } from "@/lib/format";
+import { LivePrice } from "./live/live-quote";
 import { DataTable, EmptyState, Field, Pnl, Td } from "./ui";
 
 export function summarizeHoldings(holdings: DhanHolding[]) {
@@ -112,11 +114,11 @@ export function PositionsTable({
   }
 
   const columns = detailed
-    ? ["Instrument", "Net qty", "Buy qty", "Buy avg", "Sell qty", "Sell avg", "Realized", "Unrealized"]
-    : ["Instrument", "Net qty", "Buy avg", "Sell avg", "Realized", "Unrealized"];
+    ? ["Instrument", "Net qty", "LTP", "Buy qty", "Buy avg", "Sell qty", "Sell avg", "Realized", "Unrealized"]
+    : ["Instrument", "Net qty", "LTP", "Buy avg", "Sell avg", "Realized", "Unrealized"];
 
   return (
-    <DataTable caption="Positions" columns={columns} minWidth={detailed ? "min-w-[56rem]" : "min-w-[44rem]"}>
+    <DataTable caption="Positions" columns={columns} minWidth={detailed ? "min-w-[62rem]" : "min-w-[50rem]"}>
       {summary.rows.map((position) => (
         <tr
           key={`${position.exchangeSegment}:${position.securityId}:${position.productType}`}
@@ -130,6 +132,9 @@ export function PositionsTable({
           </Td>
           <Td numeric className="font-medium">
             {quantity.format(position.netQty)}
+          </Td>
+          <Td numeric>
+            {position.netQty === 0 ? "—" : <LivePrice instrument={positionInstrument(position)} />}
           </Td>
           {detailed && <Td numeric>{quantity.format(position.buyQty)}</Td>}
           <Td numeric>{position.buyQty ? price.format(position.buyAvg) : "—"}</Td>

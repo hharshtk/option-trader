@@ -22,9 +22,12 @@ import {
   SettingsIcon,
   UserIcon,
 } from "@/components/icons";
+import { useStreamStatus } from "@/components/live/live-quote";
 import { StatusDot } from "@/components/ui";
 import type { IndexQuotes } from "@/lib/cockpit";
-import { DataAge } from "./freshness";
+import { istTime } from "@/lib/format";
+import type { FeedStatus } from "@/lib/live/store";
+import { DataAge, useNow } from "./freshness";
 
 export const popupClass =
   "m-0 rounded-sm border border-line-strong bg-raised text-fg shadow-lg shadow-black/40";
@@ -60,7 +63,46 @@ export function BrokerStatus({
   );
 }
 
+const LIVE_WINDOW_MS = 15_000;
+
+const FEED_NOTE: Partial<Record<FeedStatus["state"], string>> = {
+  connecting: "feed connecting",
+  offline: "feed offline",
+  reconnecting: "feed reconnecting",
+  stopped: "feed stopped",
+};
+
 export function MarketDataStatus({ quotes }: { quotes: IndexQuotes }) {
+  const stream = useStreamStatus();
+  const now = useNow();
+  const feed = stream?.feed;
+
+  if (feed?.state === "live") {
+    const lastQuoteAt = stream?.lastQuoteAt ?? null;
+    const fresh = lastQuoteAt !== null && now !== null && now - lastQuoteAt < LIVE_WINDOW_MS;
+    return (
+      <div className="flex shrink-0 items-center gap-1.5 text-label text-muted">
+        {fresh ? (
+          <span className="flex items-center gap-1.5 font-medium text-up">
+            <StatusDot tone="up" />
+            Live
+          </span>
+        ) : (
+          <span>
+            Feed connected
+            <span className="max-lg:hidden">
+              {" · "}
+              {lastQuoteAt === null ? "no updates yet" : `last update ${istTime.format(lastQuoteAt)}`}
+            </span>
+          </span>
+        )}
+        <RefreshButton />
+      </div>
+    );
+  }
+
+  const note = feed ? FEED_NOTE[feed.state] : undefined;
+
   if (quotes.status === "no-plan") {
     return <span className="shrink-0 text-label text-muted">No data plan</span>;
   }
@@ -76,6 +118,14 @@ export function MarketDataStatus({ quotes }: { quotes: IndexQuotes }) {
         <span className="max-w-48 truncate text-down" title={quotes.error.message}>
           Market data failed
           {quotes.error.code && <span className="font-mono"> ({quotes.error.code})</span>}
+        </span>
+      )}
+      {note && (
+        <span
+          className={`max-md:hidden ${feed?.state === "stopped" ? "text-down" : ""}`}
+          title={feed && "reason" in feed ? feed.reason : undefined}
+        >
+          · {note}
         </span>
       )}
       <RefreshButton />

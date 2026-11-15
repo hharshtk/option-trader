@@ -142,6 +142,38 @@ export interface Underlying {
   segment: ExchangeSegment;
 }
 
+export type ChartInstrument =
+  | "INDEX"
+  | "FUTIDX"
+  | "OPTIDX"
+  | "EQUITY"
+  | "FUTSTK"
+  | "OPTSTK"
+  | "FUTCOM"
+  | "OPTFUT";
+
+export interface IntradayCandleRequest {
+  securityId: string;
+  exchangeSegment: ExchangeSegment;
+  instrument: ChartInstrument;
+  interval: "1" | "5" | "15" | "25" | "60";
+  /** "YYYY-MM-DD" */
+  fromDate: string;
+  /** "YYYY-MM-DD" */
+  toDate: string;
+}
+
+/** Parallel arrays; `timestamp` is epoch seconds. */
+export interface IntradayCandles {
+  open: number[];
+  high: number[];
+  low: number[];
+  close: number[];
+  volume: number[];
+  timestamp: number[];
+  open_interest?: number[];
+}
+
 export interface OptionGreeks {
   delta: number;
   theta: number;

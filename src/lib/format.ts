@@ -21,6 +21,12 @@ export const price = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 2,
 });
 
+export const signedPrice = new Intl.NumberFormat("en-IN", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+  signDisplay: "exceptZero",
+});
+
 export const quantity = new Intl.NumberFormat("en-IN");
 
 export const istDateTime = new Intl.DateTimeFormat("en-IN", {
