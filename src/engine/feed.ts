@@ -4,9 +4,11 @@
 // `feed` telemetry snapshot every tick, so the Engine page shows sockets, instruments and flow.
 
 import { getDhanCredentials, getTokenStore } from "../lib/dhan/config.ts";
+import type { Credentials, FeedSocket } from "../lib/live/feed/dhan-feed.ts";
 import { createFeedHub, type FeedHub } from "../lib/live/feed/feed-hub.ts";
 import type { FeedEventBody, FeedHealth } from "../lib/live/feed/monitor.ts";
 import { createClosedMarketFilter } from "./journal/closed-market-filter.ts";
+import { retimeHub, type Retimer } from "./replay/retime.ts";
 import type { Journal } from "./journal/writer.ts";
 import type { SessionCalendar } from "./market/session-calendar.ts";
 import { byMode, type Universe } from "./market/universe.ts";
@@ -22,6 +24,15 @@ export interface EngineFeed {
   shutdown(): void;
 }
 
+/** Where the feed's sockets connect instead of Dhan: a replay. */
+export interface FeedSource {
+  openSocket: (url: string) => FeedSocket;
+  readCredentials: () => Credentials;
+  currentToken: () => string | undefined;
+  /** Maps the feed's wall-clock stamps to recorded times in everything the engine reports. */
+  retime?: Retimer;
+}
+
 export function startFeed({
   log,
   health,
@@ -30,14 +41,18 @@ export function startFeed({
   journal,
   universe,
   calendar,
+  source,
 }: {
   log: Logger;
   health: Health;
   metrics: Metrics;
   telemetry: TelemetryHub;
-  journal: Journal;
+  /** Where frames and feed events are recorded. A replay passes one that records nothing. */
+  journal: Pick<Journal, "frame" | "control">;
   universe: Universe;
   calendar: SessionCalendar;
+  /** Defaults to Dhan with the configured credentials. */
+  source?: FeedSource;
 }): EngineFeed {
   const store = getTokenStore();
   // When each connection last stopped delivering, so a reconnect can record the gap.
@@ -65,8 +80,9 @@ export function startFeed({
   const quiet = createClosedMarketFilter(calendar);
 
   const hub = createFeedHub({
-    readCredentials: getDhanCredentials,
-    currentToken: () => store.current(),
+    readCredentials: source?.readCredentials ?? getDhanCredentials,
+    currentToken: source?.currentToken ?? (() => store.current()),
+    openSocket: source?.openSocket,
     print: (message) => log.info(message),
     onFrame: (connection, frame, at) => {
       // Every frame goes to disk during market hours; when closed, only ones that say something new.
@@ -109,10 +125,13 @@ export function startFeed({
     }
   }
 
+  // What the API and telemetry see. In a replay, the same hub reporting recorded times.
+  const reported = source?.retime ? retimeHub(hub, source.retime) : hub;
+
   return {
-    hub,
+    hub: reported,
     tick() {
-      const snapshot = hub.health();
+      const snapshot = reported.health();
       report(snapshot);
       telemetry.publish("feed", snapshot);
     },

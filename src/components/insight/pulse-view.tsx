@@ -7,6 +7,7 @@
 import type { IChartApi, IPriceLine, ISeriesApi, ISeriesMarkersPluginApi, UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useJournalSession } from "@/components/engine/session-view";
+import { useEngineTelemetry } from "@/components/engine/use-engine-telemetry";
 import { OptionReplay } from "@/components/insight/option-replay";
 import { formatAge } from "@/components/shell/freshness";
 import { EmptyState, Field, Panel } from "@/components/ui";
@@ -29,12 +30,20 @@ import { istTime, price, signedPercent } from "@/lib/format";
 const IST_OFFSET_SECONDS = 5.5 * 3600;
 const CONSTITUENTS = INDEX_CONSTITUENTS.NIFTY.map((c) => ({ key: `NSE_EQ:${c.securityId}`, symbol: c.symbol, sector: c.sector, prior: c.mcapShare }));
 
+const STATUS_TOPIC = ["status"] as const;
+
 function istToday() {
   return new Date(Date.now() + IST_OFFSET_SECONDS * 1000).toISOString().slice(0, 10);
 }
 
 export function PulseView() {
-  const [date] = useState(istToday);
+  const [today] = useState(istToday);
+  // While the engine replays a recorded day, the pulse follows the replay as if it were live:
+  // that day, as far as the replay has reached, timed on the replay's clock.
+  const telemetry = useEngineTelemetry(STATUS_TOPIC);
+  const replay = telemetry.status?.replay ?? null;
+  const known = telemetry.status !== null || telemetry.link === "offline" || telemetry.link === "unconfigured";
+  const date = known ? (replay?.date ?? today) : null;
   const load = useJournalSession(date, true);
   const pulse = useMemo(() => (load.state === "ready" ? computePulse(load.data, CONSTITUENTS) : null), [load]);
   const [now, setNow] = useState(() => Date.now());
@@ -61,12 +70,12 @@ export function PulseView() {
           <EmptyState>No NIFTY ticks in today&apos;s session yet. The pulse starts after 09:16 IST.</EmptyState>
         </Panel>
       )}
-      {pulse && <PulseBody pulse={pulse} age={Math.max(0, now - pulse.asOf)} />}
+      {pulse && <PulseBody pulse={pulse} age={Math.max(0, (replay?.at ?? now) - pulse.asOf)} replay={replay?.date ?? null} />}
     </div>
   );
 }
 
-function PulseBody({ pulse, age }: { pulse: Pulse; age: number }) {
+function PulseBody({ pulse, age, replay }: { pulse: Pulse; age: number; replay: string | null }) {
   const { nifty, verdict } = pulse;
   const tone = verdict.stance === "bullish" ? "text-up" : verdict.stance === "bearish" ? "text-down" : "text-warn";
   const stale = age > 15_000;
@@ -86,7 +95,8 @@ function PulseBody({ pulse, age }: { pulse: Pulse; age: number }) {
         title="NIFTY pulse"
         meta={
           <span>
-            <span className={stale ? "text-warn" : "text-up"}>●</span> {stale ? "Not updating" : "Live"} · last tick {formatAge(age)} ago ·
+            <span className={stale || replay ? "text-warn" : "text-up"}>●</span>{" "}
+            {replay ? `Replay of ${replay}${stale ? ", not moving" : ""}` : stale ? "Not updating" : "Live"} · last tick {formatAge(age)} ago ·
             refreshes every 5 s · minute {pulse.minute + 1} of the session
           </span>
         }

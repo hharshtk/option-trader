@@ -4,10 +4,12 @@
 import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
 import path from "node:path";
+import { parseArgs } from "node:util";
 import { PROTOCOL_VERSION, type EngineStatus, type LogLevel, type SegmentSession } from "../lib/engine/protocol.ts";
 import { createControlServer } from "./api/server.ts";
 import { createDhanWatch } from "./dhan-watch.ts";
-import { startFeed, subscriptionSnapshot, type EngineFeed } from "./feed.ts";
+import { subscriptionSnapshot } from "./feed.ts";
+import { createFeedSwitch } from "./feed-switch.ts";
 import { createJournalSessions } from "./journal/session-reader.ts";
 import { createJournal } from "./journal/writer.ts";
 import { createLiveClock } from "./kernel/clock.ts";
@@ -27,6 +29,25 @@ const METRICS_INTERVAL_MS = 5_000;
 const DHAN_CHECK_INTERVAL_MS = 15 * 60_000;
 /** A status tick this late means the process was suspended or starved: data is missing. */
 const SUSPEND_THRESHOLD_MS = 5_000;
+
+// `--replay` starts on a recorded day instead of the live feed (`npm run engine:replay`), with
+// `--date YYYY-MM-DD` (default: the newest recorded day), `--from HH:MM` IST (default: 09:00 on a
+// trading day) and `--speed N` (default 1). The Engine page can switch either way at any time.
+const args = (() => {
+  try {
+    return parseArgs({
+      options: {
+        replay: { type: "boolean", default: false },
+        date: { type: "string" },
+        from: { type: "string" },
+        speed: { type: "string" },
+      },
+    }).values;
+  } catch (error) {
+    console.error(`${(error as Error).message}\nUsage: npm run engine:replay -- [--date YYYY-MM-DD] [--from HH:MM] [--speed N]`);
+    process.exit(1);
+  }
+})();
 
 const config = {
   host: process.env.ENGINE_HOST ?? "127.0.0.1",
@@ -83,7 +104,6 @@ try {
 const version = readVersion();
 const sampler = createProcessSampler();
 let processStats = sampler.sample();
-let feed: EngineFeed | null = null;
 const universe = resolveUniverse();
 
 const journalLog = logs.logger("journal");
@@ -94,11 +114,23 @@ const journal = createJournal({
   // Each file starts with who wrote it and what was subscribed, so a replay of that day alone
   // knows its starting point.
   onOpen: (date) => {
-    journal.control("file-open", { date, version, subscriptions: subscriptionSnapshot(feed?.hub ?? null) }, clock.now());
+    journal.control("file-open", { date, version, subscriptions: subscriptionSnapshot(feeds.liveHub()) }, clock.now());
     journalLog.info(`writing ${date}.bin`);
   },
   onError: (error) => journalLog.error("journal write failed", { error: error.message }),
   onWriteLatency: (ms) => metrics.observe("journal.write_ms", ms),
+});
+// The feed: live from Dhan, or a recorded day replayed through a stand-in for Dhan's socket.
+const feeds = createFeedSwitch({
+  logger: (component) => logs.logger(component),
+  health,
+  metrics,
+  telemetry,
+  journal,
+  journalDirectory: path.join(config.dataDir, "journal"),
+  universe,
+  calendar,
+  now: clock.now,
 });
 const journalSessions = createJournalSessions({ directory: path.join(config.dataDir, "journal"), calendar, now: clock.now });
 const dhan = createDhanWatch({
@@ -106,7 +138,7 @@ const dhan = createDhanWatch({
   health,
   now: clock.now,
   // A socket stopped by a rejected token reconnects as soon as a new token is saved.
-  onTokenChange: () => feed?.hub.retryStopped(),
+  onTokenChange: () => feeds.liveHub()?.retryStopped(),
 });
 
 function sessions(now: number): SegmentSession[] {
@@ -147,6 +179,8 @@ function status(): EngineStatus {
       problems: universe.problems,
     },
     process: processStats,
+    replay: feeds.replayStatus(),
+    replayBlocked: feeds.replayBlocked(),
   };
 }
 
@@ -158,8 +192,13 @@ const server = createControlServer({
   telemetry,
   logs,
   log: logs.logger("api"),
-  feed: () => feed?.hub ?? null,
-  journalSession: (date) => journalSessions.read(date ?? calendar.istDate(clock.now())),
+  feed: () => feeds.current()?.hub ?? null,
+  replay: (body) => feeds.command(body),
+  // During a replay, the replayed day reads as far as the replay has reached (and is the default).
+  journalSession: (date) => {
+    const day = date ?? feeds.replayDate() ?? calendar.istDate(clock.now());
+    return feeds.replaySession(day) ?? journalSessions.read(day);
+  },
 });
 
 health.set("engine", "ok");
@@ -190,7 +229,20 @@ async function start() {
   await dhan.ready();
   // After the token is loaded, so the first connection doesn't start out "missing a token".
   journal.control("engine-start", { version, pid: process.pid, universe: universe.name }, clock.now());
-  feed = startFeed({ log: logs.logger("feed"), health, metrics, telemetry, journal, universe, calendar });
+  if (args.replay) {
+    const result = await feeds.command({
+      action: "start",
+      date: args.date,
+      from: args.from,
+      speed: args.speed === undefined ? undefined : Number(args.speed),
+    });
+    if (!result.ok) {
+      log.warn(`not replaying: ${result.message} Starting the live feed.`);
+      feeds.startLive();
+    }
+  } else {
+    feeds.startLive();
+  }
   dhan.tick();
   telemetry.publish("status", status());
   void dhan.check();
@@ -207,7 +259,7 @@ async function start() {
       checkJournal();
       processStats = sampler.sample();
       dhan.tick();
-      feed?.tick();
+      feeds.tick();
       metrics.gauge("api.clients", server.clients);
       telemetry.publish("status", status());
     }, STATUS_INTERVAL_MS),
@@ -231,7 +283,7 @@ async function stop(reason: string, code = 0) {
   log.info(`stopping (${reason})`);
   for (const timer of timers) clearInterval(timer);
   sampler.stop();
-  feed?.shutdown();
+  feeds.shutdown();
   journal.control("engine-stop", { reason }, clock.now());
   await journal.close();
   await server.close();

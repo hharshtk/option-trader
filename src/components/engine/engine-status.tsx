@@ -6,6 +6,7 @@ import { useNow } from "@/components/shell/freshness";
 import { Tooltip } from "@/components/tooltip";
 import { StatusDot } from "@/components/ui";
 import type { HealthState } from "@/lib/engine/protocol";
+import { replaySummary } from "./replay-format";
 import { isStale, useEngineTelemetry, type EngineTelemetry } from "./use-engine-telemetry";
 
 const TOPICS = ["status"] as const;
@@ -53,9 +54,16 @@ export function EngineStatus() {
   const telemetry = useEngineTelemetry(TOPICS);
   const now = useNow();
   const view = engineView(telemetry, now);
+  const replay = view === "offline" || view === "unconfigured" ? null : telemetry.status?.replay;
+  const summary = engineSummary(telemetry, view);
 
   return (
-    <Tooltip side="bottom" sideOffset={6} className={`${tooltipClass} max-w-80`} content={engineSummary(telemetry, view)}>
+    <Tooltip
+      side="bottom"
+      sideOffset={6}
+      className={`${tooltipClass} max-w-80`}
+      content={replay ? `${replaySummary(replay)}: prices are recorded, not live. ${summary}` : summary}
+    >
       <Link
         href="/engine"
         className="flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-1.5 text-label font-medium hover:bg-raised"
@@ -63,6 +71,11 @@ export function EngineStatus() {
         <StatusDot tone={VIEW_TONE[view]} />
         <span>Engine</span>
         <span className="sr-only">{VIEW_LABEL[view]}</span>
+        {replay && (
+          <span className="rounded-sm border border-warn/60 px-1 text-[0.625rem] leading-4 font-medium tracking-wide text-warn uppercase">
+            Replay
+          </span>
+        )}
       </Link>
     </Tooltip>
   );

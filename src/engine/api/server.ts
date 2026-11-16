@@ -9,6 +9,7 @@ import {
   type EngineStatus,
   type JournalSession,
   type LogLevel,
+  type ReplayCommandResult,
   type TelemetryHello,
   type TelemetryTopic,
 } from "../../lib/engine/protocol.ts";
@@ -17,7 +18,7 @@ import type { Logger } from "../telemetry/logger.ts";
 import type { TelemetryHub } from "../telemetry/hub.ts";
 import type { FeedHub } from "../../lib/live/feed/feed-hub.ts";
 import { clientAddress, createAuthThrottle, type AuthThrottle } from "./auth-throttle.ts";
-import { handleFeedRoute } from "./feed-routes.ts";
+import { handleFeedRoute, readJson } from "./feed-routes.ts";
 import { openSse, type SseClient } from "./sse.ts";
 
 const TOPICS: readonly TelemetryTopic[] = ["status", "log", "metrics", "feed", "bars", "gaps"];
@@ -36,6 +37,8 @@ export interface ControlServerOptions {
   feed?: () => FeedHub | null;
   /** A day read back from its journal file; null when there is no file for that day. */
   journalSession?: (date: string | null) => Promise<JournalSession | null>;
+  /** Handles a `POST /v1/replay` body: switch the feed to a recorded day and back, and steer it. */
+  replay?: (body: unknown) => Promise<ReplayCommandResult>;
 }
 
 export interface ControlServer {
@@ -106,6 +109,9 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         const hub = options.feed();
         if (!hub) return json(response, 503, { ok: false, message: "The engine's feed is starting. Try again in a moment." });
         if (await handleFeedRoute(request, response, url, hub)) return;
+      }
+      if (url.pathname === "/v1/replay" && request.method === "POST" && options.replay) {
+        return json(response, 200, await options.replay(await readJson(request)));
       }
       if (request.method !== "GET") return json(response, 404, { error: `No route ${request.method} ${url.pathname}` });
       switch (url.pathname) {

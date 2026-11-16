@@ -134,6 +134,16 @@ const HEADER_BYTES = 8;
 // undocumented, so it falls back to the length in the header and comes out as "unknown".
 const PACKET_BYTES: Record<number, number> = { 1: 16, 2: 16, 4: 50, 5: 12, 6: 16, 8: 162, 50: 10 };
 
+/** Bytes in the packet starting at `offset`: fixed per response code, else the length in its header. */
+export function packetSizeAt(view: DataView, offset: number): number {
+  return PACKET_BYTES[view.getUint8(offset)] ?? view.getInt16(offset + 1, true);
+}
+
+/** The segment for a packet header's segment code. */
+export function segmentByCode(code: number): Segment | undefined {
+  return SEGMENT_BY_CODE.get(code);
+}
+
 /** Accepts a frame's ArrayBuffer, or a view such as a Buffer read from the journal. */
 export function parseFrame(frame: ArrayBuffer | ArrayBufferView): Packet[] {
   const view = ArrayBuffer.isView(frame) ? new DataView(frame.buffer, frame.byteOffset, frame.byteLength) : new DataView(frame);
@@ -142,7 +152,7 @@ export function parseFrame(frame: ArrayBuffer | ArrayBufferView): Packet[] {
 
   while (offset + HEADER_BYTES <= view.byteLength) {
     const code = view.getUint8(offset);
-    const size = PACKET_BYTES[code] ?? view.getInt16(offset + 1, true);
+    const size = packetSizeAt(view, offset);
     if (size < HEADER_BYTES || offset + size > view.byteLength) {
       packets.push({ kind: "unknown", code, length: view.byteLength - offset, key: null });
       break;

@@ -230,7 +230,75 @@ export interface EngineStatus {
   journalDays: JournalDay[];
   universe: UniverseStatus | null;
   process: ProcessStats;
+  /**
+   * Set while the feed replays a recorded day instead of streaming from Dhan; null when live.
+   * Absent from engines older than the replay feature.
+   */
+  replay?: ReplayStatus | null;
+  /** Why a replay can't start now (a session is open or opens within 30 minutes); null when it can. */
+  replayBlocked?: string | null;
 }
+
+/**
+ * A recorded day played back through a stand-in for Dhan's WebSocket. Times in `at`, `startAt`
+ * and `endAt` are the recording's (when the frames originally arrived), not the wall clock.
+ */
+export interface ReplayStatus {
+  /** IST date of the journal file being replayed. */
+  date: string;
+  state: "playing" | "paused" | "ended";
+  /** Recorded milliseconds per wall-clock millisecond. */
+  speed: number;
+  /** How far the replay has reached, in recorded time. */
+  at: number;
+  /** First and last frame in the file. */
+  startAt: number;
+  endAt: number;
+  /** Frames played (or skipped over by a seek) and frames in the file. */
+  frames: number;
+  totalFrames: number;
+  /** Sockets the feed has open on the replay. */
+  sockets: number;
+  /** Wall-clock ms the engine switched to replay. */
+  since: number;
+  /** When the engine will switch back to live on its own, before the next session opens. */
+  liveAt: number | null;
+}
+
+/** A replay's clock: every time the feed reports during a replay is on it. */
+export interface ReplayClock {
+  /** The recorded time now. */
+  now: number;
+  /** Recorded ms per wall-clock ms: the speed while playing, else 0. */
+  rate: number;
+  /** IST date being replayed. */
+  replay: string;
+}
+
+/**
+ * The feed's health as the engine reports it. During a replay its times are recorded times and
+ * `clock` says what "now" is on that clock, so ages ("tick 2 s ago") are measured from it.
+ */
+export type EngineFeedHealth = FeedHealth & { clock?: ReplayClock };
+
+/** `POST /v1/replay` bodies. Times are IST, HH:MM or HH:MM:SS, on the replayed day. */
+export type ReplayCommand =
+  | { action: "start"; date?: string; from?: string; speed?: number }
+  | { action: "stop" }
+  | { action: "play" }
+  | { action: "pause" }
+  | { action: "speed"; speed: number }
+  | { action: "seek"; to: string };
+
+export interface ReplayCommandResult {
+  ok: boolean;
+  message: string;
+}
+
+/** Speeds the Engine page offers; the engine accepts any value in [REPLAY_MIN_SPEED, REPLAY_MAX_SPEED]. */
+export const REPLAY_SPEEDS = [1, 2, 5, 10, 30, 60, 300] as const;
+export const REPLAY_MIN_SPEED = 0.1;
+export const REPLAY_MAX_SPEED = 1000;
 
 export type TelemetryTopic = "status" | "log" | "metrics" | "feed" | "bars" | "gaps";
 
@@ -238,7 +306,7 @@ export interface TelemetryData {
   status: EngineStatus;
   log: LogEntry;
   metrics: MetricsSnapshot;
-  feed: FeedHealth;
+  feed: EngineFeedHealth;
   bars: unknown;
   gaps: unknown;
 }

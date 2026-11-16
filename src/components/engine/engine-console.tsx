@@ -5,6 +5,7 @@ import { formatAge, TokenExpiry, useNow } from "@/components/shell/freshness";
 import { DataTable, EmptyState, PageHeader, Panel, StatRow, StatusDot, Td } from "@/components/ui";
 import type {
   ComponentHealth,
+  EngineFeedHealth,
   EngineStatus,
   HealthState,
   HistogramSnapshot,
@@ -13,8 +14,9 @@ import type {
   MetricsSnapshot,
 } from "@/lib/engine/protocol";
 import { istDateTime, istTime, quantity } from "@/lib/format";
-import type { FeedHealth } from "@/lib/live/feed/monitor";
 import { engineSummary, engineView, VIEW_LABEL, VIEW_TONE } from "./engine-status";
+import { replaySummary } from "./replay-format";
+import { ReplayPanel } from "./replay-panel";
 import { SessionView } from "./session-view";
 import { useEngineTelemetry } from "./use-engine-telemetry";
 
@@ -73,6 +75,12 @@ export function EngineConsole() {
         </div>
       )}
 
+      {status?.replay && view !== "offline" && (
+        <div role="status" className="mx-2 mt-2 rounded-sm border border-warn/50 px-3 py-2 text-warn sm:mx-3">
+          {replaySummary(status.replay)}. Every page shows recorded prices, not live ones, and nothing is being journaled.
+        </div>
+      )}
+
       {tab === "Overview" && (
         <Overview
           status={view === "offline" ? null : status}
@@ -95,7 +103,7 @@ function Overview({
 }: {
   status: EngineStatus | null;
   metrics: MetricsSnapshot | null;
-  feed: FeedHealth | null;
+  feed: EngineFeedHealth | null;
   dropped: number;
 }) {
   if (!status) {
@@ -110,11 +118,14 @@ function Overview({
 
   return (
     <div className="grid gap-2 p-2 sm:p-3 lg:grid-cols-2">
+      <ReplayPanel status={status} />
+
       <HealthPanel components={status.components} />
 
       <FeedPanel
         feed={feed}
-        now={status.now}
+        // During a replay the feed's times are recorded times: measure ages on that clock.
+        now={feed?.clock?.now ?? status.now}
         universe={status.universe}
         marketClosed={marketClosed(status)}
         skipped={metrics?.counters["journal.frames_skipped"] ?? 0}
@@ -212,7 +223,7 @@ function FeedPanel({
   marketClosed,
   skipped,
 }: {
-  feed: FeedHealth | null;
+  feed: EngineFeedHealth | null;
   now: number;
   universe: EngineStatus["universe"];
   marketClosed: boolean;

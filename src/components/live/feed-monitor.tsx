@@ -1,13 +1,26 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState, useTransition, type FormEvent, type ReactNode, type RefObject } from "react";
+import {
+  createContext,
+  memo,
+  use,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type FormEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { addFeedInstrument, closeFeedConnection, removeFeedInstrument } from "@/app/(cockpit)/live-feed/actions";
 import { formatAge, useNow } from "@/components/shell/freshness";
 import { tooltipClass } from "@/components/shell/header-controls";
 import { Tooltip } from "@/components/tooltip";
 import { ChevronDownIcon, PlusIcon } from "@/components/icons";
 import { buttonClass, DataTable, EmptyState, PageHeader, Panel, StatusDot, Td } from "@/components/ui";
-import { price, quantity, signedPercent, signedPrice } from "@/lib/format";
+import type { EngineFeedHealth, ReplayClock } from "@/lib/engine/protocol";
+import { istTime, price, quantity, signedPercent, signedPrice } from "@/lib/format";
 import type { FeedState } from "@/lib/live/feed/dhan-feed";
 import {
   MAIN_CONNECTION,
@@ -59,6 +72,18 @@ const PACKET_LABELS: Record<string, string> = {
 };
 
 const MARKET_PACKETS = new Set<Packet["kind"]>(["ticker", "quote", "prevClose", "oi"]);
+
+/**
+ * Set while the engine replays a recorded day: the feed's times are then recorded times, and
+ * ages ("tick 2 s ago") are measured from the replay's clock instead of the browser's.
+ */
+const FeedClockContext = createContext<ReplayClock | undefined>(undefined);
+
+function useFeedNow(): number | null {
+  const now = useNow();
+  const clock = use(FeedClockContext);
+  return now === null ? null : (clock?.now ?? now);
+}
 
 function parse<T>(event: Event): T {
   return JSON.parse((event as MessageEvent<string>).data) as T;
@@ -139,7 +164,7 @@ export function FeedMonitor({ catalog }: { catalog: CatalogEntry[] }) {
   const full = connections.length >= MAX_CONNECTIONS;
 
   return (
-    <>
+    <FeedClockContext value={(health as EngineFeedHealth | null)?.clock}>
       <PageHeader title="Live Feed" meta={<FeedStatusButton link={link} health={health} />}>
         <button
           type="button"
@@ -222,7 +247,7 @@ export function FeedMonitor({ catalog }: { catalog: CatalogEntry[] }) {
           <EventLog events={frozen ?? events} filter={filter} names={names} connectionNames={connectionNames} />
         </Panel>
       </div>
-    </>
+    </FeedClockContext>
   );
 }
 
@@ -235,7 +260,8 @@ function overallTone(health: FeedHealth): "up" | "down" | "warn" | "muted" {
 
 /** A compact status chip; hovering or focusing it shows the full overview. */
 function FeedStatusButton({ link, health }: { link: Link; health: FeedHealth | null }) {
-  const now = useNow();
+  const now = useFeedNow();
+  const clock = use(FeedClockContext);
 
   if (link !== "open" || !health) {
     const label = {
@@ -256,6 +282,7 @@ function FeedStatusButton({ link, health }: { link: Link; health: FeedHealth | n
     ["Server started", now ? `${formatAge(now - health.startedAt)} ago` : "—"],
   ];
   if (health.capture) rows.push(["Raw frames", "Recording to captures/feed"]);
+  if (clock) rows.unshift(["Replaying", `${clock.replay}, now at ${istTime.format(clock.now)} IST`]);
 
   return (
     <Tooltip
@@ -285,6 +312,7 @@ function FeedStatusButton({ link, health }: { link: Link; health: FeedHealth | n
         className="inline-flex h-6 items-center gap-1.5 rounded-sm border border-line-strong px-2 text-label text-fg hover:bg-raised"
       >
         <StatusDot tone={overallTone(health)} />
+        {clock && <span className="font-medium text-warn">Replay {istTime.format(clock.now)} ·</span>}
         {open}/{MAX_CONNECTIONS} sockets · {plural(health.instruments.length, "instrument")}
         {health.lastTickAt && now ? <span className="text-muted">· tick {formatAge(now - health.lastTickAt)} ago</span> : null}
       </button>
@@ -457,7 +485,7 @@ function ConnectionPanel({
   names: Names;
   onAdd: () => void;
 }) {
-  const now = useNow();
+  const now = useFeedNow();
   const [message, setMessage] = useState<FeedActionResult | null>(null);
   const [pending, startTransition] = useTransition();
   const [expanded, setExpanded] = useState(false);

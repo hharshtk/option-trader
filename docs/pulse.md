@@ -31,7 +31,7 @@ Pulse turns the engine's live recording of NIFTY and its 50 stocks into a read o
 
 The engine records NIFTY in Ticker mode (about one price a second) and its 50 stocks in Quote mode (price, VWAP, volume, day range, pending quantity). Pulse itself samples nothing; it reads what the journal holds.
 
-The page shows today only. It needs the engine to have run today, and shows nothing until NIFTY's first session minute.
+The page shows today only. It needs the engine to have run today, and shows nothing until NIFTY's first session minute. While the engine replays a recorded day ([engine.md](engine.md#replay)), the page follows the replay instead: that day as far as the replay has reached, built up minute by minute, with "last tick" timed on the replay's clock. Option prices still come from Dhan's intraday API, so they cover whatever that API holds for the day, not just up to the replay's position.
 
 ## Verdict
 

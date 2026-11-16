@@ -30,7 +30,7 @@ Everything the engine computes (bars, VWAP, signals, strategy decisions, paper f
 | A bug in the parser or bar builder silently corrupts the data you keep, and the original is gone | Fix the code and decode the day again from the raw frames |
 | A strategy can only be tested on 1-minute candles from Dhan's history API: no bid/ask, no order of trades within a minute | Replay a recorded day tick by tick through the same code that ran live |
 | "Why did the strategy do that at 10:42?" can't be answered after the fact | Replay the day to 10:42 and watch every event that led there |
-| UI and analytics work needs the market open | Replay a recorded session in the evening or at the weekend, at ×1, ×10 or ×60 |
+| UI and analytics work needs the market open | Replay a recorded session in the evening or at the weekend, at ×1, ×10 or ×60 ([built](engine.md#replay)) |
 | Open questions about Dhan's feed (what `ltt` measures, packet 7, candle stamping) need a live session to answer | Answer them from a recorded day |
 
 Dhan's history API keeps candles, not ticks. A session not recorded on the day is lost at tick level for good. That is why the journal is always on and why recording started before the analytics exist.
@@ -50,7 +50,8 @@ Two kinds of records, interleaved in arrival order.
 | `engine-stop` | The engine stops cleanly | The reason (SIGINT, SIGTERM, crash) |
 | `subscribe` / `unsubscribe` | Instruments are added to or removed from a socket | The instrument keys, the socket, and for `subscribe` the mode (`ticker`, `quote`, `full`) |
 | `state` | A socket changes state | `connecting`, `live`, `reconnecting` (with the reason), `stopped` (with the reason), `idle` |
-| `gap` | Data is known to be missing | `reason` (`reconnect` or `suspend`), `from` and `to` times |
+| `gap` | Data is known to be missing | `reason` (`reconnect`, `suspend`, or `replay` for time spent replaying), `from` and `to` times |
+| `replay-start` / `replay-stop` | The feed switched to replaying a recorded day, and back to live | The day, start time and speed; the reason for stopping. See [engine.md](engine.md#replay) |
 
 Example: the start of the 15 November file, from a run with the always-on universe and one browser tab open:
 
@@ -85,6 +86,7 @@ seq …  control  subscribe     keys from a browser tab (Market Watch) on socket
 |---|---|
 | Keeping every session from Monday 16 November 2026 on | Now |
 | Checking the engine's 1-minute bars against Dhan's candles | E3 |
+| **Feed replay:** a recorded day streamed through a stand-in for Dhan's socket, at a chosen speed, so every page works on recorded prices ([engine.md](engine.md#replay)) | Now |
 | **Replay:** a recorded day through the same engine code, on a virtual clock, at chosen speed, watchable on the web like live | E4 |
 | **Golden-file tests:** replaying a recorded day must produce exactly the bars the live run built, after every code change | E4 |
 | Volume, VWAP and buy/sell pressure for the constituents, from the Quote packets | E3 onwards (recorded from 16 November 2026) |
@@ -98,7 +100,7 @@ seq …  control  subscribe     keys from a browser tab (Market Watch) on socket
 | **Backup off the server.** Files exist only on the VM's disk; losing the disk loses every recorded session | Compress each finished day with zstd and upload it to the S3 bucket (`<prefix>journal/YYYY-MM-DD.bin.zst`), and catch up on start. Next in E2 |
 | Compression | With the upload. Raw frames compress well |
 | Retention | Decide after measuring a full session. Nothing is deleted today |
-| Replay | E4 |
+| Deterministic replay on a virtual clock (the feed replay runs on the wall clock) | E4 |
 | OI and bid/ask (Full mode) | With NIFTY futures in the universe, next in E2 |
 
 ## Where to see it

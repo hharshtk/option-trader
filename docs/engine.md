@@ -2,7 +2,7 @@
 
 The engine is a long-running Node process that will own everything that talks to Dhan: market data, the journal, analytics, strategies and orders. The web app is its operator console. Everything the engine does is reported to the web.
 
-This document describes what is built. For what comes next, see [engine-plan.md](engine-plan.md). Last updated 2026-11-15.
+This document describes what is built. For what comes next, see [engine-plan.md](engine-plan.md). Last updated 2026-11-16.
 
 ## Contents
 
@@ -17,12 +17,13 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 9. [Telemetry stream](#telemetry-stream)
 10. [Logs and metrics](#logs-and-metrics)
 11. [Journal](#journal)
-12. [Always-on universe](#always-on-universe)
-13. [Session calendar](#session-calendar)
-14. [Code layout and rules](#code-layout-and-rules)
-15. [Testing](#testing)
-16. [Extending it](#extending-it)
-17. [Troubleshooting](#troubleshooting)
+12. [Replay](#replay)
+13. [Always-on universe](#always-on-universe)
+14. [Session calendar](#session-calendar)
+15. [Code layout and rules](#code-layout-and-rules)
+16. [Testing](#testing)
+17. [Extending it](#extending-it)
+18. [Troubleshooting](#troubleshooting)
 
 ## Status
 
@@ -43,6 +44,7 @@ Today the engine monitors itself and the Dhan account, **owns the live Dhan feed
 |---|---|
 | `npm run engine` | Starts the engine with `.env.local`. Use this on days you record |
 | `npm run engine:dev` | The same under `node --watch`: restarts on every edit |
+| `npm run engine:replay` | Starts on a recorded day instead of the live feed. Options after `--`: `--date YYYY-MM-DD` (default: newest recorded day), `--from HH:MM` IST (default: 09:00 on a trading day), `--speed N` (default 1). See [Replay](#replay) |
 | `npm run test:engine` | Engine tests |
 | Ctrl-C | Clean stop: closes connections, releases the lock, flushes the log |
 
@@ -211,6 +213,7 @@ Plain HTTP on `127.0.0.1:3100`. Every request needs `Authorization: Bearer <ENGI
 | `POST /v1/feed/pin` | `{ key, connection: number \| "new", name?, connectionName? }`: keep an instrument subscribed |
 | `POST /v1/feed/unpin` | `{ key }` |
 | `POST /v1/feed/connections/:id/close` | Close a socket other than Main |
+| `POST /v1/replay` | Switch the feed to a recorded day and back, and steer it: `{ action: "start", date?, from?, speed? }`, `"stop"` (back to live), `"play"`, `"pause"`, `{ action: "speed", speed }`, `{ action: "seek", to: "HH:MM[:SS]" }`. Answers `{ ok, message }`. See [Replay](#replay) |
 
 Feed routes answer 503 for the second or so after start-up, before the feed exists.
 
@@ -235,6 +238,8 @@ curl -sN -H "Authorization: Bearer $T" "http://127.0.0.1:3100/v1/telemetry?topic
 | `journal`, `journalDays` | Today's file and counts (see [Journal](#journal)); recorded days with sizes, newest first |
 | `universe` | Name, instrument count and any entries that couldn't be resolved |
 | `process` | `rssBytes`, `heapUsedBytes`, `cpuPercent`, `eventLoopDelayP99Ms` |
+| `replay` | `null` when live. During a replay: `date`, `state` (`playing`, `paused`, `ended`), `speed`, `at` (recorded time reached), `startAt`/`endAt`, `frames`/`totalFrames`, `sockets`, `since`, `liveAt` (when it goes back to live on its own) |
+| `replayBlocked` | Why a replay can't start now (a session is open or opens within 30 minutes), or `null` |
 
 ## Telemetry stream
 
@@ -302,6 +307,44 @@ Full explanation: [journal.md](journal.md). In short: every raw WebSocket frame,
 
 `FEED_CAPTURE` no longer applies to the engine: the journal replaces it.
 
+## Replay
+
+For working on the app while the market is closed: the engine plays a recorded day back through a stand-in for Dhan's WebSocket, so every page shows that day's prices at their recorded pace. The feed opens the stand-in exactly as it opens Dhan, sends it the same subscribe requests and receives the same binary frames, so the hub, quote streams, Live Feed page and everything built on them run unchanged.
+
+**Switching.** On the Engine page, Overview → Feed source: pick a day, a start time and a speed, then Start replay. While replaying, the same panel has play/pause, speeds ×1 to ×300, a scrubber, Jump to a time, and Back to live. The header shows a **Replay** tag next to the Engine dot on every page, and the Engine page a banner. Or start the engine straight into a replay:
+
+```bash
+npm run engine:replay                                   # newest day, from 09:00, ×1
+npm run engine:replay -- --date 2026-11-16 --from 13:30 --speed 10
+```
+
+**What it mimics.**
+
+| Dhan does | The replay does |
+|---|---|
+| Sends frames as the market moves | Sends each journaled frame at its recorded receive time, scaled by the speed |
+| Sends only what a socket subscribed, in its mode | The same. A packet recorded in a richer mode is cut down (Quote or Full to Ticker, Full to Quote); one recorded in a poorer mode is sent as recorded |
+| Answers a subscribe with the instrument's latest state | Sends its latest recorded price packet, and in Ticker mode its previous close, at once |
+| Previous close in Ticker mode only; OI in Quote and Full | The same |
+| Disconnect request (code 12) closes the socket | The same |
+| Silence for an instrument that doesn't trade | Silence for an instrument with nothing recorded (a line in the `replay` log says how many) |
+
+**Time.** During a replay the web sees recorded time: a quote's time is when that frame originally arrived (to the millisecond), and so are last-tick times, socket times and Live Feed event times. The live feed code is unchanged and stamps frames with the wall clock as always; the player remembers which recorded frame it delivered in each wall-clock millisecond, and the engine rewrites the times in what it sends out (`/v1/quotes`, `/v1/feed`, `feed` telemetry) in [retime.ts](../src/engine/replay/retime.ts). Those streams also carry the replay's `clock` (recorded time now, speed, day), so ages such as "tick 2 s ago" on the Live Feed and Engine pages are measured from recorded time, and the Live Feed page shows "Replay 10:42:13". The header's market status still follows the wall clock. A seek resends every subscribed instrument's state at the new time, so prices jump there; going back in time is allowed. The replay stays on the last prices when it reaches the end of the file. The engine's logs stay on the wall clock.
+
+**Session view and Pulse.** During a replay, `GET /v1/journal/session` answers for the replayed day (and by default) with that day as far as the replay has reached, read from the same file with the same aggregator as a live day. So the Session view and Pulse build up minute by minute as they do live, and a seek back shrinks them again. Pulse follows the replay's day on its own and says "Replay of …" instead of "Live". The first read after a start or a seek back catches up in chunks (about 0.2 s for an hour of the day); later reads take milliseconds. Code: [replay-session.ts](../src/engine/replay/replay-session.ts).
+
+**What it doesn't do.** It isn't the E4 replay: nothing runs on a virtual clock, and runs aren't reproducible to the millisecond. It doesn't recreate the recorded subscriptions: the always-on universe and open pages subscribe as they do live. Recorded gaps play as silence.
+
+**Guard rails.** A session not recorded on the day is lost for good, so:
+
+- Replay is refused from 30 minutes before any segment's session (pre-open included) until it closes. A running replay switches back to live on its own at that point; the Feed source panel says when.
+- Nothing is journaled while replaying. The live journal gets a `replay-start` record, then on the way back a `replay-stop` and a `gap` with reason `replay` covering the time the live feed was off.
+- Switching closes every quote stream and Live Feed page stream; browsers reconnect within 3 seconds and resubscribe.
+
+**Cost.** Starting reads the whole file: about 0.25 s and 90 MB of memory for a full day (982,000 frames). A seek across the whole day blocks the engine for about 0.4 s; short seeks are instant.
+
+Code: [player.ts](../src/engine/replay/player.ts) (the stand-in socket and the timing), [retime.ts](../src/engine/replay/retime.ts) (recorded times on the web), [recording.ts](../src/engine/replay/recording.ts) (the file index), [feed-switch.ts](../src/engine/feed-switch.ts) (switching and the guard), tests in [replay.test.ts](../src/engine/replay/replay.test.ts), which run the real feed client against the stand-in.
+
 ## Always-on universe
 
 [config/engine/universe.json](../config/engine/universe.json) lists instruments the engine subscribes at start and never releases, so sessions are journaled even with no page open. Pages still add what they show on top. Today: the NIFTY index in Ticker mode and its 50 constituents in Quote mode (51 instruments, one socket). NIFTY futures follow, in Full mode, once the instrument download includes futures.
@@ -342,6 +385,8 @@ src/engine/
   kernel/events.ts        MarketEvent types
   market/session-calendar.ts
   feed.ts                 the Dhan feed hub inside the engine, wired to the journal and universe
+  feed-switch.ts          live or replay: swaps the feed's source, guards the market hours
+  replay/                 a journal file loaded for replay, the player that stands in for Dhan's socket, and recorded times for the web
   journal/                journal format (encode/decode), writer, and the session reader behind the Session view
   market/universe.ts      always-on universe from config/engine/universe.json
   api/feed-routes.ts      quote stream, Live Feed stream and actions

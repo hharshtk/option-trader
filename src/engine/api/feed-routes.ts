@@ -97,7 +97,8 @@ function json(response: ServerResponse, code: number, body: unknown) {
   response.end(JSON.stringify(body));
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
+/** The request body as JSON; null when it is too large or not JSON. */
+export async function readJson(request: IncomingMessage): Promise<unknown> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {

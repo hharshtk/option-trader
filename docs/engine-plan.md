@@ -85,6 +85,7 @@ The engine's unit of work is a **run**: one kernel (event bus, clock, market sta
 - **Isolation.** A run in a child process can't slow down or crash the live run.
 - **Run ids.** Everything a run emits carries its id (`live` for the live run), so the web shows a replay in the same panels as live.
 - **Speed.** Replays and backtests run either as fast as possible or paced at ×1, ×10 or ×60, so a recorded session can be watched on the web as if it were live. UI work and testing can then happen in the evenings and at weekends.
+- **Feed replay, built ahead of E4.** For UI work the live feed can already be switched to a recorded day streamed through a stand-in for Dhan's socket, on the wall clock ([engine.md](engine.md#replay)). It replaces the live run rather than running beside it, and isn't deterministic; E4's replay is the reproducible one, in its own process on a virtual clock.
 
 ### Kernel
 

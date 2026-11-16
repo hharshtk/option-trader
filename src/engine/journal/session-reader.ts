@@ -42,18 +42,10 @@ export function createJournalSessions({
   now: () => number;
 }): JournalSessions {
   const days = new Map<string, Day>();
-  const names = instrumentNames();
 
   function fresh(date: string): Day {
-    const session = calendar.session("NSE_EQ", date);
     return {
-      aggregator: createSessionAggregator({
-        date,
-        session: session && { open: session.open, close: session.close },
-        dayStart: session ? (session.preOpen?.start ?? session.open) : null,
-        benchmark: BENCHMARK,
-        names: (key) => names.get(key) ?? null,
-      }),
+      aggregator: createDayAggregator(date, calendar),
       position: 0,
       carry: Buffer.alloc(0),
       busy: Promise.resolve(),
@@ -123,6 +115,21 @@ export function createJournalSessions({
       });
     },
   };
+}
+
+let names: Map<string, InstrumentName> | undefined;
+
+/** An empty summary of a day, ready to be fed its journal's records in order. */
+export function createDayAggregator(date: string, calendar: SessionCalendar): SessionAggregator {
+  names ??= instrumentNames();
+  const session = calendar.session("NSE_EQ", date);
+  return createSessionAggregator({
+    date,
+    session: session && { open: session.open, close: session.close },
+    dayStart: session ? (session.preOpen?.start ?? session.open) : null,
+    benchmark: BENCHMARK,
+    names: (key) => names!.get(key) ?? null,
+  });
 }
 
 /** Symbols for the indices and their constituents, keyed by instrument key. */
