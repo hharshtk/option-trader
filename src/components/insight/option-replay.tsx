@@ -38,6 +38,16 @@ const plainRupees = (v: number) => `₹${quantity.format(Math.round(v))}`;
 const hhmm = (at: number) => istTime.format(new Date(at)).slice(0, 5);
 const signedPts = (v: number) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(1)}`;
 
+/** The JSON body, or null when there is none (a crashed function or a proxy error page). */
+async function readJson<T>(response: Response): Promise<T | null> {
+  const text = await response.text();
+  try {
+    return text ? (JSON.parse(text) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
 type Choices = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; data: OptionChoices };
 
 export function OptionReplay({
@@ -140,9 +150,9 @@ function useChoices(low: number, high: number, expiry: string | null): Choices {
     const query = new URLSearchParams({ min: String(low), max: String(high), ...(expiry ? { expiry } : {}) });
     fetch(`/api/insight/options?${query}`, { signal: controller.signal, cache: "no-store" })
       .then(async (response) => {
-        const body = await response.json();
-        if (!response.ok) setChoices({ state: "error", message: body?.error?.message ?? `HTTP ${response.status}` });
-        else setChoices({ state: "ready", data: body as OptionChoices });
+        const body = await readJson<OptionChoices & { error?: { message: string } }>(response);
+        if (!response.ok || !body) setChoices({ state: "error", message: body?.error?.message ?? `Contract list failed: HTTP ${response.status}` });
+        else setChoices({ state: "ready", data: body });
       })
       .catch((error: Error) => {
         if (!controller.signal.aborted) setChoices({ state: "error", message: error.message });
@@ -173,9 +183,9 @@ function useCandles(date: string, ids: string[]) {
         const chunk = wanted.slice(i, i + IDS_PER_REQUEST);
         try {
           const response = await fetch(`/api/insight/option-candles?date=${date}&ids=${chunk.join(",")}`, { signal: controller.signal, cache: "no-store" });
-          const body = (await response.json()) as OptionCandles & { error?: { message: string } };
+          const body = await readJson<OptionCandles & { error?: { message: string } }>(response);
           if (cancelled) return;
-          if (!response.ok) errors.push(body.error?.message ?? `HTTP ${response.status}`);
+          if (!response.ok || !body) errors.push(body?.error?.message ?? `HTTP ${response.status}`);
           else {
             setData((current) => ({ ...current, ...body.candles }));
             errors.push(...Object.values(body.errors));

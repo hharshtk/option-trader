@@ -10,6 +10,7 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/settings": ["./node_modules/@duckdb/node-bindings-linux-x64/**/*"],
     "/instruments": ["./node_modules/@duckdb/node-bindings-linux-x64/**/*"],
+    "/api/insight/options": ["./node_modules/@duckdb/node-bindings-linux-x64/**/*"],
   },
   // data/ holds runtime files (src/lib/storage.ts), never code the server needs to ship.
   outputFileTracingExcludes: {
