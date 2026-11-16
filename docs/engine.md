@@ -136,6 +136,20 @@ curl -s -o /dev/null -w '%{http_code}\n' https://140.245.240.9/v1/status
 | Process | Git version, host, pid, Node version, start time, memory, CPU, event-loop delay p99 |
 | Metrics | Every counter, gauge and latency histogram the engine records |
 
+**Engine page, Session:** a trading day read back from its journal file, picked from the recorded days; today's view refreshes every 5 seconds. Everything on it is decoded by the engine from the raw frames on disk with the live feed's own parser:
+
+| Panel | Shows |
+|---|---|
+| Headline | NIFTY and its change, breadth (stocks up / down), turnover (VWAP × volume summed), packets decoded, feed rate in the session and its peak minute, gaps |
+| Chart | NIFTY 1-minute bars built from journaled ticks; below it breadth (stocks up minus down) and packets per minute |
+| Movers | Top 5 gainers, top 5 losers, most traded by value |
+| Instruments | Every recorded instrument, sortable: a sparkline of the day, LTP, change from the previous close, from the open and against VWAP, where the price sits in the day's range, volume, turnover, pending buy and sell quantity, packets, last tick |
+| Journal | Records, packets and events by kind, first and last frame, session minutes with data, engine runs, gaps and socket state changes |
+
+**Reference price.** Changes are measured from the last price recorded before 09:00 IST, which is the previous session's close (the universe is subscribed from engine start, so Dhan's subscribe snapshot provides it). Dhan's previous-close packet is used only when received after 09:00: before the open it still holds the close before that (checked 16 November 2026: Thursday's close on Monday morning). An engine started after 09:00 in Quote mode has no reference, so those stocks show no change.
+
+**Cost.** The first request for a day reads the whole file in 1 MB chunks with a yield between them (a 135 MB, 2-million-frame day reads in under a second, stalling the event loop at most about 20 ms at a time). Later requests read only the bytes appended since. The last 4 days read are kept in memory.
+
 **Engine page, Logs:** a live tail that starts with the last 500 lines. Filter by minimum level, component (a component includes its children: `dhan` includes `dhan.feed`) and text. Follow keeps the newest line in view; scrolling up turns it off. The tab keeps the last 2,000 lines; the full history is in `data/engine/logs/`.
 
 When the engine stops, the page says so and how to start it. It reconnects within about 2 seconds of the engine coming back, and clears old log lines when the engine restarted.
@@ -152,7 +166,7 @@ Browser ──► Next.js (session cookie) ──► /api/engine/v1/* ──► 
                                                                       └─ Dhan profile every 15 min
 ```
 
-- **The browser never talks to the engine.** The route [src/app/api/engine/[...path]/route.ts](../src/app/api/engine/[...path]/route.ts) checks the session cookie, adds the token and streams the response through. It allows only `v1/status`, `v1/logs` and `v1/telemetry`. Closing the tab aborts the upstream request.
+- **The browser never talks to the engine.** The route [src/app/api/engine/[...path]/route.ts](../src/app/api/engine/[...path]/route.ts) checks the session cookie, adds the token and streams the response through. It allows only `v1/status`, `v1/logs`, `v1/telemetry` and `v1/journal/session`. Closing the tab aborts the upstream request.
 - **Market data goes through the engine too.** `/api/market/stream` (quotes for a tab), `/api/market/feed` (Live Feed page) and the Live Feed Server Actions forward to the engine's `/v1/quotes`, `/v1/feed` and `/v1/feed/*` when `ENGINE_URL` is set ([web.ts](../src/lib/engine/web.ts)). Browser code is unchanged. Closing a tab releases its instruments in the engine.
 - **The engine never waits for the web.** A browser that falls behind loses its oldest messages and gets a `gap` notice; the engine carries on.
 - **Each side works without the other.** The engine runs with no browser attached. The web works without the engine, minus the engine panels.
@@ -192,6 +206,7 @@ Plain HTTP on `127.0.0.1:3100`. Every request needs `Authorization: Bearer <ENGI
 | `GET /v1/logs?level=&component=&limit=` | `{ entries: LogEntry[] }`, newest last. `limit` defaults to 500, at most 2,000 |
 | `GET /v1/telemetry?topics=status,log,metrics,feed&since=` | Server-sent events (below) |
 | `GET /v1/quotes?i=IDX_I:13,NSE_EQ:1333` | Server-sent quotes for up to 200 instruments, the same events the web's `/api/market/stream` always sent. Subscribes them on Dhan; disconnecting releases them after a 30-second grace period |
+| `GET /v1/journal/session?date=YYYY-MM-DD` | `JournalSession`: the day read back from its journal (see the Session view above). `date` defaults to today in IST; 404 when there is no file for that day |
 | `GET /v1/feed` | Server-sent Live Feed monitor: a `snapshot`, then `health` every second and `events` |
 | `POST /v1/feed/pin` | `{ key, connection: number \| "new", name?, connectionName? }`: keep an instrument subscribed |
 | `POST /v1/feed/unpin` | `{ key }` |
@@ -326,7 +341,7 @@ src/engine/
   kernel/events.ts        MarketEvent types
   market/session-calendar.ts
   feed.ts                 the Dhan feed hub inside the engine, wired to the journal and universe
-  journal/                journal format (encode/decode) and writer
+  journal/                journal format (encode/decode), writer, and the session reader behind the Session view
   market/universe.ts      always-on universe from config/engine/universe.json
   api/feed-routes.ts      quote stream, Live Feed stream and actions
   telemetry/              logger, log file, metrics, health, telemetry hub, process stats, ring buffer

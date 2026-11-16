@@ -102,6 +102,7 @@ seq …  control  subscribe     keys from a browser tab (Market Watch) on socket
 
 ## Where to see it
 
+- **Engine page → Session:** the day decoded from this file: NIFTY 1-minute bars, breadth, movers, every instrument's prices, volume and VWAP, and what the feed delivered (packets by kind, gaps, socket states, engine runs). See [engine.md](engine.md#what-you-see-on-the-web).
 - **Engine page → Overview → Journal panel:** today's file, its size, frames, events and gaps written by this engine run, last write, write latency p99, any disk backlog, and recorded days with sizes.
 - **Health:** the `journal` component in the Health panel and in the header dot's tooltip.
 - **Metrics panel:** `journal.bytes`, `journal.backlog_bytes`, and `journal.write_ms` (write latency).
@@ -143,6 +144,8 @@ for (const r of records) kinds[r.control?.kind ?? "frame"] = (kinds[r.control?.k
 console.log(records.length, "records", kinds, "cut off:", truncatedBytes, "bytes");
 for (const gap of records.filter((r) => r.control?.kind === "gap")) console.log("gap", gap.control);
 ```
+
+To read a file while the engine is still writing it, use `readRecords(bytes, offset, onRecord)`: it stops before a record cut off at the end and returns where to resume. [session-reader.ts](../src/engine/journal/session-reader.ts) follows today's file this way.
 
 To turn frames back into packets, pass `record.frame` to the feed parser in [packets.ts](../src/lib/live/feed/packets.ts), the same code the live feed uses.
 

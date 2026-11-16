@@ -1,0 +1,155 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, appendFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { createSessionCalendar } from "../market/session-calendar.ts";
+import { encodeRecord, MAGIC, readRecords, type JournalRecord } from "./format.ts";
+import { createJournalSessions } from "./session-reader.ts";
+import { createSessionAggregator } from "./session-summary.ts";
+
+const ist = (value: string) => Date.parse(`${value}+05:30`);
+const DATE = "2026-11-16";
+const OPEN = ist(`${DATE}T09:15:00`);
+
+function header(view: DataView, code: number, length: number, segment: number, securityId: number) {
+  view.setUint8(0, code);
+  view.setInt16(1, length, true);
+  view.setUint8(3, segment);
+  view.setInt32(4, securityId, true);
+}
+
+function ticker(securityId: number, ltp: number) {
+  const view = new DataView(new ArrayBuffer(16));
+  header(view, 2, 16, 0, securityId);
+  view.setFloat32(8, ltp, true);
+  return Buffer.from(view.buffer);
+}
+
+function prevClose(securityId: number, value: number) {
+  const view = new DataView(new ArrayBuffer(16));
+  header(view, 6, 16, 0, securityId);
+  view.setFloat32(8, value, true);
+  return Buffer.from(view.buffer);
+}
+
+function quote(securityId: number, q: { ltp: number; volume: number; atp: number; open: number; high: number; low: number }) {
+  const view = new DataView(new ArrayBuffer(50));
+  header(view, 4, 50, 1, securityId);
+  view.setFloat32(8, q.ltp, true);
+  view.setFloat32(18, q.atp, true);
+  view.setInt32(22, q.volume, true);
+  view.setInt32(26, 300, true);
+  view.setInt32(30, 700, true);
+  view.setFloat32(34, q.open, true);
+  view.setFloat32(42, q.high, true);
+  view.setFloat32(46, q.low, true);
+  return Buffer.from(view.buffer);
+}
+
+let seq = 0;
+const frame = (at: number, bytes: Buffer): JournalRecord => ({ type: "frame", connection: 1, seq: ++seq, recvTs: at, frame: bytes });
+const control = (at: number, data: { kind: string; [field: string]: unknown }): JournalRecord => ({
+  type: "control",
+  connection: 1,
+  seq: ++seq,
+  recvTs: at,
+  control: data,
+});
+
+function aggregator() {
+  const calendar = createSessionCalendar();
+  const session = calendar.session("NSE_EQ", DATE)!;
+  return createSessionAggregator({
+    date: DATE,
+    session: { open: session.open, close: session.close },
+    dayStart: session.preOpen!.start,
+    benchmark: "IDX_I:13",
+    names: (key) => (key === "NSE_EQ:2885" ? { symbol: "RELIANCE", name: "Reliance Industries", sector: "Energy" } : null),
+  });
+}
+
+test("the morning snapshot is the reference; the day's ticks build bars, breadth and closes", () => {
+  const agg = aggregator();
+  const before = ist(`${DATE}T06:17:00`);
+  agg.add(control(before, { kind: "engine-start", version: "abc" }));
+  agg.add(control(before, { kind: "subscribe", keys: ["IDX_I:13"], mode: "ticker" }));
+  agg.add(control(before, { kind: "subscribe", keys: ["NSE_EQ:2885"], mode: "quote" }));
+  // Before the open Dhan's previous-close packet is a day stale; the snapshot price is Friday's close.
+  agg.add(frame(before, ticker(13, 25000)));
+  agg.add(frame(before, prevClose(13, 24800)));
+  agg.add(frame(before, quote(2885, { ltp: 1300, volume: 9_000_000, atp: 1290, open: 1280, high: 1310, low: 1275 })));
+
+  agg.add(frame(OPEN + 1_000, ticker(13, 25100)));
+  agg.add(frame(OPEN + 20_000, ticker(13, 25150)));
+  agg.add(frame(OPEN + 40_000, ticker(13, 25050)));
+  agg.add(frame(OPEN + 50_000, quote(2885, { ltp: 1295, volume: 10_000, atp: 1297, open: 1299, high: 1301, low: 1294 })));
+  // Nothing in minute 1; minute 2 has one tick each.
+  agg.add(frame(OPEN + 125_000, ticker(13, 25200)));
+  agg.add(frame(OPEN + 130_000, quote(2885, { ltp: 1305, volume: 25_000, atp: 1300, open: 1299, high: 1306, low: 1294 })));
+
+  const s = agg.summary({ builtAt: OPEN + 131_000, readMs: 1, bytes: 1 });
+  assert.equal(s.minutes.length, 3);
+  assert.deepEqual(s.minutes[0].bar, [25100, 25150, 25050, 25050]);
+  assert.equal(s.minutes[1].bar, null);
+  assert.deepEqual(s.minutes[2].bar, [25200, 25200, 25200, 25200]);
+  assert.equal(s.minutes[0].frames, 4);
+  // RELIANCE was below Friday's 1,300 at the end of minute 0 and minute 1, above it now.
+  assert.deepEqual(s.minutes.map((m) => [m.advancers, m.decliners]), [[0, 1], [0, 1], [1, 0]]);
+
+  const nifty = s.instruments.find((i) => i.key === "IDX_I:13")!;
+  assert.equal(nifty.reference, 25000);
+  assert.equal(nifty.ltp, 25200);
+  assert.deepEqual([nifty.open, nifty.high, nifty.low], [25100, 25200, 25050]);
+  assert.deepEqual(nifty.closes, [25050, 25050, 25200]);
+  assert.equal(nifty.packets, 4);
+
+  const reliance = s.instruments.find((i) => i.key === "NSE_EQ:2885")!;
+  assert.equal(reliance.symbol, "RELIANCE");
+  assert.equal(reliance.mode, "quote");
+  assert.equal(reliance.reference, 1300);
+  assert.deepEqual([reliance.open, reliance.high, reliance.low, reliance.vwap], [1299, 1306, 1294, 1300]);
+  assert.equal(reliance.volume, 25_000);
+  assert.deepEqual([reliance.buyQty, reliance.sellQty], [700, 300]);
+  assert.deepEqual(reliance.closes, [1295, 1295, 1305]);
+  assert.equal(s.runs[0].version, "abc");
+  assert.equal(s.file.packets.prevClose, 1);
+});
+
+test("a previous-close packet received during the day is used when there was no morning snapshot", () => {
+  const agg = aggregator();
+  agg.add(frame(OPEN + 1_000, prevClose(13, 24900)));
+  agg.add(frame(OPEN + 1_000, ticker(13, 25000)));
+  assert.equal(agg.summary({ builtAt: 0, readMs: 0, bytes: 0 }).instruments[0].reference, 24900);
+});
+
+test("readRecords leaves a record cut off at the end for the next read", () => {
+  const one = encodeRecord("frame", 1, 1, 10, Buffer.from("abc"));
+  const two = encodeRecord("frame", 1, 2, 20, Buffer.from("defg"));
+  const bytes = Buffer.concat([one, two.subarray(0, 7)]);
+  const seen: number[] = [];
+  const end = readRecords(bytes, 0, (r) => seen.push(r.seq));
+  assert.deepEqual(seen, [1]);
+  assert.equal(end, one.length);
+});
+
+test("the reader follows a file as it grows, reading only what was appended", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "journal-session-"));
+  const file = path.join(directory, `${DATE}.bin`);
+  const sessions = createJournalSessions({ directory, calendar: createSessionCalendar(), now: () => 0 });
+  assert.equal(await sessions.read("2026-11-17"), null);
+
+  const first = encodeRecord("frame", 1, 1, OPEN + 1_000, ticker(13, 25000));
+  const second = encodeRecord("frame", 1, 2, OPEN + 61_000, ticker(13, 25100));
+  // The second record arrives in two writes, as it would mid-flush.
+  writeFileSync(file, Buffer.concat([MAGIC, first, second.subarray(0, 10)]));
+  let s = (await sessions.read(DATE))!;
+  assert.equal(s.file.frames, 1);
+  assert.equal(s.file.bytes, MAGIC.length + first.length);
+
+  appendFileSync(file, second.subarray(10));
+  s = (await sessions.read(DATE))!;
+  assert.equal(s.file.frames, 2);
+  assert.equal(s.minutes.length, 2);
+  assert.equal(s.instruments[0].ltp, 25100);
+});

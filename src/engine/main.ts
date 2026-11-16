@@ -8,6 +8,7 @@ import { PROTOCOL_VERSION, type EngineStatus, type LogLevel, type SegmentSession
 import { createControlServer } from "./api/server.ts";
 import { createDhanWatch } from "./dhan-watch.ts";
 import { startFeed, subscriptionSnapshot, type EngineFeed } from "./feed.ts";
+import { createJournalSessions } from "./journal/session-reader.ts";
 import { createJournal } from "./journal/writer.ts";
 import { createLiveClock } from "./kernel/clock.ts";
 import { acquireLock, EngineLockedError } from "./lock.ts";
@@ -99,6 +100,7 @@ const journal = createJournal({
   onError: (error) => journalLog.error("journal write failed", { error: error.message }),
   onWriteLatency: (ms) => metrics.observe("journal.write_ms", ms),
 });
+const journalSessions = createJournalSessions({ directory: path.join(config.dataDir, "journal"), calendar, now: clock.now });
 const dhan = createDhanWatch({
   log: logs.logger("dhan"),
   health,
@@ -157,6 +159,7 @@ const server = createControlServer({
   logs,
   log: logs.logger("api"),
   feed: () => feed?.hub ?? null,
+  journalSession: (date) => journalSessions.read(date ?? calendar.istDate(clock.now())),
 });
 
 health.set("engine", "ok");

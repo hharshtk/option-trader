@@ -118,6 +118,87 @@ export interface JournalDay {
   bytes: number;
 }
 
+/**
+ * A trading day read back from its journal file: what the market did and what the feed delivered,
+ * computed only from the raw frames on disk. `GET /v1/journal/session?date=YYYY-MM-DD`.
+ */
+export interface JournalSession {
+  date: string;
+  /** The NSE session that day (09:15–15:30 IST), or null on a weekend or holiday. */
+  session: { open: number; close: number } | null;
+  /** Engine wall-clock ms when this was built. */
+  builtAt: number;
+  /** How long reading the bytes added since the previous request took, in ms. */
+  readMs: number;
+  file: {
+    bytes: number;
+    records: number;
+    frames: number;
+    controls: number;
+    /** Parsed packets by kind: ticker, quote, prevClose, … */
+    packets: Record<string, number>;
+    /** Control records by kind: subscribe, state, gap, … */
+    events: Record<string, number>;
+    firstFrameAt: number | null;
+    lastFrameAt: number | null;
+  };
+  /** Each engine start in the file, with its stop when one was recorded. */
+  runs: { startedAt: number; version: string | null; stoppedAt: number | null; reason: string | null }[];
+  gaps: { reason: string; from: number; to: number; connection: number }[];
+  /** The last 50 socket state changes. */
+  states: { at: number; connection: number; state: string; reason: string | null }[];
+  /** The benchmark index used for the chart and per-minute bars. */
+  benchmark: string;
+  /** One entry per session minute up to the last data, starting at 09:15 IST. */
+  minutes: SessionMinute[];
+  instruments: SessionInstrument[];
+}
+
+export interface SessionMinute {
+  /** Start of the minute, wall-clock ms. */
+  at: number;
+  frames: number;
+  packets: number;
+  /** Benchmark open, high, low, close in this minute, from its ticks. */
+  bar: [number, number, number, number] | null;
+  /** Equities above and below their reference price at the end of the minute. */
+  advancers: number;
+  decliners: number;
+}
+
+export interface SessionInstrument {
+  key: string;
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  /** The mode it was subscribed in: ticker, quote or full. */
+  mode: string | null;
+  /** Packets received for it during the day (from 09:00 IST on a trading day). */
+  packets: number;
+  /**
+   * The price changes are measured from: the last price recorded before 09:00 IST, which is the
+   * previous session's close; else Dhan's previous-close packet received during the day (Ticker
+   * mode only). Null when the engine started after 09:00 in Quote mode.
+   */
+  reference: number | null;
+  ltp: number | null;
+  /** Day open, high and low: the exchange's figures in Quote mode, from the day's ticks in Ticker mode. */
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  /** The exchange's average traded price for the day. Quote mode only. */
+  vwap: number | null;
+  /** Shares traded today, cumulative. Quote mode only. */
+  volume: number | null;
+  /** Pending buy and sell quantity in the order book. Quote mode only. */
+  buyQty: number | null;
+  sellQty: number | null;
+  firstAt: number | null;
+  lastAt: number | null;
+  /** Last price at the end of each session minute, aligned with `minutes`; null before its first tick. */
+  closes: (number | null)[];
+}
+
 export interface UniverseStatus {
   name: string;
   /** Instruments the engine keeps subscribed whether or not a page shows them. */

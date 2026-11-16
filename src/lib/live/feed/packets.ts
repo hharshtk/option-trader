@@ -134,8 +134,9 @@ const HEADER_BYTES = 8;
 // undocumented, so it falls back to the length in the header and comes out as "unknown".
 const PACKET_BYTES: Record<number, number> = { 1: 16, 2: 16, 4: 50, 5: 12, 6: 16, 8: 162, 50: 10 };
 
-export function parseFrame(frame: ArrayBuffer): Packet[] {
-  const view = new DataView(frame);
+/** Accepts a frame's ArrayBuffer, or a view such as a Buffer read from the journal. */
+export function parseFrame(frame: ArrayBuffer | ArrayBufferView): Packet[] {
+  const view = ArrayBuffer.isView(frame) ? new DataView(frame.buffer, frame.byteOffset, frame.byteLength) : new DataView(frame);
   const packets: Packet[] = [];
   let offset = 0;
 

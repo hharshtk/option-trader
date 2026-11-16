@@ -57,7 +57,19 @@ export function decodeJournal(bytes: Buffer): { records: JournalRecord[]; trunca
     throw new JournalFormatError("Not a journal file (bad magic)");
   }
   const records: JournalRecord[] = [];
-  let offset = MAGIC.length;
+  const end = readRecords(bytes, MAGIC.length, (record) =>
+    records.push(record.frame ? { ...record, frame: Buffer.from(record.frame) } : record),
+  );
+  return { records, truncatedBytes: bytes.length - end };
+}
+
+/**
+ * Reads the complete records in `bytes` from `offset`, which must be the start of a record, and
+ * returns the offset just past the last one. A record cut off at the end is left for the caller
+ * to retry once more bytes arrive, so a file can be read while it is being written. Frames are
+ * views into `bytes`, not copies: copy one to keep it after `bytes` is reused.
+ */
+export function readRecords(bytes: Buffer, offset: number, onRecord: (record: JournalRecord) => void): number {
   while (offset + 4 <= bytes.length) {
     const length = bytes.readUInt32LE(offset);
     if (length < HEADER_BYTES - 4) throw new JournalFormatError(`Bad record length ${length} at byte ${offset}`);
@@ -66,14 +78,14 @@ export function decodeJournal(bytes: Buffer): { records: JournalRecord[]; trunca
     const type = typeCode === RecordType.frame ? "frame" : typeCode === RecordType.control ? "control" : null;
     if (!type) throw new JournalFormatError(`Unknown record type ${typeCode} at byte ${offset}`);
     const payload = bytes.subarray(offset + HEADER_BYTES, offset + 4 + length);
-    records.push({
+    onRecord({
       type,
       connection: bytes.readUInt16LE(offset + 6),
       seq: bytes.readDoubleLE(offset + 8),
       recvTs: bytes.readDoubleLE(offset + 16),
-      ...(type === "frame" ? { frame: Buffer.from(payload) } : { control: JSON.parse(payload.toString("utf8")) }),
+      ...(type === "frame" ? { frame: payload } : { control: JSON.parse(payload.toString("utf8")) }),
     });
     offset += 4 + length;
   }
-  return { records, truncatedBytes: bytes.length - offset };
+  return offset;
 }

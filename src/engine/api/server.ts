@@ -7,6 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import {
   PROTOCOL_VERSION,
   type EngineStatus,
+  type JournalSession,
   type LogLevel,
   type TelemetryHello,
   type TelemetryTopic,
@@ -33,6 +34,8 @@ export interface ControlServerOptions {
   throttle?: AuthThrottle;
   /** The live feed, once started. Its routes answer 503 until then. */
   feed?: () => FeedHub | null;
+  /** A day read back from its journal file; null when there is no file for that day. */
+  journalSession?: (date: string | null) => Promise<JournalSession | null>;
 }
 
 export interface ControlServer {
@@ -121,6 +124,13 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         }
         case "/v1/telemetry":
           return streamTelemetry(request, response, url);
+        case "/v1/journal/session": {
+          if (!options.journalSession) return json(response, 404, { error: "No journal" });
+          const date = url.searchParams.get("date");
+          if (date !== null && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(response, 400, { error: "date must be YYYY-MM-DD" });
+          const session = await options.journalSession(date);
+          return session ? json(response, 200, session) : json(response, 404, { error: `No journal for ${date ?? "today"}` });
+        }
         default:
           return json(response, 404, { error: `No route ${url.pathname}` });
       }

@@ -15,12 +15,13 @@ import type {
 import { istDateTime, istTime, quantity } from "@/lib/format";
 import type { FeedHealth } from "@/lib/live/feed/monitor";
 import { engineSummary, engineView, VIEW_LABEL, VIEW_TONE } from "./engine-status";
+import { SessionView } from "./session-view";
 import { useEngineTelemetry } from "./use-engine-telemetry";
 
 const TOPICS = ["status", "metrics", "log", "feed"] as const;
 const HEALTH_TONE: Record<HealthState, "up" | "warn" | "down"> = { ok: "up", degraded: "warn", failing: "down" };
 const SEGMENT_NAMES: Record<string, string> = { E: "Equity", D: "Derivatives", C: "Currency", M: "Commodity" };
-const TABS = ["Overview", "Logs"] as const;
+const TABS = ["Overview", "Session", "Logs"] as const;
 type Tab = (typeof TABS)[number];
 
 export function EngineConsole() {
@@ -72,16 +73,16 @@ export function EngineConsole() {
         </div>
       )}
 
-      {tab === "Overview" ? (
+      {tab === "Overview" && (
         <Overview
           status={view === "offline" ? null : status}
           metrics={telemetry.metrics}
           feed={view === "offline" ? null : telemetry.feed}
           dropped={telemetry.dropped}
         />
-      ) : (
-        <Logs entries={telemetry.logs} />
       )}
+      {tab === "Session" && <SessionView status={view === "offline" ? null : status} />}
+      {tab === "Logs" && <Logs entries={telemetry.logs} />}
     </>
   );
 }
