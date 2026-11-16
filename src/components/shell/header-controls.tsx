@@ -12,6 +12,7 @@ import {
   UserIcon,
 } from "@/components/icons";
 import { useStreamStatus } from "@/components/live/live-quote";
+import { createSessionCalendar } from "@/engine/market/session-calendar";
 import { Tooltip } from "@/components/tooltip";
 import { StatusDot } from "@/components/ui";
 import type { IndexQuotes } from "@/lib/cockpit";
@@ -56,6 +57,8 @@ export function BrokerStatus({
 }
 
 const LIVE_WINDOW_MS = 15_000;
+// NSE trading days and hours, holidays included: the same calendar the engine uses.
+const calendar = createSessionCalendar();
 
 const FEED_NOTE: Partial<Record<FeedStatus["state"], string>> = {
   connecting: "feed connecting",
@@ -72,9 +75,28 @@ export function MarketDataStatus({ quotes }: { quotes: IndexQuotes }) {
   if (feed?.state === "live") {
     const lastQuoteAt = stream?.lastQuoteAt ?? null;
     const fresh = lastQuoteAt !== null && now !== null && now - lastQuoteAt < LIVE_WINDOW_MS;
+    const phase = now === null ? null : calendar.phaseAt("NSE_EQ", now);
     return (
       <div className="flex shrink-0 items-center gap-1.5 text-label text-muted">
-        {fresh ? (
+        {phase === "closed" ? (
+          // Dhan keeps repeating the last price after hours, so updates still arrive; they aren't news.
+          <Tooltip
+            side="bottom"
+            sideOffset={6}
+            className={`${tooltipClass} max-w-72`}
+            content="Feed connected. Dhan keeps sending the last price after hours, so updates still arrive, but prices aren't changing."
+          >
+            <span className="flex items-center gap-1.5 font-medium">
+              <StatusDot tone="muted" />
+              Market closed
+            </span>
+          </Tooltip>
+        ) : phase === "pre-open" ? (
+          <span className="flex items-center gap-1.5 font-medium text-warn">
+            <StatusDot tone="warn" />
+            Pre-open
+          </span>
+        ) : fresh ? (
           <span className="flex items-center gap-1.5 font-medium text-up">
             <StatusDot tone="up" />
             Live

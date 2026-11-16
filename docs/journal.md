@@ -70,7 +70,8 @@ seq …  control  subscribe     keys from a browser tab (Market Watch) on socket
 ## How it behaves
 
 - **Always on.** It starts with the engine. There is no switch; `FEED_CAPTURE` no longer applies to the engine.
-- **Written before parsing.** A frame is journaled the moment it arrives, even if the parser later fails on it.
+- **Written before parsing.** During market hours a frame is journaled the moment it arrives, unparsed, even if the parser later fails on it.
+- **Repeats skipped while closed.** After the close Dhan keeps sending index ticker packets several times a second with the same last price and only the timestamp moving (16 November: about 36,000 NIFTY and BANKNIFTY packets between 15:31 and 16:47 IST, 4 with a new price). While a packet's segment is closed, the engine parses the frame and skips it only if every packet in it repeats the last value journaled for that instrument, ignoring the timestamp. The first packet of each instrument (the subscribe snapshot, which gives the previous close), every price change, the pre-open auction and frames it can't read are always kept, and so are segments missing from the calendar. On 16 November this kept 1,620 of 37,870 frames after the close (136 KB instead of 1.6 MB). The engine counts skipped frames in the `journal.frames_skipped` metric. Code: [closed-market-filter.ts](../src/engine/journal/closed-market-filter.ts).
 - **One order across sockets.** The engine numbers records as they arrive (`seq`), across all up to 5 sockets. Together with the receive time, that fixes a single order for the day, which is what makes a replay reproduce the live run exactly. Numbering restarts at each engine start (an `engine-start` record marks it) and at each new day.
 - **A file per IST day.** The file is named by the IST date of the record's receive time, so a session never spans two files. The server runs in UTC; the engine computes IST itself.
 - **Restarts append.** Restarting the engine during the day appends to that day's file.
@@ -172,5 +173,6 @@ Rough estimate for a full session, to be replaced by Monday's real number: the 5
 | [src/engine/journal/format.ts](../src/engine/journal/format.ts) | Encode and decode records |
 | [src/engine/journal/writer.ts](../src/engine/journal/writer.ts) | Today's file, day rollover, counts, recorded days |
 | [src/engine/feed.ts](../src/engine/feed.ts) | Sends frames and feed events to the journal; records reconnect gaps |
+| [src/engine/journal/closed-market-filter.ts](../src/engine/journal/closed-market-filter.ts) | Skips repeated packets while the market is closed |
 | [src/engine/main.ts](../src/engine/main.ts) | Creates the journal; `engine-start`/`engine-stop`, suspend gaps, `journal` health |
 | [src/engine/journal/journal.test.ts](../src/engine/journal/journal.test.ts) | Format round trip, day rollover, restarts, cut-off files |

@@ -112,9 +112,20 @@ function Overview({
     <div className="grid gap-2 p-2 sm:p-3 lg:grid-cols-2">
       <HealthPanel components={status.components} />
 
-      <FeedPanel feed={feed} now={status.now} universe={status.universe} />
+      <FeedPanel
+        feed={feed}
+        now={status.now}
+        universe={status.universe}
+        marketClosed={marketClosed(status)}
+        skipped={metrics?.counters["journal.frames_skipped"] ?? 0}
+      />
 
-      <JournalPanel status={status} latency={metrics?.histograms["journal.write_ms"]} />
+      <JournalPanel
+        status={status}
+        latency={metrics?.histograms["journal.write_ms"]}
+        marketClosed={marketClosed(status)}
+        skipped={metrics?.counters["journal.frames_skipped"] ?? 0}
+      />
 
       <Panel title="Dhan account">
         <dl>
@@ -189,7 +200,24 @@ function Overview({
 
 const FEED_TONE = { idle: "muted", connecting: "warn", live: "up", reconnecting: "warn", stopped: "down" } as const;
 
-function FeedPanel({ feed, now, universe }: { feed: FeedHealth | null; now: number; universe: EngineStatus["universe"] }) {
+/** Every segment is closed: Dhan only repeats last prices, and the journal skips the repeats. */
+function marketClosed(status: EngineStatus) {
+  return status.sessions.length > 0 && status.sessions.every((session) => session.phase === "closed");
+}
+
+function FeedPanel({
+  feed,
+  now,
+  universe,
+  marketClosed,
+  skipped,
+}: {
+  feed: FeedHealth | null;
+  now: number;
+  universe: EngineStatus["universe"];
+  marketClosed: boolean;
+  skipped: number;
+}) {
   if (!feed) {
     return (
       <Panel title="Dhan feed">
@@ -209,6 +237,17 @@ function FeedPanel({ feed, now, universe }: { feed: FeedHealth | null; now: numb
           Always on: {universe.name}, {quantity.format(universe.instruments)} instruments
           {universe.byMode && ` (${Object.entries(universe.byMode).map(([mode, count]) => `${count} ${mode}`).join(", ")})`}
           {universe.problems.length > 0 && <span className="text-warn"> · {universe.problems.length} unresolved</span>}
+        </p>
+      )}
+      {marketClosed && (
+        <p role="status" className="flex items-start gap-1.5 border-b border-line px-3 py-1.5 text-label text-muted">
+          <span className="mt-1.5">
+            <StatusDot tone="muted" />
+          </span>
+          <span>
+            Market closed. Dhan keeps sending the last price, so frames still arrive, but nothing is changing. The journal
+            skips the repeats{skipped > 0 && ` (${quantity.format(skipped)} this run)`}.
+          </span>
         </p>
       )}
       <DataTable
@@ -241,7 +280,17 @@ function FeedPanel({ feed, now, universe }: { feed: FeedHealth | null; now: numb
   );
 }
 
-function JournalPanel({ status, latency }: { status: EngineStatus; latency?: HistogramSnapshot }) {
+function JournalPanel({
+  status,
+  latency,
+  marketClosed,
+  skipped,
+}: {
+  status: EngineStatus;
+  latency?: HistogramSnapshot;
+  marketClosed: boolean;
+  skipped: number;
+}) {
   const journal = status.journal;
   return (
     <Panel title="Journal" meta="raw frames, the source of truth">
@@ -252,6 +301,20 @@ function JournalPanel({ status, latency }: { status: EngineStatus; latency?: His
           <StatRow
             label="This run"
             value={`${quantity.format(journal.frames)} frames · ${quantity.format(journal.controls)} events · ${quantity.format(journal.gaps)} gap${journal.gaps === 1 ? "" : "s"}`}
+          />
+          <StatRow
+            label="Repeats skipped"
+            value={
+              <span className="inline-flex items-center gap-1.5">
+                <StatusDot tone={marketClosed ? "muted" : "up"} />
+                {marketClosed
+                  ? "Market closed: skipping unchanged frames"
+                  : status.sessions.some((session) => session.phase === "closed")
+                    ? "Closed segments only (pre-open): other frames all written"
+                    : "Market open: writing every frame"}
+                {skipped > 0 && <span className="text-muted"> · {quantity.format(skipped)} this run</span>}
+              </span>
+            }
           />
           <StatRow label="Last write" value={journal.lastWriteAt ? <Ago at={journal.lastWriteAt} now={status.now} /> : "—"} />
           {latency && latency.count > 0 && <StatRow label="Write latency p99" value={`${latency.p99} ms`} />}

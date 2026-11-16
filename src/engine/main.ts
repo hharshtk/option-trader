@@ -190,7 +190,7 @@ async function start() {
   await dhan.ready();
   // After the token is loaded, so the first connection doesn't start out "missing a token".
   journal.control("engine-start", { version, pid: process.pid, universe: universe.name }, clock.now());
-  feed = startFeed({ log: logs.logger("feed"), health, metrics, telemetry, journal, universe });
+  feed = startFeed({ log: logs.logger("feed"), health, metrics, telemetry, journal, universe, calendar });
   dhan.tick();
   telemetry.publish("status", status());
   void dhan.check();

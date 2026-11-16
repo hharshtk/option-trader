@@ -295,6 +295,7 @@ Full explanation: [journal.md](journal.md). In short: every raw WebSocket frame,
 - **What else is recorded.** Control records, as JSON: `file-open` (engine version and the subscriptions in force, so a day replays on its own), `engine-start`, `engine-stop`, `subscribe` and `unsubscribe` (instrument keys), `state` (connecting, live, reconnecting, stopped), and `gap`.
 - **Gaps.** A socket that drops and reconnects gets a `gap` record from the moment it went down to the moment it was live again. A status tick more than 5 seconds late (process suspended or starved) gets a `gap` with reason `suspend`. Both are logged as warnings.
 - **Restarts.** A restart on the same day appends to that day's file.
+- **Closed market.** While a segment is closed, frames that only repeat the last value journaled for each instrument (Dhan's after-hours index heartbeat) are skipped and counted in `journal.frames_skipped`. Anything new is still written. See [journal.md](journal.md#how-it-behaves).
 - **Crashes.** At most the last unflushed write is lost; a cut-off last record is detected and skipped when reading.
 - **Format.** [format.ts](../src/engine/journal/format.ts): an 8-byte magic `OTJRNL01`, then records of `length u32 | type u8 | reserved u8 | connection u16 | seq f64 | recvTs f64 | payload`, little-endian. `decodeJournal()` reads a file back.
 - **Size.** About 50 bytes per frame record header plus the frame. Measure a full session before deciding retention; compression and R2 upload come later in E2. The disk has about 90 GB free.

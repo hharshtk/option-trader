@@ -6,7 +6,9 @@
 import { getDhanCredentials, getTokenStore } from "../lib/dhan/config.ts";
 import { createFeedHub, type FeedHub } from "../lib/live/feed/feed-hub.ts";
 import type { FeedEventBody, FeedHealth } from "../lib/live/feed/monitor.ts";
+import { createClosedMarketFilter } from "./journal/closed-market-filter.ts";
 import type { Journal } from "./journal/writer.ts";
+import type { SessionCalendar } from "./market/session-calendar.ts";
 import { byMode, type Universe } from "./market/universe.ts";
 import type { Health } from "./telemetry/health.ts";
 import type { TelemetryHub } from "./telemetry/hub.ts";
@@ -27,6 +29,7 @@ export function startFeed({
   telemetry,
   journal,
   universe,
+  calendar,
 }: {
   log: Logger;
   health: Health;
@@ -34,6 +37,7 @@ export function startFeed({
   telemetry: TelemetryHub;
   journal: Journal;
   universe: Universe;
+  calendar: SessionCalendar;
 }): EngineFeed {
   const store = getTokenStore();
   // When each connection last stopped delivering, so a reconnect can record the gap.
@@ -58,11 +62,17 @@ export function startFeed({
     }
   }
 
+  const quiet = createClosedMarketFilter(calendar);
+
   const hub = createFeedHub({
     readCredentials: getDhanCredentials,
     currentToken: () => store.current(),
     print: (message) => log.info(message),
-    onFrame: (connection, frame, at) => journal.frame(connection, frame, at),
+    onFrame: (connection, frame, at) => {
+      // Every frame goes to disk during market hours; when closed, only ones that say something new.
+      if (quiet.shouldJournal(frame, at)) journal.frame(connection, frame, at);
+      else metrics.increment("journal.frames_skipped");
+    },
     onEvent,
   });
 
