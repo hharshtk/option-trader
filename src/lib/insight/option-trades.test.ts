@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { OPTION_RATES, planTrades, roundTripCharges, simulateTrades, type OptionChoices } from "./option-trades.ts";
+import { candlesAsOf, OPTION_RATES, planTrades, roundTripCharges, simulateTrades, type OptionChoices } from "./option-trades.ts";
 
 const M = 60_000;
 const T0 = Date.UTC(2026, 10, 16, 5, 0);
@@ -51,4 +51,19 @@ test("round-trip charges include brokerage on both orders and STT on the sell si
   const zero = roundTripCharges(0, 0, OPTION_RATES);
   assert.ok(Math.abs(zero - 40 * 1.18) < 1e-9);
   assert.ok(roundTripCharges(0, 10_000, OPTION_RATES) - roundTripCharges(10_000, 0, OPTION_RATES) > 0);
+});
+
+test("candlesAsOf keeps only minutes that had closed, so a replay prices nothing from its future", () => {
+  const candles = { C1: { t: [T0, T0 + M, T0 + 2 * M], o: [1, 2, 3], c: [1.5, 2.5, 3.5], v: [10, 20, 30] } };
+  assert.deepEqual(candlesAsOf(candles, T0 + 2 * M), { C1: { t: [T0, T0 + M], o: [1, 2], c: [1.5, 2.5], v: [10, 20] } });
+  assert.deepEqual(candlesAsOf(candles, T0 + 2 * M - 1).C1.t, [T0]);
+  assert.deepEqual(candlesAsOf(candles, T0).C1.t, []);
+
+  // A firing at T0 held 1 minute: its exit candle (T0 + 1 min) closes at T0 + 2 min.
+  const planned = planTrades([{ at: T0, vote: 1, reading: "", outcome: 1 } as never], () => 25210, strikes, { kind: "relative", offset: 0 }, "both");
+  const id = planned[0].leg!.securityId;
+  const series = { [id]: candles.C1 };
+  const options = { horizon: 1, qty: 75, slippage: 0, spotAt: () => null };
+  assert.match(simulateTrades(planned, candlesAsOf(series, T0 + 90_000), options)[0].skipped ?? "", /Waiting/);
+  assert.equal(simulateTrades(planned, candlesAsOf(series, T0 + 2 * M), options)[0].skipped, null);
 });

@@ -141,6 +141,21 @@ function closeAt(candles: OptionCandles["candles"][string] | undefined, at: numb
   return found;
 }
 
+/**
+ * The candles as Dhan would have served them at `time`: only minutes that had closed by then.
+ * During an engine replay this keeps trades from being priced with prices from after the
+ * replay's position; a trade whose exit minute hasn't closed waits, as it does live.
+ */
+export function candlesAsOf(candles: OptionCandles["candles"], time: number): OptionCandles["candles"] {
+  const out: OptionCandles["candles"] = {};
+  for (const [id, series] of Object.entries(candles)) {
+    let end = 0;
+    while (end < series.t.length && series.t[end] + 60_000 <= time) end += 1;
+    out[id] = { t: series.t.slice(0, end), o: series.o.slice(0, end), c: series.c.slice(0, end), v: series.v.slice(0, end) };
+  }
+  return out;
+}
+
 export function simulateTrades(
   planned: PlannedTrade[],
   candles: OptionCandles["candles"],

@@ -75,6 +75,8 @@ export interface ReplayPlayerOptions {
   timers?: ReplayTimers;
   /** Called once each time the replay reaches the end of the file. */
   onEnd?: () => void;
+  /** Called whenever the position jumps: the start, every seek, and a restart from the end. */
+  onJump?: () => void;
 }
 
 export type ReplayState = "playing" | "paused" | "ended";
@@ -175,7 +177,7 @@ function shape(packet: Uint8Array, code: number, mode: FeedMode): Uint8Array | n
 }
 
 export function createReplayPlayer(options: ReplayPlayerOptions): ReplayPlayer {
-  const { recording, now, log = () => {}, timers = DEFAULT_TIMERS, onEnd } = options;
+  const { recording, now, log = () => {}, timers = DEFAULT_TIMERS, onEnd, onJump } = options;
   const { times, count, startAt, endAt } = recording;
   const sockets = new Set<ReplaySocket>();
   // The latest packets per instrument up to the position: what a subscribe snapshot sends.
@@ -329,6 +331,7 @@ export function createReplayPlayer(options: ReplayPlayerOptions): ReplayPlayer {
     anchorWall = now();
     if (state === "ended" && index < count) state = "paused";
     mark();
+    onJump?.();
     for (const socket of sockets) snapshot(socket, socket.subscriptions.keys());
     if (state === "playing") schedule(0);
   }

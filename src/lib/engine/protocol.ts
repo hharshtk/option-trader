@@ -259,6 +259,11 @@ export interface ReplayStatus {
   totalFrames: number;
   /** Sockets the feed has open on the replay. */
   sockets: number;
+  /**
+   * Increases whenever the position jumps (a start or a seek). Pages that draw history up to
+   * the replay's position reload it when this changes.
+   */
+  jumps: number;
   /** Wall-clock ms the engine switched to replay. */
   since: number;
   /** When the engine will switch back to live on its own, before the next session opens. */

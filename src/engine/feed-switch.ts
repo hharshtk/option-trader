@@ -130,6 +130,7 @@ export function createFeedSwitch({
   let feed: EngineFeed | null = null;
   let replay: { player: ReplayPlayer; session: ReplaySession; date: string; since: number } | null = null;
   let loading = false;
+  let jumps = 0;
 
   function startLive() {
     feed?.shutdown();
@@ -175,6 +176,9 @@ export function createFeedSwitch({
       from,
       speed,
       log: (message) => log.info(message),
+      onJump: () => {
+        jumps += 1;
+      },
     });
     const at = now();
     const since = replay?.since ?? at;
@@ -256,7 +260,7 @@ export function createFeedSwitch({
     liveHub: () => (replay ? null : (feed?.hub ?? null)),
     replayStatus() {
       if (!replay) return null;
-      return { date: replay.date, ...replay.player.status(), since: replay.since, liveAt: replayWindow(calendar, now()).liveAt };
+      return { date: replay.date, ...replay.player.status(), jumps, since: replay.since, liveAt: replayWindow(calendar, now()).liveAt };
     },
     replayBlocked: () => replayWindow(calendar, now()).blocked,
     replayDate: () => replay?.date ?? null,

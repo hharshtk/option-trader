@@ -10,6 +10,7 @@ import { DataTable, EmptyState, Field, Panel, Td } from "@/components/ui";
 import { istTime, price, quantity, signedInr } from "@/lib/format";
 import type { Pulse } from "@/lib/insight/pulse";
 import {
+  candlesAsOf,
   futuresComparison,
   planTrades,
   simulateTrades,
@@ -55,8 +56,11 @@ export function OptionReplay({
   focus,
   horizon,
   onSelect,
+  replayAt = null,
 }: {
   pulse: Pulse;
+  /** During an engine replay, how far it has reached: later option candles are hidden. */
+  replayAt?: number | null;
   focus: LabFocus | null;
   /** The Signal lab's hold, so the dropdown can show each signal's firings at it. */
   horizon: number;
@@ -92,10 +96,13 @@ export function OptionReplay({
   const date = new Date((pulse.series[0]?.at ?? pulse.asOf) + IST_OFFSET_MS).toISOString().slice(0, 10);
   const ids = useMemo(() => [...new Set(planned.flatMap((p) => (p.leg ? [p.leg.securityId] : [])))].sort(), [planned]);
   const candles = useCandles(date, ids);
+  // In a replay, only the minutes that had closed by the replay's position (checked per minute).
+  const cutoff = replayAt === null ? null : Math.floor(replayAt / 60_000) * 60_000;
+  const known = useMemo(() => (cutoff === null ? candles.data : candlesAsOf(candles.data, cutoff)), [candles.data, cutoff]);
 
   const trades = useMemo(
-    () => (focus ? simulateTrades(planned, candles.data, { horizon: focus.horizon, qty, slippage, spotAt }) : []),
-    [planned, candles.data, focus, qty, slippage, spotAt],
+    () => (focus ? simulateTrades(planned, known, { horizon: focus.horizon, qty, slippage, spotAt }) : []),
+    [planned, known, focus, qty, slippage, spotAt],
   );
 
   return (

@@ -70,12 +70,14 @@ export function PulseView() {
           <EmptyState>No NIFTY ticks in today&apos;s session yet. The pulse starts after 09:16 IST.</EmptyState>
         </Panel>
       )}
-      {pulse && <PulseBody pulse={pulse} age={Math.max(0, (replay?.at ?? now) - pulse.asOf)} replay={replay?.date ?? null} />}
+      {pulse && (
+        <PulseBody pulse={pulse} age={Math.max(0, (replay?.at ?? now) - pulse.asOf)} replay={replay?.date ?? null} replayAt={replay?.at ?? null} />
+      )}
     </div>
   );
 }
 
-function PulseBody({ pulse, age, replay }: { pulse: Pulse; age: number; replay: string | null }) {
+function PulseBody({ pulse, age, replay, replayAt }: { pulse: Pulse; age: number; replay: string | null; replayAt: number | null }) {
   const { nifty, verdict } = pulse;
   const tone = verdict.stance === "bullish" ? "text-up" : verdict.stance === "bearish" ? "text-down" : "text-warn";
   const stale = age > 15_000;
@@ -147,7 +149,7 @@ function PulseBody({ pulse, age, replay }: { pulse: Pulse; age: number; replay: 
 
       <PulseChart pulse={pulse} focus={focus} />
       <SignalLab pulse={pulse} lab={lab} />
-      <OptionReplay pulse={pulse} focus={focus} horizon={lab.horizon} onSelect={lab.setFocus} />
+      <OptionReplay pulse={pulse} focus={focus} horizon={lab.horizon} onSelect={lab.setFocus} replayAt={replayAt} />
       <HowItWorks pulse={pulse} />
 
       <div className="grid gap-2 lg:grid-cols-2">

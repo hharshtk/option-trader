@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { isSignedIn } from "@/lib/auth";
 import { describeDhanError, getIntradayCandles, getProfile, INDEX } from "@/lib/dhan";
+import { replayBars } from "@/lib/replay-candles";
 
 const INTERVAL_MINUTES = 5;
 const IST_OFFSET_SECONDS = 5.5 * 3600;
@@ -19,6 +20,10 @@ export async function GET(request: Request) {
     return Response.json({ error: { message: "Unknown index" } }, { status: 400 });
   }
   const index = INDEX[name as keyof typeof INDEX];
+  // Set by the chart while the engine replays a recorded day.
+  const replayDate = new URL(request.url).searchParams.get("date");
+  const until = Number(new URL(request.url).searchParams.get("until"));
+  const replay = replayDate !== null && /^\d{4}-\d{2}-\d{2}$/.test(replayDate) && Number.isFinite(until) && until > 0;
 
   try {
     const profile = await getProfile();
@@ -34,9 +39,9 @@ export async function GET(request: Request) {
       securityId: String(index.securityId),
       exchangeSegment: index.segment,
       instrument: "INDEX",
-      interval: String(INTERVAL_MINUTES) as "5",
-      fromDate: istDate.format(now - LOOKBACK_DAYS * 86_400_000),
-      toDate: istDate.format(now + 86_400_000),
+      interval: replay ? "1" : (String(INTERVAL_MINUTES) as "5"),
+      fromDate: replay ? replayDate : istDate.format(now - LOOKBACK_DAYS * 86_400_000),
+      toDate: replay ? istDate.format(Date.parse(`${replayDate}T12:00:00+05:30`) + 86_400_000) : istDate.format(now + 86_400_000),
     });
 
     // Times shift by +5:30 so the chart, which labels axes in UTC, reads in IST.
@@ -50,6 +55,10 @@ export async function GET(request: Request) {
       }))
       .filter((bar) => [bar.time, bar.open, bar.high, bar.low, bar.close].every(Number.isFinite))
       .sort((a, b) => a.time - b.time);
+
+    if (replay) {
+      return Response.json({ interval: INTERVAL_MINUTES, session: replayDate, bars: replayBars(bars, replayDate, until, INTERVAL_MINUTES) });
+    }
 
     const newest = bars.at(-1);
     if (!newest) return Response.json({ interval: INTERVAL_MINUTES, session: null, bars: [] });

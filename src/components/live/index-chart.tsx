@@ -2,8 +2,9 @@
 
 import type { CandlestickData, IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
+import { useEngineTelemetry } from "@/components/engine/use-engine-telemetry";
 import { Panel } from "@/components/ui";
-import { price } from "@/lib/format";
+import { istTime, price } from "@/lib/format";
 import { useLiveQuote, useStreamStatus } from "./live-quote";
 
 const IST_OFFSET_SECONDS = 5.5 * 3600;
@@ -12,11 +13,13 @@ const SESSION_CLOSE_MINUTE = 15 * 60 + 30;
 
 type Bar = CandlestickData<UTCTimestamp>;
 
+const STATUS_TOPIC = ["status"] as const;
+
 type ChartState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "empty" }
-  | { status: "ready"; session: string; interval: number };
+  | { status: "ready"; session: string; interval: number; replayFrom: number | null };
 
 const sessionLabel = new Intl.DateTimeFormat("en-IN", {
   timeZone: "UTC",
@@ -43,15 +46,30 @@ export function IndexChart({ index, name, instrument }: { index: string; name: s
   const quote = useLiveQuote(instrument);
   const live = useStreamStatus()?.feed.state === "live";
 
+  // While the engine replays a recorded day, the chart shows that day up to the replay's
+  // position and replayed ticks extend it, as live. It reloads when the replay starts, seeks
+  // or ends.
+  const telemetry = useEngineTelemetry(STATUS_TOPIC);
+  const replay = telemetry.status?.replay ?? null;
+  const known = telemetry.status !== null || telemetry.link === "offline" || telemetry.link === "unconfigured";
+  const replayKey = !known ? null : replay ? `${replay.date}:${replay.jumps}` : "live";
+  const replayAt = useRef<{ date: string; at: number } | null>(null);
+  // Declared before the loading effect, so it has the latest position when that runs.
+  useEffect(() => {
+    replayAt.current = replay && { date: replay.date, at: replay.at };
+  });
+
   useEffect(() => {
     const element = container.current;
-    if (!element) return;
+    if (!element || replayKey === null) return;
     const controller = new AbortController();
     let chart: IChartApi | undefined;
+    const replaying = replayAt.current;
+    const query = replaying ? `&date=${replaying.date}&until=${Math.round(replaying.at)}` : "";
 
     Promise.all([
       import("lightweight-charts"),
-      fetch(`/api/market/candles?index=${encodeURIComponent(index)}`, { signal: controller.signal }).then(
+      fetch(`/api/market/candles?index=${encodeURIComponent(index)}${query}`, { signal: controller.signal }).then(
         async (response) => ({ ok: response.ok, body: await response.json() }),
       ),
     ])
@@ -62,7 +80,8 @@ export function IndexChart({ index, name, instrument }: { index: string; name: s
           return;
         }
         const bars = response.body.bars as Bar[];
-        if (bars.length === 0) {
+        // A replay before its first finished candle still gets a chart for its ticks to build.
+        if (bars.length === 0 && !replaying) {
           setState({ status: "empty" });
           return;
         }
@@ -100,9 +119,9 @@ export function IndexChart({ index, name, instrument }: { index: string; name: s
         chart.timeScale().fitContent();
 
         series.current = candles;
-        lastBar.current = bars[bars.length - 1];
+        lastBar.current = bars.at(-1) ?? null;
         intervalSeconds.current = response.body.interval * 60;
-        setState({ status: "ready", session: response.body.session, interval: response.body.interval });
+        setState({ status: "ready", session: response.body.session, interval: response.body.interval, replayFrom: replaying?.at ?? null });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -115,22 +134,22 @@ export function IndexChart({ index, name, instrument }: { index: string; name: s
       series.current = null;
       lastBar.current = null;
     };
-  }, [index]);
+  }, [index, replayKey]);
 
   useEffect(() => {
     const candles = series.current;
     const last = lastBar.current;
     const ltp = quote?.ltp;
-    if (!candles || !last || ltp === undefined || !quote) return;
+    if (!candles || ltp === undefined || !quote) return;
 
     const istSeconds = quote.at / 1000 + IST_OFFSET_SECONDS;
     if (!inSession(istSeconds)) return;
     const interval = intervalSeconds.current;
     const time = (Math.floor(istSeconds / interval) * interval) as UTCTimestamp;
-    if (time < last.time) return;
+    if (last && time < last.time) return;
 
     const bar: Bar =
-      time === last.time
+      last && time === last.time
         ? { ...last, high: Math.max(last.high, ltp), low: Math.min(last.low, ltp), close: ltp }
         : { time, open: ltp, high: ltp, low: ltp, close: ltp };
     candles.update(bar);
@@ -142,9 +161,9 @@ export function IndexChart({ index, name, instrument }: { index: string; name: s
       title={`${name} · ${state.status === "ready" ? state.interval : 5}-minute candles`}
       meta={
         state.status === "ready"
-          ? `${sessionLabel.format(new Date(`${state.session}T00:00:00Z`))} session from Dhan${
-              live ? " · live ticks extend the last candle" : ""
-            }`
+          ? state.replayFrom !== null
+            ? `Replay of ${sessionLabel.format(new Date(`${state.session}T00:00:00Z`))} · Dhan's candles to ${istTime.format(state.replayFrom).slice(0, 5)}, replayed ticks after`
+            : `${sessionLabel.format(new Date(`${state.session}T00:00:00Z`))} session from Dhan${live ? " · live ticks extend the last candle" : ""}`
           : undefined
       }
       flush
