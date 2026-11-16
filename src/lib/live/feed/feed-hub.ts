@@ -131,7 +131,8 @@ export function createFeedHub({
   const quotes = new Map<string, Quote>();
   const dirty = new Set<string>();
   const clients = new Set<Client>();
-  const monitors = new Set<Send>();
+  /** Live Feed pages watching, each with the last event id its snapshot already held. */
+  const monitors = new Map<Send, { seen: number }>();
   const openStreams = new Set<() => void>();
   const reportedUnknown = new Set<number>();
   const history: FeedEvent[] = [];
@@ -506,9 +507,18 @@ export function createFeedHub({
 
   const flushTimer = setInterval(() => {
     if (unsentEvents.length > 0) {
-      const batch = sse("events", unsentEvents.slice(-MAX_EVENTS_PER_FLUSH));
+      const events = unsentEvents.slice(-MAX_EVENTS_PER_FLUSH);
       unsentEvents = [];
-      for (const send of monitors) send(batch);
+      const batch = sse("events", events);
+      for (const [send, monitor] of monitors) {
+        // A page that joined since these events were recorded got some of them in its snapshot.
+        if (monitor.seen < events[0].id) send(batch);
+        else {
+          const fresh = events.filter((event) => event.id > monitor.seen);
+          if (fresh.length > 0) send(sse("events", fresh));
+        }
+        monitor.seen = 0;
+      }
     }
 
     if (dirty.size === 0) return;
@@ -526,7 +536,7 @@ export function createFeedHub({
   const healthTimer = setInterval(() => {
     if (monitors.size === 0) return;
     const payload = sse("health", health());
-    for (const send of monitors) send(payload);
+    for (const send of monitors.keys()) send(payload);
   }, HEALTH_MS);
 
   flushTimer.unref?.();
@@ -603,7 +613,7 @@ export function createFeedHub({
   /** Everything the hub sees, for the Live Feed page. Watching subscribes to nothing. */
   function monitor(signal: AbortSignal) {
     return sseStream(signal, (send) => {
-      monitors.add(send);
+      monitors.set(send, { seen: history.at(-1)?.id ?? 0 });
       const snapshot: MonitorSnapshot = { health: health(), events: [...history] };
       send(sse("snapshot", snapshot));
       return () => {

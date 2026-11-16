@@ -54,6 +54,14 @@ export function OptionsChainIcon(props: IconProps) {
   );
 }
 
+export function PulseIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3.5 12h4l2.5-6 4 12 2.5-6h4" />
+    </Icon>
+  );
+}
+
 export function StrategiesIcon(props: IconProps) {
   return (
     <Icon {...props}>

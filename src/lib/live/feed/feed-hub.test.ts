@@ -241,3 +241,46 @@ test("rejects keys that aren't SEGMENT:SECURITY_ID", () => {
   assert.equal(hub.pin({ key: "RELIANCE", connection: 1 }).ok, false);
   assert.equal(hub.pin({ key: "NSE_EQ:2885", connection: 7 }).ok, false);
 });
+
+/** Everything a stream has queued so far, as [event, data] pairs. */
+async function drain(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const next = await Promise.race([reader.read(), new Promise<null>((resolve) => setImmediate(() => resolve(null)))]);
+    if (!next || next.done) break;
+    text += decoder.decode(next.value);
+  }
+  reader.releaseLock();
+  return text
+    .split("\n\n")
+    .map((block) => [/^event: (.*)$/m.exec(block)?.[1], /^data: (.*)$/m.exec(block)?.[1]])
+    .filter((pair): pair is [string, string] => !!pair[0] && !!pair[1])
+    .map(([event, data]) => [event, JSON.parse(data)] as const);
+}
+
+test("a Live Feed page joining between flushes gets each event once", async () => {
+  const { hub, sockets } = setup();
+  const first = new AbortController();
+  const second = new AbortController();
+  const a = hub.monitor(first.signal);
+  await drain(a);
+  hub.acquire([NIFTY]);
+  sockets[0].open();
+  // These events wait for the next flush, and are already in the history a new page's snapshot holds.
+  const b = hub.monitor(second.signal);
+  mock.timers.tick(250);
+  hub.acquire([BANKNIFTY]);
+  mock.timers.tick(250);
+
+  const ids: number[] = [];
+  for (const [event, data] of await drain(b)) {
+    if (event === "snapshot") ids.push(...data.events.map((e: { id: number }) => e.id));
+    if (event === "events") ids.push(...data.map((e: { id: number }) => e.id));
+  }
+  assert.ok(ids.length > 0);
+  assert.equal(new Set(ids).size, ids.length, `repeated ids in ${ids.join(",")}`);
+  first.abort();
+  second.abort();
+});

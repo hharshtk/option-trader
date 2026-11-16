@@ -96,7 +96,13 @@ export function FeedMonitor({ catalog }: { catalog: CatalogEntry[] }) {
     source.addEventListener("health", (event) => setHealth(parse<FeedHealth>(event)));
     source.addEventListener("events", (event) => {
       const batch = parse<FeedEvent[]>(event);
-      setEvents((previous) => [...previous, ...batch].slice(-MAX_EVENTS));
+      // Event ids rise within an engine run, and a new connection always starts with a snapshot,
+      // so anything at or below the last id shown is a repeat.
+      setEvents((previous) => {
+        const last = previous.at(-1)?.id ?? 0;
+        const fresh = batch.filter((item) => item.id > last);
+        return fresh.length ? [...previous, ...fresh].slice(-MAX_EVENTS) : previous;
+      });
     });
     source.addEventListener("error", () => {
       setLink(source.readyState === EventSource.CLOSED ? "closed" : "retrying");

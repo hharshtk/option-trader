@@ -1,6 +1,6 @@
 # Engine plan
 
-Status: proposed on 2026-11-15. Steps E0 and E1 are built, and E2 is under way (the feed runs in the engine); see [engine.md](engine.md) for how the engine runs today. The engine now runs on the OCI VM described in [oci-setup.md](oci-setup.md), not the laptop this plan assumes. This plan turns the `engine` process from [architecture-plan.md](architecture-plan.md) into build steps, for running it on the development laptop next to the web app. It covers three things the architecture plan leaves open:
+Status: proposed on 2026-11-15; trading plan (E6–E8, [Trading](#trading)) added 2026-11-16. Steps E0 and E1 are built, and E2 is under way (the feed runs in the engine; the first full session was validated in [data-validation-2026-11-16.md](data-validation-2026-11-16.md)); see [engine.md](engine.md) for how the engine runs today. The engine now runs on the OCI VM described in [oci-setup.md](oci-setup.md), not the laptop this plan assumes. This plan turns the `engine` process from [architecture-plan.md](architecture-plan.md) into build steps, for running it on the development laptop next to the web app. It covers three things the architecture plan leaves open:
 
 - running on a laptop instead of a VPS
 - seeing everything the engine does on the web
@@ -19,9 +19,10 @@ The architecture plan's direction stays:
 4. [Monitoring on the web](#monitoring-on-the-web)
 5. [Live and historical data](#live-and-historical-data)
 6. [Build steps](#build-steps)
-7. [Redis](#redis)
-8. [Testing](#testing)
-9. [Open decisions](#open-decisions)
+7. [Trading](#trading)
+8. [Redis](#redis)
+9. [Testing](#testing)
+10. [Open decisions](#open-decisions)
 
 ## Assumptions
 
@@ -299,8 +300,11 @@ Each step ships on its own and leaves the app working.
 | E3 | Event core and MarketState | Engine 1-minute bars match Dhan's 1-minute candles within tolerance | 1 |
 | E4 | Journal replay | Replaying a recorded day reproduces its live bars exactly | 2 |
 | E5 | Candle history and backtests | A backtest over downloaded NIFTY history runs and is watchable on the web | 2 |
-| E6 | Analytics and shadow strategies | The same strategy runs on live, replay and backtest | 3–5 |
-| E7 | Paper trading | Paper results on live and replay with clean reconciliation | 6 |
+| E6 | Analytics, signals and shadow strategies | Hit-rate reports for every signal on replayed days; one strategy runs in shadow mode, identically on live, replay and backtest | 3–5 |
+| E7 | Paper trading | The [go-live gate](#go-live-gate) is met: weeks of paper results on live data, after costs, with clean reconciliation | 6 |
+| E8 | Live orders | One lot, one strategy, NIFTY only; live and paper results agree on the same signals | 7 |
+
+**Paper before live, always.** This trades real money. No strategy sends a live order until it has passed E7's go-live gate, and the live order path (E8) isn't built until then. See [Trading](#trading).
 
 ### Now: record with today's app (no code)
 
@@ -364,11 +368,13 @@ Each step ships on its own and leaves the app working.
 - **Web.** The History tab and backtest runs.
 - **Done when** NIFTY's 1-minute history for the chosen period is downloaded, a backtest over it completes and is watchable on the web, and a candle backtest of a recorded day lines up with that day's replay.
 
-### E6: analytics and shadow strategies
+### E6: analytics, signals and shadow strategies
 
 Architecture phases 3–5, for NIFTY only.
 - **Analytics.** Basket analytics, futures context, local IV and Greeks, features (`trading-signals`), signals and regime.
-- **Strategies** run in shadow mode, identically on live, replay and backtest.
+- **Signals.** Order-book imbalance from 20-level depth, futures basis, NIFTY breadth, OI and IV changes (see [Signals](#signals)). Every signal is journaled with its inputs.
+- **Decisions.** The optional LLM decision layer, in shadow only: its answers are recorded next to each signal (see [Decision API](#decision-api)).
+- **Strategies** run in shadow mode, identically on live, replay and backtest. Shadow records trade intents and never reaches an order path.
 - **Web.** Signals and features per run, and strategy instances on the Strategies page.
 
 ### E7: paper trading
@@ -377,8 +383,147 @@ Architecture phase 6.
 - **Risk and OMS.** The risk engine, the OMS (each order written to SQLite before it is sent) and the paper adapter. `node:sqlite` loads without an experimental warning on this machine's Node 26.13.
 - **Backtests become paper trading** on historical sources, using the fill models above.
 - **Web.** Positions, orders, P&L and kill switches on the Activity and Strategies pages.
+- **Paper fills** against live bid and ask, with Dhan's charges and a latency model (see [Paper trading](#paper-trading)).
+- **Done when** the [go-live gate](#go-live-gate) is met.
 
-Live orders (architecture phase 7) need a static IP and the remaining live-trading decisions, so they're outside this plan.
+### E8: live orders
+
+Architecture phase 7. Built only after E7's gate is met.
+- **Dhan adapter.** Place, modify and cancel through the `order` rate-limit bucket, with a correlation id on every order. Exits as broker-side Super Orders.
+- **Order updates** from the order-update WebSocket, REST as fallback. A reconciler checks orders and positions at start and every minute.
+- **Broker-side limits** set before the first order: `/pnlExit` with the daily loss limit, and `/killswitch` tested.
+- **Start small.** One lot, one strategy, NIFTY only, with paper running alongside on the same signals.
+
+## Trading
+
+The goal is a fast, signal-driven intraday system on NIFTY futures and options: it reacts within a second and holds for seconds to minutes. Its edge has to come from signals, not speed. It trades on paper until it has proved itself, because this is real money.
+
+### What Dhan allows
+
+True high-frequency trading isn't possible through a retail broker API. The limits that decide what we can build:
+
+| Limit | Value | Source |
+|---|---|---|
+| Feed rate | About 1 update a second per stock, roughly 10 a second for NIFTY. Snapshots, not every trade | Measured 16 November 2026 |
+| Order rate | 10 a second, 250 a minute, 1,000 an hour, 7,000 a day; at most 25 modifications per order | Dhan v2 docs; enforced in [rate-limit.ts](../src/lib/dhan/rate-limit.ts) |
+| Order path | VM → Dhan → exchange over the internet: milliseconds to tens of milliseconds. Measure once the IP is whitelisted | — |
+| Static IP | Required for placing, modifying and cancelling orders. Primary and secondary IP; changeable once every 7 days | Dhan v2 docs, Authentication |
+| Algo rules | SEBI's retail algo framework: above about 10 orders a second, the algo must be registered with the exchange through the broker. Confirm Dhan's current requirements before E8 | Open decision |
+
+1,000 orders an hour is one every 3.6 seconds sustained. That fits short-term options and futures trading, not market making.
+
+### Dhan endpoints
+
+From Dhan's v2 docs, read 2026-11-16. **Bold** rows aren't used yet.
+
+**Market data**
+
+| API | Use |
+|---|---|
+| Live Market Feed: Ticker, Quote, Full | In use. Full mode for NIFTY futures and options next (OI and 5 levels of depth) |
+| **20-level depth WebSocket** (`wss://depth-api-feed.dhan.co/twentydepth`, up to 50 instruments per socket, NSE only) | Order-book imbalance on NIFTY futures and the options near ATM. Journaled like the main feed |
+| **200-level depth WebSocket** (`wss://full-depth-api.dhan.co/twohundreddepth`, 1 instrument per socket) | Full book of the near NIFTY future |
+| Market Quote REST (1 a second) | Cross-checks, as in the data validation |
+| Option Chain REST (1 every 3 seconds) | Scheduled check of local IV and Greeks |
+| Historical Data, Expired Options Data | Backtests (E5) |
+
+Check whether the depth sockets count toward the 5-socket limit (the docs warn of 805 disconnects above 5) before adding them.
+
+**Execution**
+
+| API | Use |
+|---|---|
+| **`POST /orders`, `PUT` and `DELETE /orders/{id}`** | Place, modify, cancel. Needs the static IP |
+| **`POST /orders/slicing`** | Orders above the freeze quantity |
+| **`GET /orders/external/{correlation-id}`** | Find an order by our own id: after a crash, the OMS learns whether an order reached Dhan without sending it twice |
+| **Live Order Update WebSocket** (`wss://api-order-update.dhan.co`) | Fills, rejections and cancellations as they happen. Carries `CorrelationId` and `AlgoId` |
+| **Super Order** (`/super/orders`: entry, target, stop loss, trailing jump) | Exits held at the broker, so a position stays protected if the engine dies |
+| **Forever Order, Conditional Trigger** | Resting orders on a price condition, for slower exits |
+| Positions, Trades, **Funds & Margin** | Reconciliation and pre-trade margin checks |
+| **Trader's Control: `/pnlExit`, `/killswitch`** | Daily profit and loss limits enforced by Dhan, which can trip the kill switch. The last line of defence, set before the first live order |
+
+**Account**
+
+| API | Use |
+|---|---|
+| **`POST /v2/ip/setIP`, `GET /v2/ip/getIP`** | Whitelist the VM's IP. Reserve a static OCI IP first: the current one is ephemeral, and the 7-day lock makes a mistake costly |
+| **`/app/generateAccessToken`** (client id, PIN, TOTP) | Unattended token renewal. Needs TOTP set up on Dhan. Settles architecture open decision 3 |
+
+### Signals
+
+First candidates, all on NIFTY:
+
+| Signal | Inputs |
+|---|---|
+| Order-book imbalance | 20-level depth of the near future and options near ATM |
+| Futures basis and its change | Near future against the index |
+| Breadth and basket momentum | The 50 constituents in Quote mode, already recorded |
+| OI build-up | Full mode on futures and options |
+| IV change and skew | Local IV from option prices |
+
+Each signal is a pure function of features, emits a score and a confidence, and is journaled. Each signal is judged on replayed days by hit rate and information coefficient before any strategy uses it.
+
+### Decision API
+
+An LLM decision service fits as a slower context and gating layer next to the signals. The model is [OpenAI's Decisions API](https://developers.openai.com/api/docs/guides/decisions) (read 2026-11-16):
+- `POST /v1/decisions` takes text, images or JSON plus up to 400 typed questions.
+- `predicate` returns the probability that a condition holds.
+- `choice` returns one of the supplied options with probabilities.
+- `score` returns a level on a scale of 2 to 10.
+- Uncached input costs $0.10 per million tokens, and output isn't charged.
+
+**Where it fits:**
+
+| Use | Question type | When |
+|---|---|---|
+| Regime | `choice`: trend up, trend down, range, high-volatility chop | At each 1- or 5-minute bar close, from a JSON snapshot of features |
+| Trade gate | `predicate`: "this setup is consistent with the current context" | When a strategy proposes an entry, before risk |
+| Event context | `predicate` and `choice` over news or announcements, if a news source is added | As events arrive |
+| Post-trade review | `score` and `choice` labels on closed trades | End of day, for attribution |
+
+**Rules:**
+- **Never in the tick path, never sizing.** It can veto or annotate an intent. It can't create orders, change size, or override the risk engine. The risk engine stays deterministic and has the final say.
+- **Fail closed.** No answer within the time budget (for example 500 ms for the gate) means no new entry. Exits never wait for it.
+- **Journaled for exact replay.** Every request and answer (model, questions, input hash, probabilities, latency) is written to the journal as a control record. Replays use the recorded answers instead of calling again, so a replayed day still matches its live run. Backtests over days without recorded answers run with the gate off and say so.
+- **Earns its place in shadow first.** In E6 its answers are only recorded. It may gate paper trades in E7 only once replays show that gated trades beat ungated ones after costs.
+- **Behind an interface.** A `DecisionProvider` in the engine, so the provider can change or be removed without touching strategies. The API key lives in `.env.local` (`OPENAI_API_KEY`), and the requests carry market features only, no account data.
+- **Cost.** One regime request a minute with about 2,000 input tokens is under a million tokens a day: about $0.08 a day before caching.
+
+### Paper trading
+
+- **Same path as live.** Strategy → risk → OMS → adapter. Only the adapter differs, so paper predicts live.
+- **Fills.**
+  - Market orders fill at the recorded opposite side of the book, plus slippage.
+  - Limit orders fill only when the price trades through them, since queue position is unknown.
+  - A latency delay, measured from real order round trips once the IP is whitelisted, is applied before each fill.
+- **Costs.** Dhan's brokerage, STT, exchange and SEBI fees, GST and stamp duty on every fill. Results are reported after costs only.
+- **On replay too.** Paper trading runs on replayed days through the same adapter, so a change can be tested on past sessions before it meets the live market.
+
+### Go-live gate
+
+All of these must hold before E8 is built and a strategy is switched to live. The owner signs off explicitly.
+
+| Check | Threshold (set before paper trading starts) |
+|---|---|
+| Duration | At least 20 live sessions of paper trading for that strategy version |
+| Results | Positive after costs. Maximum drawdown within the agreed limit |
+| Live against replay | The same days replayed give the same trades |
+| Reconciliation | No unexplained differences between OMS state and the paper adapter |
+| Failure drills | Engine killed mid-trade: state rebuilt from the journal and SQLite. Feed dropped: no new entries while data is stale |
+| Broker limits | `/pnlExit` configured and `/killswitch` tested on the account |
+| Account | Static IP whitelisted, token renewal unattended, data plan renewed |
+
+**Live is never the default.** The engine runs in paper unless configured for live. Each strategy instance is switched to live separately on the web, with a confirmation, and drops back to paper on any reconciliation difference or kill switch.
+
+### Lead-time items
+
+These take calendar time rather than code, so they start now:
+
+1. Reserve a static public IP on OCI, then whitelist it with Dhan (7-day lock on changes).
+2. Set up TOTP on Dhan, for unattended token renewal.
+3. Record NIFTY futures and options in Full mode, and 20-level depth, from the next session. Signals need weeks of history, and none of it can be downloaded later.
+4. Renew the Data API plan before 2026-12-16.
+5. Confirm with Dhan what SEBI's algo rules require for API orders at under 10 a second.
 
 ## Redis
 
@@ -407,4 +552,6 @@ Neither is needed while web and engine run side by side.
 2. **Tier 1 universe at start:** NIFTY index, 50 constituents, near and next futures, with the option window added in E6. Confirm or change.
 3. **Journal backup:** compressed days uploaded to R2 (recommended: cheap, and off the laptop), or local only.
 4. **NIFTY history range:** how many years to download first.
-5. **Live-orders host:** unchanged from the architecture plan (open decision 2 there). The laptop covers everything up to paper trading.
+5. **Live-orders host:** the OCI VM, with a reserved static IP whitelisted at Dhan (see [Lead-time items](#lead-time-items)).
+6. **Go-live thresholds:** the maximum drawdown, daily loss limit for `/pnlExit` and minimum paper sessions in the [go-live gate](#go-live-gate). Set before paper trading starts, not after seeing results.
+7. **Decision API:** whether to use one, and which provider. It stays optional and shadow-only until replays show it helps.

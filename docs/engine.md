@@ -31,7 +31,7 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 | E0 Groundwork | Built | Shared modules run under plain Node; clock, event types, logger, metrics, session calendar |
 | E1 Skeleton and monitoring | Built | `npm run engine`, control API, health checks, Engine page, header status dot |
 | E2 Engine owns Dhan | In progress | Done: the feed runs in the engine and the web forwards to it; always-on journal; always-on NIFTY universe; per-instrument Ticker/Quote/Full modes (constituents stream in Quote mode). Next: journal upload to S3, NIFTY futures in Full mode, one REST limiter, daily scrip snapshot |
-| E3–E7 | Planned | See [engine-plan.md](engine-plan.md#build-steps) |
+| E3–E8 | Planned | See [engine-plan.md](engine-plan.md#build-steps). Trading (signals, paper first, then live) is planned in [engine-plan.md](engine-plan.md#trading) |
 
 Today the engine monitors itself and the Dhan account, **owns the live Dhan feed**, keeps the NIFTY universe subscribed at all times, and **journals every raw frame** to disk. With `ENGINE_URL` set, the web never opens Dhan sockets: its quote stream, Live Feed stream and Live Feed actions forward to the engine. Without `ENGINE_URL`, the web runs its own feed as it did before the engine. The engine doesn't place orders.
 

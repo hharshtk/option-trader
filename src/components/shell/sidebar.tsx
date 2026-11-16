@@ -15,6 +15,7 @@ import {
   OrdersIcon,
   OverviewIcon,
   PositionsIcon,
+  PulseIcon,
   SettingsIcon,
   SidebarIcon,
   StrategiesIcon,
@@ -36,6 +37,7 @@ const NAV: NavItem[][] = [
     { href: "/", label: "Overview", icon: OverviewIcon, built: true },
     { href: "/market-watch", label: "Market Watch", icon: MarketWatchIcon, built: true },
     { href: "/options-chain", label: "Options Chain", icon: OptionsChainIcon, built: true },
+    { href: "/pulse", label: "Pulse", icon: PulseIcon, built: true },
     { href: "/strategies", label: "Strategies", icon: StrategiesIcon, built: false },
   ],
   [

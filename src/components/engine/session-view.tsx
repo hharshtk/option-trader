@@ -14,7 +14,7 @@ import { compactNumber, istTime, price, quantity, signedPercent } from "@/lib/fo
 const REFRESH_MS = 5_000;
 const IST_OFFSET_SECONDS = 5.5 * 3600;
 
-type Load = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; data: JournalSession };
+export type Load = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; data: JournalSession };
 
 export function SessionView({ status }: { status: EngineStatus | null }) {
   const today = status?.journal?.date ?? null;
@@ -76,7 +76,7 @@ export function SessionView({ status }: { status: EngineStatus | null }) {
   );
 }
 
-function useJournalSession(date: string | null, live: boolean): Load {
+export function useJournalSession(date: string | null, live: boolean): Load {
   const [load, setLoad] = useState<Load>({ state: "loading" });
 
   useEffect(() => {
