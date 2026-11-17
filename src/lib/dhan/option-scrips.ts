@@ -123,3 +123,57 @@ export function filterOptionScrips(text: string, today: string): FilteredOptionS
     },
   };
 }
+
+/** An index future from Dhan's instrument file, as the engine records it. */
+export interface IndexFutureRow {
+  security_id: string;
+  /** "NSE" or "BSE". */
+  exchange: string;
+  /** e.g. "NIFTY". */
+  underlying: string;
+  display_name: string;
+  /** "YYYY-MM-DD". */
+  expiry: string;
+  lot_size: number;
+  tick_size: number;
+}
+
+/**
+ * Unexpired NSE/BSE index futures (FUTIDX), nearest expiry first per underlying. They are kept
+ * apart from the options file, whose readers assume every row is an option.
+ */
+export function filterIndexFutures(text: string, today: string): IndexFutureRow[] {
+  const lines = text.split(/\r?\n/);
+  const names = (lines[0] ?? "").split(",");
+  const col = Object.fromEntries(REQUIRED_COLUMNS.map((name) => [name, names.indexOf(name)])) as Record<Column, number>;
+  if (Object.values(col).some((index) => index === -1)) return [];
+
+  const rows: IndexFutureRow[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    // Cheap test first: the file has well over a hundred thousand rows and only a few futures.
+    if (!line || !line.includes(",FUTIDX,")) continue;
+    const fields = line.split(",");
+    if (fields.length !== names.length) continue;
+    const expiry = fields[col.SM_EXPIRY_DATE];
+    if (
+      fields[col.INSTRUMENT] !== "FUTIDX" ||
+      fields[col.SEGMENT] !== "D" ||
+      !OPTION_EXCHANGES.has(fields[col.EXCH_ID]) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(expiry) ||
+      expiry < today
+    ) {
+      continue;
+    }
+    rows.push({
+      security_id: fields[col.SECURITY_ID],
+      exchange: fields[col.EXCH_ID],
+      underlying: fields[col.UNDERLYING_SYMBOL],
+      display_name: fields[col.DISPLAY_NAME],
+      expiry,
+      lot_size: Number(fields[col.LOT_SIZE]),
+      tick_size: Number(fields[col.TICK_SIZE]),
+    });
+  }
+  return rows.sort((a, b) => a.underlying.localeCompare(b.underlying) || a.expiry.localeCompare(b.expiry));
+}

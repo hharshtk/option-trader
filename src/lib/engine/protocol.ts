@@ -210,6 +210,56 @@ export interface UniverseStatus {
   problems: string[];
 }
 
+/** One connection's state, as the main feed reports it. */
+export type RecorderFeedState =
+  | { state: "idle" }
+  | { state: "connecting"; attempt: number }
+  | { state: "live"; since: number }
+  | { state: "reconnecting"; attempt: number; retryAt: number; reason: string }
+  | { state: "stopped"; reason: string };
+
+/**
+ * The research recorder: index futures and a wide option window per recorded index (NIFTY,
+ * BANKNIFTY) streamed in Full mode on the main feed, 20-level depth on its own connection, and
+ * option chain snapshots, every trading day.
+ */
+export interface RecorderStatus {
+  /** idle: outside the recording window; loading: fetching contracts; waiting: can't record (see note). */
+  state: "idle" | "loading" | "recording" | "waiting";
+  note: string;
+  /** The IST market day being recorded, or null when idle. */
+  date: string | null;
+  /** When today's window starts and ends (30 minutes before the F&O open to 10 minutes after the close). */
+  window: { start: number; end: number } | null;
+  indices: {
+    name: string;
+    /** The index level its option windows are centred on. */
+    spot: number | null;
+    futures: { key: string; name: string; expiry: string }[];
+    /** Option expiries recorded, nearest first, with how many contracts of each are on the feed. */
+    expiries: { expiry: string; contracts: number; strikes: number }[];
+    problem: string | null;
+  }[];
+  /** Instruments the recorder holds on the main feed (Full mode), all indices together. */
+  instruments: number;
+  depth: {
+    state: RecorderFeedState;
+    instruments: number;
+    frames: number;
+    packets: number;
+    lastFrameAt: number | null;
+    dropped: number;
+    file: JournalStatus | null;
+  };
+  chain: {
+    snapshots: number;
+    lastAt: number | null;
+    errors: number;
+    lastError: string | null;
+    file: JournalStatus | null;
+  };
+}
+
 export interface EngineStatus {
   protocol: number;
   /** Git commit the engine runs, with -dirty for uncommitted changes, or "unknown". */
@@ -238,6 +288,8 @@ export interface EngineStatus {
   replay?: ReplayStatus | null;
   /** Why a replay can't start now (a session is open or opens within 30 minutes); null when it can. */
   replayBlocked?: string | null;
+  /** Absent from engines older than the recorder. */
+  recorder?: RecorderStatus;
 }
 
 /**

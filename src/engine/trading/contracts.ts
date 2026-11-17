@@ -4,13 +4,14 @@
 //
 // Dhan's file lists only unexpired contracts, so a day's contracts can't be looked up later. Each
 // live day's NIFTY contracts are therefore saved as `reference/nifty-options/<date>.parquet`, and
-// a replay of that day reads them back.
+// a replay of that day reads them back. Other underlyings (the recorder's BANKNIFTY) work the same
+// way, under `reference/<underlying>-options/`.
 
 import type { ParquetStore } from "../../lib/db/parquet-store.ts";
 import type { OptionRef } from "../../lib/engine/trading.ts";
 
 export const MASTER_KEY = "instruments/options-scrip-master.parquet";
-const UNDERLYING = "NIFTY";
+const DEFAULT_UNDERLYING = "NIFTY";
 const KEEP_EXPIRIES = 3;
 const DAY_MS = 86_400_000;
 
@@ -53,7 +54,7 @@ const SNAPSHOT_COLUMNS = {
   file_date: "VARCHAR",
 } as const;
 
-const snapshotKey = (date: string) => `reference/nifty-options/${date}.parquet`;
+const snapshotKey = (date: string, underlying: string) => `reference/${underlying.toLowerCase()}-options/${date}.parquet`;
 
 export function buildContractBook(rows: readonly ContractRow[], marketDate: string, fileDate: string): ContractBook | null {
   const expiries = [...new Set(rows.map((row) => row.expiry))].filter((expiry) => expiry >= marketDate).sort().slice(0, KEEP_EXPIRIES);
@@ -94,8 +95,13 @@ export function buildContractBook(rows: readonly ContractRow[], marketDate: stri
  * file as it is now. `fileDate` is the IST date the instrument file was downloaded for. Null when
  * neither holds an unexpired NIFTY contract.
  */
-export async function loadContractBook(store: ParquetStore, marketDate: string, fileDate: string | null): Promise<ContractBook | null> {
-  const saved = await store.query<ContractRow>((table) => `SELECT * FROM ${table(snapshotKey(marketDate))}`);
+export async function loadContractBook(
+  store: ParquetStore,
+  marketDate: string,
+  fileDate: string | null,
+  underlying = DEFAULT_UNDERLYING,
+): Promise<ContractBook | null> {
+  const saved = await store.query<ContractRow>((table) => `SELECT * FROM ${table(snapshotKey(marketDate, underlying))}`);
   if (saved.length > 0) return buildContractBook(saved, marketDate, saved[0].file_date);
   if (!fileDate) return null;
 
@@ -106,13 +112,13 @@ export async function loadContractBook(store: ParquetStore, marketDate: string, 
                 WHERE exchange = 'NSE' AND underlying = $underlying AND instrument = 'OPTIDX'
                   AND expiry >= CAST($marketDate AS DATE)
                 ORDER BY expiry, strike, option_type`,
-    { underlying: UNDERLYING, marketDate, fileDate },
+    { underlying, marketDate, fileDate },
   );
   const book = buildContractBook(rows, marketDate, fileDate);
   // Today's file on today's market: keep it, so this day can be replayed after its contracts expire.
   if (book && fileDate === marketDate) {
     const keep = rows.filter((row) => book.expiries.includes(row.expiry));
-    await store.write(snapshotKey(marketDate), SNAPSHOT_COLUMNS, keep as unknown as Record<string, string | number>[]).catch(() => {});
+    await store.write(snapshotKey(marketDate, underlying), SNAPSHOT_COLUMNS, keep as unknown as Record<string, string | number>[]).catch(() => {});
   }
   return book;
 }

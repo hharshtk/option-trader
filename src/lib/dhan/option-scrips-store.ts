@@ -9,7 +9,8 @@ import {
   importOptionScripsParquet,
   type OptionScripsInfo,
 } from "./option-contracts.ts";
-import { filterOptionScrips, SCRIP_MASTER_URL, type OptionScripSummary } from "./option-scrips.ts";
+import { getParquetStore } from "../db/parquet-store.ts";
+import { filterIndexFutures, filterOptionScrips, SCRIP_MASTER_URL, type OptionScripSummary } from "./option-scrips.ts";
 
 // Settings → Download option instruments: fetch Dhan's instrument master from its CDN (a public
 // file, so it uses neither the access token nor the API rate limits), keep the options, and
@@ -22,6 +23,18 @@ import { filterOptionScrips, SCRIP_MASTER_URL, type OptionScripSummary } from ".
 
 export const OPTION_SCRIPS_PARQUET = "instruments/options-scrip-master.parquet";
 const META_KEY = "instruments/options-scrip-master.json";
+/** Unexpired index futures from the same file, for the engine's recorder. One row per contract. */
+export const INDEX_FUTURES_PARQUET = "instruments/index-futures.parquet";
+const INDEX_FUTURES_COLUMNS = {
+  security_id: "VARCHAR",
+  exchange: "VARCHAR",
+  underlying: "VARCHAR",
+  display_name: "VARCHAR",
+  expiry: "VARCHAR",
+  lot_size: "DOUBLE",
+  tick_size: "DOUBLE",
+  trading_date: "VARCHAR",
+} as const;
 
 const TIMEOUT_MS = 120_000;
 const RECHECK_MS = 30_000;
@@ -37,6 +50,8 @@ export interface OptionScripsMeta extends OptionScripSummary {
   sourceDate: string | null;
   /** Size of the stored Parquet file. */
   bytes: number;
+  /** Index futures saved to INDEX_FUTURES_PARQUET; absent from downloads made before they were. */
+  indexFutures?: number;
 }
 
 const istDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" });
@@ -110,7 +125,9 @@ async function download(): Promise<OptionScripsMeta> {
   if (!response.ok) throw new Error(`Dhan's instrument file returned HTTP ${response.status}`);
 
   const tradingDate = todayIst();
-  const { csv, summary } = filterOptionScrips(await response.text(), tradingDate);
+  const text = await response.text();
+  const { csv, summary } = filterOptionScrips(text, tradingDate);
+  const futures = filterIndexFutures(text, tradingDate);
   if (summary.optionRows === 0) throw new Error("Dhan's instrument file had no unexpired options; kept the previous file");
 
   const lastModified = response.headers.get("last-modified");
@@ -141,6 +158,16 @@ async function download(): Promise<OptionScripsMeta> {
     return readFile(parquetFile);
   });
   meta.bytes = parquet.byteLength;
+
+  // Futures are a side table: a failure here mustn't cost the options, which trading needs.
+  if (futures.length > 0) {
+    try {
+      await getParquetStore().write(INDEX_FUTURES_PARQUET, INDEX_FUTURES_COLUMNS, futures.map((row) => ({ ...row, trading_date: tradingDate })));
+      meta.indexFutures = futures.length;
+    } catch (error) {
+      console.warn("Couldn't save the index futures from Dhan's instrument file.", error);
+    }
+  }
 
   // The summary goes last: other instances reload when it changes, by which time the file is in place.
   const store = getFileStore();

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { filterOptionScrips } from "./option-scrips.ts";
+import { filterIndexFutures, filterOptionScrips } from "./option-scrips.ts";
 
 const HEADER =
   "EXCH_ID,SEGMENT,SECURITY_ID,ISIN,INSTRUMENT,UNDERLYING_SECURITY_ID,UNDERLYING_SYMBOL,SYMBOL_NAME,DISPLAY_NAME,INSTRUMENT_TYPE,SERIES,LOT_SIZE,SM_EXPIRY_DATE,STRIKE_PRICE,OPTION_TYPE,TICK_SIZE,EXPIRY_FLAG,SM_FREEZE_QTY,";
@@ -45,4 +45,29 @@ test("rejects a file without the columns the app reads", () => {
 test("rejects a file with many malformed rows", () => {
   const text = [HEADER, "NSE,D,1,too,few", row("NSE", "D", 2, "OPTIDX", "NIFTY", "2026-11-17")].join("\n");
   assert.throws(() => filterOptionScrips(text, "2026-11-17"), /wrong number of fields/);
+});
+
+test("index futures: unexpired NSE/BSE FUTIDX rows, nearest expiry first", () => {
+  const text = [
+    HEADER,
+    row("NSE", "D", 54749, "FUTIDX", "NIFTY", "2027-01-25"),
+    row("NSE", "D", 61471, "FUTIDX", "NIFTY", "2026-11-23"),
+    row("NSE", "D", 9, "FUTIDX", "NIFTY", "2026-10-27"), // expired
+    row("NSE", "D", 10, "FUTSTK", "RELIANCE", "2026-11-23"), // stock future
+    row("NSE", "D", 11, "OPTIDX", "NIFTY", "2026-11-23"), // option
+    row("BSE", "D", 12, "FUTIDX", "SENSEX", "2026-11-26"),
+    "",
+  ].join("\n");
+  const rows = filterIndexFutures(text, "2026-11-17");
+  assert.deepEqual(
+    rows.map((r) => [r.exchange, r.underlying, r.security_id, r.expiry]),
+    [
+      ["NSE", "NIFTY", "61471", "2026-11-23"],
+      ["NSE", "NIFTY", "54749", "2027-01-25"],
+      ["BSE", "SENSEX", "12", "2026-11-26"],
+    ],
+  );
+  assert.equal(rows[0].lot_size, 65);
+  assert.equal(rows[0].tick_size, 5);
+  assert.deepEqual(filterIndexFutures("EXCH_ID,SEGMENT\n", "2026-11-17"), []);
 });

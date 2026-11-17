@@ -23,7 +23,11 @@ function fileDateOf(meta: OptionScripsMeta) {
 export function createContractSource({ store, log, now }: { store: ParquetStore; log: Logger; now: () => number }) {
   let lastDownloadAt = 0;
 
-  return async function loadContracts(marketDate: string, live: boolean): Promise<{ book: ContractBook | null; problem: string | null }> {
+  return async function loadContracts(
+    marketDate: string,
+    live: boolean,
+    underlying = "NIFTY",
+  ): Promise<{ book: ContractBook | null; problem: string | null }> {
     let meta = await readOptionScripsMeta().catch(() => null);
     let problem: string | null = null;
 
@@ -40,10 +44,10 @@ export function createContractSource({ store, log, now }: { store: ParquetStore;
     }
 
     const fileDate = meta ? fileDateOf(meta) : null;
-    const book = await loadContractBook(store, marketDate, fileDate);
+    const book = await loadContractBook(store, marketDate, fileDate, underlying);
     if (!book) {
       problem ??= fileDate
-        ? `The ${fileDate} instrument file has no unexpired NIFTY options for ${marketDate}`
+        ? `The ${fileDate} instrument file has no unexpired ${underlying} options for ${marketDate}`
         : "Option instruments haven't been downloaded. Use Settings → Download option instruments.";
     } else if (live && book.fileDate < marketDate) {
       problem ??= `Dhan hasn't published today's instrument file yet; using the ${book.fileDate} one, so new strikes may be missing`;

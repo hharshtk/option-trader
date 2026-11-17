@@ -138,6 +138,8 @@ function Overview({
         skipped={metrics?.counters["journal.frames_skipped"] ?? 0}
       />
 
+      {status.recorder && <RecorderPanel recorder={status.recorder} now={status.now} />}
+
       <Panel title="Dhan account">
         <dl>
           <StatRow label="Access token" value={status.token.source === "redis" ? "From Redis (Settings page)" : status.token.source === "env" ? "From .env.local" : "None"} />
@@ -350,6 +352,82 @@ function JournalPanel({
       ) : (
         <EmptyState>Nothing written yet. The journal opens with the engine&apos;s first record.</EmptyState>
       )}
+    </Panel>
+  );
+}
+
+const RECORDER_TONE = { idle: "muted", loading: "warn", recording: "up", waiting: "warn" } as const;
+
+/** The research recorder: what it streams, its depth connection and its option chain snapshots. */
+function RecorderPanel({ recorder, now }: { recorder: NonNullable<EngineStatus["recorder"]>; now: number }) {
+  const { depth, chain } = recorder;
+  return (
+    <Panel title="Research recording" meta="futures, option window, 20-level depth, option chain">
+      <dl>
+        <StatRow
+          label="State"
+          value={
+            <span className="inline-flex items-start gap-1.5">
+              <span className="mt-1.5">
+                <StatusDot tone={RECORDER_TONE[recorder.state]} />
+              </span>
+              <span>
+                {recorder.state}
+                <span className="text-muted"> · {recorder.note}</span>
+              </span>
+            </span>
+          }
+        />
+        {recorder.window && (
+          <StatRow label="Window" value={`${istTime.format(new Date(recorder.window.start)).slice(0, 5)}–${istTime.format(new Date(recorder.window.end)).slice(0, 5)} IST`} />
+        )}
+        {recorder.indices.map((index) => (
+          <StatRow
+            key={index.name}
+            label={index.name}
+            value={
+              <span>
+                {index.spot ? `at ${index.spot.toFixed(2)}` : "level not seen yet"}
+                {` · ${index.futures.length} futures`}
+                {index.expiries.length > 0 && ` · options ${index.expiries.map((e) => `${e.expiry} (${e.strikes} strikes)`).join(", ")}`}
+                {index.problem && <span className="text-warn"> · {index.problem}</span>}
+              </span>
+            }
+          />
+        ))}
+        <StatRow label="On the main feed" value={`${quantity.format(recorder.instruments)} instruments in full mode`} />
+        <StatRow
+          label="20-level depth"
+          value={
+            <span className="inline-flex items-start gap-1.5">
+              <span className="mt-1.5">
+                <StatusDot tone={FEED_TONE[depth.state.state]} />
+              </span>
+              <span>
+                {depth.state.state} · {quantity.format(depth.instruments)} of 50 instruments
+                {(depth.state.state === "stopped" || depth.state.state === "reconnecting") && <span className="text-muted"> · {depth.state.reason}</span>}
+                {depth.dropped > 0 && <span className="text-warn"> · {depth.dropped} not subscribed</span>}
+              </span>
+            </span>
+          }
+        />
+        <StatRow
+          label="Depth this run"
+          value={`${quantity.format(depth.packets)} book sides · ${depth.lastFrameAt ? `last ${formatAge(Math.max(0, now - depth.lastFrameAt))} ago` : "nothing yet"}`}
+        />
+        {depth.file?.date && <StatRow label={<span className="pl-3 font-mono">{depth.file.date}.depth.bin</span>} value={bytes(depth.file.bytes)} />}
+        <StatRow
+          label="Option chain"
+          value={
+            <span>
+              {quantity.format(chain.snapshots)} snapshots this run
+              {chain.lastAt && ` · last ${formatAge(Math.max(0, now - chain.lastAt))} ago`}
+              {chain.errors > 0 && <span className="text-warn"> · {chain.errors} failed{chain.lastError ? ` (${chain.lastError})` : ""}</span>}
+            </span>
+          }
+        />
+        {chain.file?.date && <StatRow label={<span className="pl-3 font-mono">{chain.file.date}.chain.bin</span>} value={bytes(chain.file.bytes)} />}
+      </dl>
     </Panel>
   );
 }

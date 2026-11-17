@@ -23,6 +23,12 @@ import { consoleSink, createLogHub, LEVEL_RANK } from "./telemetry/logger.ts";
 import { createMetrics } from "./telemetry/metrics.ts";
 import { createProcessSampler } from "./telemetry/process-stats.ts";
 import { getParquetStore } from "../lib/db/parquet-store.ts";
+import { getOptionChain } from "../lib/dhan/api.ts";
+import { getDhanCredentials, getTokenStore } from "../lib/dhan/config.ts";
+import { INDEX } from "../lib/dhan/instruments.ts";
+import { createDepthFeed } from "./recording/depth-feed.ts";
+import { createFuturesSource } from "./recording/futures.ts";
+import { createRecorder } from "./recording/recorder.ts";
 import { createOpenRouterDecisions } from "./trading/decision.ts";
 import { createCandleSource, createContractSource } from "./trading/sources.ts";
 import { createTradingStore } from "./trading/store.ts";
@@ -136,8 +142,11 @@ const feeds = createFeedSwitch({
   universe,
   calendar,
   now: clock.now,
-  // Trading reads the market from the same frames, live or replayed.
-  onFrame: (frame, at) => trader.onFrame(frame, at),
+  // Trading reads the market from the same frames, live or replayed; the recorder only live ones.
+  onFrame: (frame, at) => {
+    trader.onFrame(frame, at);
+    if (feeds.liveHub()) recorder.onFrame(frame);
+  },
 });
 const journalSessions = createJournalSessions({ directory: path.join(config.dataDir, "journal"), calendar, now: clock.now });
 
@@ -146,6 +155,8 @@ const journalSessions = createJournalSessions({ directory: path.join(config.data
 const tradingNamespace = config.port === 3100 ? "main" : `dev-${config.port}`;
 const tradingDirectory = path.join(config.dataDir, "trading");
 const parquet = getParquetStore();
+// One source for both trading and the recorder, so a stale instrument file is downloaded once.
+const loadContracts = createContractSource({ store: parquet, log: logs.logger("trading.contracts"), now: clock.now });
 const trader = createTrader({
   namespace: tradingNamespace,
   directory: tradingDirectory,
@@ -161,7 +172,7 @@ const trader = createTrader({
   // The same day the Pulse page reads: as far as the replay has reached, or today's journal.
   session: (date) => feeds.replaySession(date) ?? journalSessions.read(date),
   decisions: createOpenRouterDecisions(process.env.OPENROUTER_API_KEY),
-  loadContracts: createContractSource({ store: parquet, log: logs.logger("trading.contracts"), now: clock.now }),
+  loadContracts,
   loadCandles: createCandleSource({
     directory: path.join(tradingDirectory, "candles"),
     istDate: calendar.istDate,
@@ -172,12 +183,56 @@ const trader = createTrader({
   }),
   publish: (status) => telemetry.publish("trading", status, status.marketTime),
 });
+
+// The research recorder: futures, a wide option window, 20-level depth and option chain snapshots
+// on every trading day. Depth and chain go to side files next to the journal.
+const recorderLog = logs.logger("recorder");
+const sideJournal = (suffix: string, describe: () => Record<string, unknown>) => {
+  const side = createJournal({
+    directory: path.join(config.dataDir, "journal"),
+    suffix,
+    istDate: calendar.istDate,
+    now: clock.now,
+    onOpen: (date) => side.control("file-open", { date, version, ...describe() }, clock.now()),
+    onError: (error) => recorderLog.error(`${suffix.slice(1)} file write failed`, { error: error.message }),
+  });
+  return side;
+};
+const depthJournal = sideJournal(".depth", () => ({ feed: "twentydepth", instruments: recorder.status().depth.instruments }));
+const chainJournal = sideJournal(".chain", () => ({ indices: recorder.status().indices.map((index) => index.name) }));
+const depthFeed = createDepthFeed({
+  readCredentials: getDhanCredentials,
+  currentToken: () => getTokenStore().current(),
+  onFrame: (frame, at) => depthJournal.frame(1, frame, at),
+  onEvent: (kind, data, at) => depthJournal.control(kind, data, at, 1),
+  log: (message) => recorderLog.info(message),
+  now: clock.now,
+});
+const recorder = createRecorder({
+  log: recorderLog,
+  health,
+  now: clock.now,
+  calendar,
+  hub: () => feeds.liveHub(),
+  journal,
+  depth: depthFeed,
+  chainJournal,
+  loadContracts,
+  loadFutures: createFuturesSource({ store: parquet, log: recorderLog, now: clock.now }),
+  fetchChain: (underlying, expiry) => getOptionChain(INDEX[underlying as keyof typeof INDEX], expiry),
+  depthFile: () => depthJournal.status(),
+  chainFile: () => chainJournal.status(),
+});
+
 const dhan = createDhanWatch({
   log: logs.logger("dhan"),
   health,
   now: clock.now,
   // A socket stopped by a rejected token reconnects as soon as a new token is saved.
-  onTokenChange: () => feeds.liveHub()?.retryStopped(),
+  onTokenChange: () => {
+    feeds.liveHub()?.retryStopped();
+    depthFeed.retryStopped();
+  },
 });
 
 function sessions(now: number): SegmentSession[] {
@@ -220,6 +275,7 @@ function status(): EngineStatus {
     process: processStats,
     replay: feeds.replayStatus(),
     replayBlocked: feeds.replayBlocked(),
+    recorder: recorder.status(),
   };
 }
 
@@ -308,6 +364,7 @@ async function start() {
       dhan.tick();
       feeds.tick();
       trader.tick();
+      recorder.tick();
       metrics.gauge("api.clients", server.clients);
       telemetry.publish("status", status());
     }, STATUS_INTERVAL_MS),
@@ -333,9 +390,10 @@ async function stop(reason: string, code = 0) {
   sampler.stop();
   // Before the feed goes: the run's tables are saved and its log closed.
   await trader.stop().catch((error: unknown) => log.error("trading did not stop cleanly", { error: String(error) }));
+  recorder.shutdown();
   feeds.shutdown();
   journal.control("engine-stop", { reason }, clock.now());
-  await journal.close();
+  await Promise.all([journal.close(), depthJournal.close(), chainJournal.close()]);
   await server.close();
   releaseLock?.();
   log.info("stopped");

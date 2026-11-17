@@ -21,6 +21,11 @@ export interface Journal {
 
 export interface JournalOptions {
   directory: string;
+  /**
+   * Names a side file next to the main one: ".depth" writes `YYYY-MM-DD.depth.bin`. Side files
+   * use the same format; readers of the main journal never open them.
+   */
+  suffix?: string;
   istDate: (time: number) => string;
   now: () => number;
   /** Called with the new file's date when a file is opened, to write its opening records. */
@@ -31,8 +36,10 @@ export interface JournalOptions {
 }
 
 export function createJournal(options: JournalOptions): Journal {
-  const { directory, istDate, now, onOpen, onError, onWriteLatency } = options;
+  const { directory, istDate, now, onOpen, onError, onWriteLatency, suffix = "" } = options;
   mkdirSync(directory, { recursive: true });
+  const fileName = (day: string) => `${day}${suffix}.bin`;
+  const dayFile = new RegExp(`^\\d{4}-\\d{2}-\\d{2}${suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.bin$`);
 
   let stream: WriteStream | null = null;
   let date = "";
@@ -48,7 +55,7 @@ export function createJournal(options: JournalOptions): Journal {
 
   function open(day: string) {
     stream?.end();
-    const file = path.join(directory, `${day}.bin`);
+    const file = path.join(directory, fileName(day));
     const fresh = !existsSync(file);
     stream = createWriteStream(file, { flags: "a" });
     stream.on("error", (cause) => {
@@ -100,7 +107,7 @@ export function createJournal(options: JournalOptions): Journal {
       const backlog = stream?.writableLength ?? 0;
       return {
         date: date || null,
-        file: date ? path.join(directory, `${date}.bin`) : null,
+        file: date ? path.join(directory, fileName(date)) : null,
         bytes,
         frames,
         controls,
@@ -115,7 +122,7 @@ export function createJournal(options: JournalOptions): Journal {
     days() {
       if (daysCache && now() - daysCache.at < DAYS_CACHE_MS) return daysCache.days;
       const days = readdirSync(directory)
-        .filter((name) => /^\d{4}-\d{2}-\d{2}\.bin$/.test(name))
+        .filter((name) => dayFile.test(name))
         .map((name) => ({ date: name.slice(0, 10), bytes: statSync(path.join(directory, name)).size }))
         .sort((a, b) => b.date.localeCompare(a.date));
       daysCache = { at: now(), days };

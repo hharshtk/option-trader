@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "name": "Tier 1: NIFTY",
-  "note": "Instruments the engine keeps subscribed at all times, whether or not a page shows them, so every session is journaled. mode: ticker (last price), quote (adds volume, VWAP, day OHLC, buy/sell quantity) or full (adds OI and depth). Indices carry no volume, so ticker is enough for them. NIFTY futures follow once the instrument download includes futures.",
+  "name": "NIFTY and BANKNIFTY",
+  "note": "Instruments the engine keeps subscribed at all times, whether or not a page shows them, so every session is journaled. mode: ticker (last price), quote (adds volume, VWAP, day OHLC, buy/sell quantity) or full (adds OI and 5-level depth with order counts). Indices carry no volume or book, so ticker is enough for them. `instruments` are always ticker: India VIX (21), BANKNIFTY (25) and FINNIFTY (27). BANKNIFTY's 14 banks are in Full mode too (5 are also in NIFTY). Index futures and options are not here: the recorder (src/engine/recording) picks them each trading day.",
   "include": [
     {
       "kind": "index",
@@ -11,8 +11,17 @@
     {
       "kind": "constituents",
       "index": "NIFTY",
-      "mode": "quote"
+      "mode": "full"
+    },
+    {
+      "kind": "constituents",
+      "index": "BANKNIFTY",
+      "mode": "full"
     }
   ],
-  "instruments": []
+  "instruments": [
+    "IDX_I:21",
+    "IDX_I:25",
+    "IDX_I:27"
+  ]
 }

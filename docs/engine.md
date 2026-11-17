@@ -19,11 +19,12 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 11. [Journal](#journal)
 12. [Replay](#replay)
 13. [Always-on universe](#always-on-universe)
-14. [Session calendar](#session-calendar)
-15. [Code layout and rules](#code-layout-and-rules)
-16. [Testing](#testing)
-17. [Extending it](#extending-it)
-18. [Troubleshooting](#troubleshooting)
+14. [Research recording](#research-recording)
+15. [Session calendar](#session-calendar)
+16. [Code layout and rules](#code-layout-and-rules)
+17. [Testing](#testing)
+18. [Extending it](#extending-it)
+19. [Troubleshooting](#troubleshooting)
 
 ## Status
 
@@ -31,7 +32,7 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 |---|---|---|
 | E0 Groundwork | Built | Shared modules run under plain Node; clock, event types, logger, metrics, session calendar |
 | E1 Skeleton and monitoring | Built | `npm run engine`, control API, health checks, Engine page, header status dot |
-| E2 Engine owns Dhan | In progress | Done: the feed runs in the engine and the web forwards to it; always-on journal; always-on NIFTY universe; per-instrument Ticker/Quote/Full modes (constituents stream in Quote mode). Next: journal upload to S3, NIFTY futures in Full mode, one REST limiter, daily scrip snapshot |
+| E2 Engine owns Dhan | In progress | Done: the feed runs in the engine and the web forwards to it; always-on journal; always-on universe (NIFTY's and BANKNIFTY's constituents in Full mode, India VIX, BANKNIFTY, FINNIFTY); per-instrument Ticker/Quote/Full modes; the [research recorder](#research-recording) (NIFTY and BANKNIFTY futures, wide option windows, 20-level depth, option chain snapshots). Next: journal compression and upload to S3, one REST limiter |
 | E6–E7 Signals and paper trading | First version built | The engine follows a Pulse signal with NIFTY options on paper: decision API gate, limits, Dhan's charges, Parquet tables, Strategies and Activity pages. See [trading.md](trading.md) |
 | E3–E5, E8 | Planned | See [engine-plan.md](engine-plan.md#build-steps). Live orders (E8) wait for the go-live gate in [engine-plan.md](engine-plan.md#go-live-gate) |
 
@@ -357,9 +358,9 @@ Code: [player.ts](../src/engine/replay/player.ts) (the stand-in socket and the t
 
 ## Always-on universe
 
-[config/engine/universe.json](../config/engine/universe.json) lists instruments the engine subscribes at start and never releases, so sessions are journaled even with no page open. Pages still add what they show on top. Today: the NIFTY index in Ticker mode and its 50 constituents in Quote mode (51 instruments, one socket). NIFTY futures follow, in Full mode, once the instrument download includes futures.
+[config/engine/universe.json](../config/engine/universe.json) lists instruments the engine subscribes at start and never releases, so sessions are journaled even with no page open. Pages still add what they show on top. Today: the NIFTY index, India VIX, BANKNIFTY and FINNIFTY in Ticker mode, and the constituents of NIFTY (50) and BANKNIFTY (14, five of them also in NIFTY) in Full mode: 63 instruments, one socket. Full gives the constituents five levels of depth with order counts, for order-book features across the basket.
 
-NIFTY options aren't in this file, because which ones matter moves with the index. Trading subscribes the calls and puts around the money in Full mode from 20 minutes before each open, and they are journaled with everything else ([trading.md](trading.md#option-contracts-and-recording)).
+NIFTY futures and options aren't in this file, because which ones exist changes with each expiry and which strikes matter moves with the index. The [research recorder](#research-recording) picks them each trading day. Trading also subscribes its own window ([trading.md](trading.md#option-contracts-and-recording)); the hub counts holders, so the two never clash.
 
 Entries are `{ "kind": "index", "index": "NIFTY" }`, `{ "kind": "constituents", "index": "NIFTY" }`, `{ "kind": "instrument", "key": "NSE_EQ:1333" }`, or plain keys in `instruments` (always Ticker). Each entry takes an optional `"mode"`:
 
@@ -371,7 +372,30 @@ Entries are `{ "kind": "index", "index": "NIFTY" }`, `{ "kind": "constituents", 
 
 Indices carry no volume, so Ticker is enough for them. An instrument listed twice gets the richer mode. In the hub an instrument keeps the richest mode anyone asked for: a page asking for Ticker never downgrades a universe instrument in Quote. Switching a mode unsubscribes the old one first, since Dhan doesn't document what a second subscription in a different mode does.
 
-**Known effect:** in Quote mode Dhan doesn't send the previous-close packet (checked 15 November 2026), so the Live Feed page shows no change % for the 50 constituents. The header, Overview and Market Watch show change % for indices only, which stay in Ticker mode and are unaffected. Anything that can't be resolved is logged and shown on the Engine page. Restart the engine after editing it.
+**Known effect:** in Quote mode (and so presumably Full) Dhan doesn't send the previous-close packet (checked 15 November 2026), so the Live Feed page shows no change % for the 50 constituents. The header, Overview and Market Watch show change % for indices only, which stay in Ticker mode and are unaffected. Anything that can't be resolved is logged and shown on the Engine page. Restart the engine after editing it.
+
+## Research recording
+
+[recorder.ts](../src/engine/recording/recorder.ts) records, on every trading day, the data any strategy might later need, whether or not the trader uses it. NIFTY is the index strategies are built on; BANKNIFTY is recorded alongside so it can be tested later. `RECORDED` in recorder.ts lists the indices and how much of each to keep. It runs from 30 minutes before the F&O open to 10 minutes after the close (08:45–15:40 IST on a normal day), on the live feed only: during a replay it holds nothing. The Engine page's **Research recording** panel shows what it holds, the depth connection and the chain snapshots; problems turn the `recorder` health component amber.
+
+| What | Where it goes | Detail |
+|---|---|---|
+| Every unexpired NIFTY and BANKNIFTY future (three months each) | Main journal, Full mode | Last trade, volume, OI, 5-level depth |
+| NIFTY options, three nearest (weekly) expiries | Main journal, Full mode | ±15, ±10 and ±5 strikes around the money (126 contracts). The window follows the index and only grows during the day, so no series is cut |
+| BANKNIFTY options, two nearest (monthly) expiries | Main journal, Full mode | ±15 and ±10 strikes (104 contracts) |
+| 20-level depth: NIFTY's two nearest futures and its nearest expiry's ±5 strikes, then BANKNIFTY's two nearest futures | `<date>.depth.bin` | Dhan's depth connection (`wss://depth-api-feed.dhan.co/twentydepth`), up to 50 instruments; price, quantity and order count per level. Starts with 26 and grows with NIFTY's window until 50 |
+| Option chain: NIFTY's three nearest expiries, BANKNIFTY's two | `<date>.chain.bin` | Once a minute while the market is open (5 seconds into the minute) and once at the close: IV, delta, gamma, theta, vega, OI and previous OI, volume, best bid and ask for strikes within 10% of the index. 75–90 KB per expiry per snapshot, so about 150 MB a day |
+| What each recorded ID is | Main journal, `instruments` control records | Key, future or option, expiry, strike, CE/PE, lot size, name. A day stays readable after its contracts expire and leave Dhan's instrument file |
+
+**Side files.** `<date>.depth.bin` and `<date>.chain.bin` sit next to the day's journal in the same [format](../src/engine/journal/format.ts). The depth file holds the depth connection's raw frames (connection 1) plus its `state` and `subscribe` events; decode frames with `parseDepthFrame()` in [depth-packets.ts](../src/lib/live/feed/depth-packets.ts). The chain file holds `option-chain` control records: `{ underlying, expiry, minute, lastPrice, oc }` (underlying is `NIFTY` or `BANKNIFTY`), where `oc` is Dhan's per-strike object. Replays and the Pulse page read only the main journal; the side files are research data and nothing replays them yet.
+
+**Contracts.** Options come from the same instrument file and contract loader as trading's, per index; each live day's contracts are saved as `reference/<index>-options/<date>.parquet`.
+
+**Futures.** Each download of Dhan's instrument file (Settings, or the engine's own download before a session) also writes the unexpired NSE and BSE index futures to `instruments/index-futures.parquet`. If that table is missing or older than the day, the recorder downloads the file again, at most every 10 minutes.
+
+**Sockets.** The depth connection is a second socket per engine. Dhan allows five per account: prod and a dev engine both running use four. A third engine against the live feed would go over and Dhan would cut the oldest socket, so test engines should replay rather than connect.
+
+**Size.** Full mode on the constituents and options, plus depth, makes the main journal several times larger than in Quote mode, and the depth file may well be bigger still. Measure the first full day on the Engine page; compression and upload to S3 are the next step, and the disk has about 85 GB free.
 
 ## Session calendar
 
@@ -402,9 +426,11 @@ src/engine/
   journal/                journal format (encode/decode), writer, and the session reader behind the Session view
   market/universe.ts      always-on universe from config/engine/universe.json
   trading/                paper trading: trader, strategy, decision gate, paper fills, contracts, run log, Parquet tables
+  recording/              research recorder: NIFTY and BANKNIFTY futures and option windows on the main feed, 20-level depth socket, option chain snapshots
   api/feed-routes.ts      quote stream, Live Feed stream and actions
   telemetry/              logger, log file, metrics, health, telemetry hub, process stats, ring buffer
 src/lib/engine/protocol.ts    types shared by engine and web (the web imports only this and trading.ts)
+src/lib/live/feed/depth-packets.ts  Dhan's 20-level depth feed: URL, subscribe messages, frame parser
 src/lib/engine/trading.ts     trading types and settings shared by engine and web
 src/lib/trading/charges.ts    Dhan's charges
 src/lib/db/parquet-store.ts   Parquet tables in the file store, read and written with DuckDB

@@ -123,13 +123,31 @@ test("the default universe is the NIFTY index and its constituents", () => {
   assert.ok(keys.length >= 50);
 });
 
-test("the default universe streams constituents in quote mode and the index in ticker mode", () => {
+test("the default universe streams constituents in full mode and the indices in ticker mode", () => {
   const universe = resolveUniverse();
   assert.equal(universe.modes.get("IDX_I:13"), "ticker");
-  assert.equal(universe.modes.get("NSE_EQ:1333"), "quote");
+  assert.equal(universe.modes.get("IDX_I:21"), "ticker", "India VIX");
+  assert.equal(universe.modes.get("NSE_EQ:1333"), "full");
   const groups = Object.fromEntries(byMode(universe).map(([mode, list]) => [mode, list.length]));
-  assert.equal(groups.ticker, 1);
-  assert.equal(groups.quote, universe.instruments.length - 1);
+  assert.equal(groups.ticker, 4);
+  assert.equal(groups.full, universe.instruments.length - 4);
+});
+
+test("a side journal writes YYYY-MM-DD<suffix>.bin and lists only its own days", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "journal-side-"));
+  const at = ist("2026-11-18T09:20:00");
+  const main = createJournal({ directory, istDate, now: () => at });
+  const depth = createJournal({ directory, suffix: ".depth", istDate, now: () => at });
+  main.frame(1, Buffer.from([1]), at);
+  depth.frame(1, Buffer.from([2, 3]), at);
+  await Promise.all([main.close(), depth.close()]);
+  assert.deepEqual(main.days().map((day) => day.date), ["2026-11-18"]);
+  assert.deepEqual(depth.days().map((day) => day.date), ["2026-11-18"]);
+  assert.equal(depth.status().file, path.join(directory, "2026-11-18.depth.bin"));
+  const { records } = decodeJournal(readFileSync(path.join(directory, "2026-11-18.depth.bin")));
+  assert.deepEqual(records[0].frame, Buffer.from([2, 3]));
+  writeFileSync(path.join(directory, "2026-11-17.chain.bin"), MAGIC);
+  assert.deepEqual(createJournal({ directory, istDate, now: () => at + 20_000 }).days().map((day) => day.date), ["2026-11-18"]);
 });
 
 test("an instrument listed twice gets the richer mode; unknown modes fall back to ticker", () => {

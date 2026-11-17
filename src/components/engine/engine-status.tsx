@@ -5,8 +5,9 @@ import { tooltipClass } from "@/components/shell/header-controls";
 import { useNow } from "@/components/shell/freshness";
 import { Tooltip } from "@/components/tooltip";
 import { StatusDot } from "@/components/ui";
-import type { HealthState } from "@/lib/engine/protocol";
-import { replaySummary } from "./replay-format";
+import type { HealthState, ReplayStatus } from "@/lib/engine/protocol";
+import { istTime } from "@/lib/format";
+import { replayDay, replaySummary } from "./replay-format";
 import { isStale, useEngineTelemetry, type EngineTelemetry } from "./use-engine-telemetry";
 
 const TOPICS = ["status"] as const;
@@ -56,27 +57,70 @@ export function EngineStatus() {
   const view = engineView(telemetry, now);
   const replay = view === "offline" || view === "unconfigured" ? null : telemetry.status?.replay;
   const summary = engineSummary(telemetry, view);
+  const running = view === "ok" || view === "degraded" || view === "failing";
 
   return (
-    <Tooltip
-      side="bottom"
-      sideOffset={6}
-      className={`${tooltipClass} max-w-80`}
-      content={replay ? `${replaySummary(replay)}: prices are recorded, not live. ${summary}` : summary}
-    >
-      <Link
-        href="/engine"
-        className="flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-1.5 text-label font-medium hover:bg-raised"
+    <>
+      <Tooltip
+        side="bottom"
+        sideOffset={6}
+        className={`${tooltipClass} max-w-80`}
+        content={replay ? `${replaySummary(replay)}: prices are recorded, not live. ${summary}` : summary}
       >
-        <StatusDot tone={VIEW_TONE[view]} />
-        <span>Engine</span>
-        <span className="sr-only">{VIEW_LABEL[view]}</span>
-        {replay && (
-          <span className="rounded-sm border border-warn/60 px-1 text-[0.625rem] leading-4 font-medium tracking-wide text-warn uppercase">
-            Replay
-          </span>
-        )}
-      </Link>
-    </Tooltip>
+        <Link
+          href="/engine"
+          className="flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-1.5 text-label font-medium hover:bg-raised"
+        >
+          <StatusDot tone={VIEW_TONE[view]} />
+          <span>Engine</span>
+          <span className="sr-only">{VIEW_LABEL[view]}</span>
+          {replay && (
+            <span className="rounded-sm border border-warn/60 px-1 text-[0.625rem] leading-4 font-medium tracking-wide text-warn uppercase">
+              Replay
+            </span>
+          )}
+        </Link>
+      </Tooltip>
+      {running && now !== null && (
+        <TradingClock replay={replay ?? null} now={now} receivedAt={telemetry.statusReceivedAt} />
+      )}
+    </>
+  );
+}
+
+/**
+ * The time trading runs on: the recorded time during a replay, else IST now. Status arrives once
+ * a second; in between, a playing replay is moved on at its speed so the seconds keep ticking.
+ */
+function TradingClock({
+  replay,
+  now,
+  receivedAt,
+}: {
+  replay: ReplayStatus | null;
+  now: number;
+  receivedAt: number | null;
+}) {
+  if (!replay) {
+    return (
+      <time dateTime={new Date(now).toISOString()} className="shrink-0 font-mono text-label text-muted tabular-nums">
+        {istTime.format(now)}
+        <span className="font-sans max-sm:hidden"> IST</span>
+      </time>
+    );
+  }
+
+  const elapsed = replay.state === "playing" && receivedAt !== null ? Math.max(0, now - receivedAt) : 0;
+  const at = Math.min(replay.endAt, replay.at + elapsed * replay.speed);
+  return (
+    <time
+      dateTime={new Date(at).toISOString()}
+      title={`Replay time, ${replayDay(replay.date)}, ${replay.state === "playing" ? `×${replay.speed}` : replay.state}`}
+      className="flex shrink-0 items-baseline gap-1.5 font-mono text-label text-warn tabular-nums"
+    >
+      <span className="font-sans max-md:hidden">{replayDay(replay.date)}</span>
+      {istTime.format(at)}
+      {replay.state !== "playing" && <span className="font-sans text-muted max-sm:hidden">{replay.state}</span>}
+    </time>
   );
 }

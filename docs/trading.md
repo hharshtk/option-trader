@@ -207,6 +207,7 @@ A stopped day stays stopped across an engine restart. The `trading` health compo
 - **Daily download.** When a live day starts and the stored file is older, the engine downloads Dhan's file itself (the same download as Settings → Download option instruments), and tries again every 10 minutes until Dhan has published the day's file. Meanwhile it trades on the older file and says so. The download parses a large CSV and can stall the engine for up to a second, once, before the open.
 - **Kept per day.** Dhan lists only unexpired contracts, so each live day's NIFTY contracts are saved as `reference/nifty-options/<date>.parquet`. A replay of that day reads them back.
 - **Option window.** From 20 minutes before the open the engine subscribes calls and puts within 6 strikes of the money on the trading expiry, in Full mode, and adds strikes as NIFTY moves. They are journaled like everything else, so later replays have real option ticks and depth. Expect the journal to grow by roughly 100 MB a day.
+- **Research recording.** Separately from trading, the engine's recorder streams wide option windows and all futures for NIFTY and BANKNIFTY, 20-level depth and option chain snapshots every trading day ([engine.md](engine.md#research-recording)). It shares the contract source with trading, so a stale instrument file is downloaded once.
 
 ## Runs and storage
 
