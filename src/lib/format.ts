@@ -29,11 +29,29 @@ export const signedPrice = new Intl.NumberFormat("en-IN", {
 
 export const quantity = new Intl.NumberFormat("en-IN");
 
-export const istDateTime = new Intl.DateTimeFormat("en-IN", {
+const istDateTimeParts = new Intl.DateTimeFormat("en-IN", {
   timeZone: "Asia/Kolkata",
-  dateStyle: "medium",
-  timeStyle: "short",
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  hourCycle: "h23",
 });
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Assembled from numeric parts rather than dateStyle/timeStyle: Node's ICU and the
+// browser's word those differently ("18 Nov 2026, 6:15 am" vs "18 Nov 2026 at 6:15 AM",
+// "Sep" vs "Sept"), and a server-rendered date must match the client's exactly.
+export const istDateTime = {
+  format(date: Date | number) {
+    const part: Record<string, string> = {};
+    for (const { type, value } of istDateTimeParts.formatToParts(date)) part[type] = value;
+    const hour = Number(part.hour);
+    return `${Number(part.day)} ${MONTHS[Number(part.month) - 1]} ${part.year}, ${hour % 12 || 12}:${part.minute} ${hour < 12 ? "AM" : "PM"}`;
+  },
+};
 
 export const istTime = new Intl.DateTimeFormat("en-IN", {
   timeZone: "Asia/Kolkata",
