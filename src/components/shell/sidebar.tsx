@@ -6,9 +6,6 @@ import type { ComponentType } from "react";
 import {
   ActivityIcon,
   EngineIcon,
-  FundsIcon,
-  HoldingsIcon,
-  InstrumentsIcon,
   LiveFeedIcon,
   MarketWatchIcon,
   OptionsChainIcon,
@@ -30,11 +27,13 @@ interface NavItem {
   label: string;
   icon: ComponentType<IconProps>;
   built: boolean;
+  /** Other pages shown as tabs under this entry, which keep it highlighted. */
+  also?: string[];
 }
 
 const NAV: NavItem[][] = [
   [
-    { href: "/", label: "Overview", icon: OverviewIcon, built: true },
+    { href: "/", label: "Overview", icon: OverviewIcon, built: true, also: ["/holdings", "/funds"] },
     { href: "/market-watch", label: "Market Watch", icon: MarketWatchIcon, built: true },
     { href: "/options-chain", label: "Options Chain", icon: OptionsChainIcon, built: true },
     { href: "/pulse", label: "Pulse", icon: PulseIcon, built: true },
@@ -43,15 +42,12 @@ const NAV: NavItem[][] = [
   [
     { href: "/orders", label: "Orders", icon: OrdersIcon, built: true },
     { href: "/positions", label: "Positions", icon: PositionsIcon, built: true },
-    { href: "/holdings", label: "Holdings", icon: HoldingsIcon, built: true },
-    { href: "/funds", label: "Funds", icon: FundsIcon, built: true },
   ],
   [
     { href: "/activity", label: "Activity", icon: ActivityIcon, built: true },
     { href: "/engine", label: "Engine", icon: EngineIcon, built: true },
     { href: "/live-feed", label: "Live Feed", icon: LiveFeedIcon, built: true },
-    { href: "/instruments", label: "Instruments", icon: InstrumentsIcon, built: true },
-    { href: "/settings", label: "Settings", icon: SettingsIcon, built: true },
+    { href: "/settings", label: "Settings", icon: SettingsIcon, built: true, also: ["/instruments"] },
   ],
 ];
 
@@ -73,7 +69,7 @@ export function Sidebar() {
           >
             {group.map((item) => (
               <li key={item.href}>
-                <NavLink item={item} active={pathname === item.href} showTooltip={collapsed} />
+                <NavLink item={item} active={pathname === item.href || (item.also?.includes(pathname) ?? false)} showTooltip={collapsed} />
               </li>
             ))}
           </ul>
