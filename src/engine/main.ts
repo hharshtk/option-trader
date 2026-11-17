@@ -22,6 +22,11 @@ import { createLogFile } from "./telemetry/log-file.ts";
 import { consoleSink, createLogHub, LEVEL_RANK } from "./telemetry/logger.ts";
 import { createMetrics } from "./telemetry/metrics.ts";
 import { createProcessSampler } from "./telemetry/process-stats.ts";
+import { getParquetStore } from "../lib/db/parquet-store.ts";
+import { createOpenRouterDecisions } from "./trading/decision.ts";
+import { createCandleSource, createContractSource } from "./trading/sources.ts";
+import { createTradingStore } from "./trading/store.ts";
+import { createTrader } from "./trading/trader.ts";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const STATUS_INTERVAL_MS = 1_000;
@@ -131,8 +136,42 @@ const feeds = createFeedSwitch({
   universe,
   calendar,
   now: clock.now,
+  // Trading reads the market from the same frames, live or replayed.
+  onFrame: (frame, at) => trader.onFrame(frame, at),
 });
 const journalSessions = createJournalSessions({ directory: path.join(config.dataDir, "journal"), calendar, now: clock.now });
+
+// Paper trading. Its tables go to the app's file store as Parquet; the namespace keeps a second
+// engine on another port (development) from overwriting the main engine's runs in a shared bucket.
+const tradingNamespace = config.port === 3100 ? "main" : `dev-${config.port}`;
+const tradingDirectory = path.join(config.dataDir, "trading");
+const parquet = getParquetStore();
+const trader = createTrader({
+  namespace: tradingNamespace,
+  directory: tradingDirectory,
+  version,
+  calendar,
+  log: logs.logger("trading"),
+  health,
+  now: clock.now,
+  store: createTradingStore(parquet, tradingNamespace),
+  hub: () => feeds.current()?.hub ?? null,
+  replay: () => feeds.replayPosition(),
+  hold: () => feeds.holdReplay(),
+  // The same day the Pulse page reads: as far as the replay has reached, or today's journal.
+  session: (date) => feeds.replaySession(date) ?? journalSessions.read(date),
+  decisions: createOpenRouterDecisions(process.env.OPENROUTER_API_KEY),
+  loadContracts: createContractSource({ store: parquet, log: logs.logger("trading.contracts"), now: clock.now }),
+  loadCandles: createCandleSource({
+    directory: path.join(tradingDirectory, "candles"),
+    istDate: calendar.istDate,
+    complete: (date) => {
+      const session = calendar.session("NSE_FNO", date);
+      return !session || clock.now() > session.close + 5 * 60_000;
+    },
+  }),
+  publish: (status) => telemetry.publish("trading", status, status.marketTime),
+});
 const dhan = createDhanWatch({
   log: logs.logger("dhan"),
   health,
@@ -193,12 +232,18 @@ const server = createControlServer({
   logs,
   log: logs.logger("api"),
   feed: () => feeds.current()?.hub ?? null,
-  replay: (body) => feeds.command(body),
+  replay: async (body) => {
+    const result = await feeds.command(body);
+    // Trading follows a replay start or seek at once instead of at the next tick.
+    trader.tick();
+    return result;
+  },
   // During a replay, the replayed day reads as far as the replay has reached (and is the default).
   journalSession: (date) => {
     const day = date ?? feeds.replayDate() ?? calendar.istDate(clock.now());
     return feeds.replaySession(day) ?? journalSessions.read(day);
   },
+  trading: trader,
 });
 
 health.set("engine", "ok");
@@ -227,6 +272,7 @@ async function start() {
   }
 
   await dhan.ready();
+  await trader.start();
   // After the token is loaded, so the first connection doesn't start out "missing a token".
   journal.control("engine-start", { version, pid: process.pid, universe: universe.name }, clock.now());
   if (args.replay) {
@@ -240,6 +286,7 @@ async function start() {
       log.warn(`not replaying: ${result.message} Starting the live feed.`);
       feeds.startLive();
     }
+    trader.tick();
   } else {
     feeds.startLive();
   }
@@ -260,6 +307,7 @@ async function start() {
       processStats = sampler.sample();
       dhan.tick();
       feeds.tick();
+      trader.tick();
       metrics.gauge("api.clients", server.clients);
       telemetry.publish("status", status());
     }, STATUS_INTERVAL_MS),
@@ -283,6 +331,8 @@ async function stop(reason: string, code = 0) {
   log.info(`stopping (${reason})`);
   for (const timer of timers) clearInterval(timer);
   sampler.stop();
+  // Before the feed goes: the run's tables are saved and its log closed.
+  await trader.stop().catch((error: unknown) => log.error("trading did not stop cleanly", { error: String(error) }));
   feeds.shutdown();
   journal.control("engine-stop", { reason }, clock.now());
   await journal.close();

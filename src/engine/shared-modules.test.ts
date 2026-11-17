@@ -14,11 +14,16 @@ const MODULES: Record<string, string[]> = {
   "../lib/dhan/token-store.ts": ["createTokenStore"],
   "../lib/dhan/option-contracts.ts": [],
   "../lib/dhan/option-scrips.ts": ["filterOptionScrips"],
+  "../lib/dhan/option-scrips-store.ts": ["downloadOptionScrips", "readOptionScripsMeta"],
   "../lib/storage.ts": ["getFileStore"],
   "../lib/db/duckdb.ts": ["withDb"],
+  "../lib/db/parquet-store.ts": ["getParquetStore"],
+  "../lib/trading/charges.ts": ["orderCharges"],
+  "../lib/insight/pulse.ts": ["computePulse"],
   "../lib/index-constituents.ts": [],
   "../lib/live/feed/feed-hub.ts": ["createFeedHub"],
   "../lib/engine/protocol.ts": ["worstHealth"],
+  "../lib/engine/trading.ts": ["mergeTradingConfig"],
 };
 
 for (const [path, exports] of Object.entries(MODULES)) {

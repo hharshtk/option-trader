@@ -1,6 +1,6 @@
 # Engine plan
 
-Status: proposed on 2026-11-15; trading plan (E6–E8, [Trading](#trading)) added 2026-11-16. Steps E0 and E1 are built, and E2 is under way (the feed runs in the engine; the first full session was validated in [data-validation-2026-11-16.md](data-validation-2026-11-16.md)); see [engine.md](engine.md) for how the engine runs today. The engine now runs on the OCI VM described in [oci-setup.md](oci-setup.md), not the laptop this plan assumes. This plan turns the `engine` process from [architecture-plan.md](architecture-plan.md) into build steps, for running it on the development laptop next to the web app. It covers three things the architecture plan leaves open:
+Status: proposed on 2026-11-15; trading plan (E6–E8, [Trading](#trading)) added 2026-11-16. Steps E0 and E1 are built, and E2 is under way (the feed runs in the engine; the first full session was validated in [data-validation-2026-11-16.md](data-validation-2026-11-16.md)); see [engine.md](engine.md) for how the engine runs today. A first version of paper trading (parts of E6 and E7) was built on 2026-11-16 on top of the feed and the Pulse signals, ahead of E3 to E5: see [trading.md](trading.md) for what exists and where it differs from this plan. The engine now runs on the OCI VM described in [oci-setup.md](oci-setup.md), not the laptop this plan assumes. This plan turns the `engine` process from [architecture-plan.md](architecture-plan.md) into build steps, for running it on the development laptop next to the web app. It covers three things the architecture plan leaves open:
 
 - running on a laptop instead of a VPS
 - seeing everything the engine does on the web
@@ -397,6 +397,17 @@ Architecture phase 7. Built only after E7's gate is met.
 
 ## Trading
 
+**Built so far** ([trading.md](trading.md)): one strategy that follows a Pulse signal with long NIFTY options on paper, the decision API as a gate with a shadow book, limits, Dhan's charges, and stored runs. Where it differs from the plan below:
+
+| Plan | As built |
+|---|---|
+| Kernel on an event bus with a virtual clock (E3, E4) | Trading reads the feed's frames directly, live or through the feed replay. A replayed day trades the same way, but not to the millisecond |
+| OMS and run registry in SQLite | No SQLite. A run's changes go to a local append-only log, and its tables are Parquet files in the file store (S3), read with DuckDB |
+| OpenAI's Decisions API, shadow only until proven | OpenRouter's Decisions API, as a gate from the start by the owner's choice; every turned-down trade is followed on a shadow book so the gate can be judged |
+| Signals from depth, basis, OI and IV | The three Pulse signals and their combination |
+
+The rest of this section is the plan as written.
+
 The goal is a fast, signal-driven intraday system on NIFTY futures and options: it reacts within a second and holds for seconds to minutes. Its edge has to come from signals, not speed. It trades on paper until it has proved itself, because this is real money.
 
 ### What Dhan allows
@@ -555,4 +566,4 @@ Neither is needed while web and engine run side by side.
 4. **NIFTY history range:** how many years to download first.
 5. **Live-orders host:** the OCI VM, with a reserved static IP whitelisted at Dhan (see [Lead-time items](#lead-time-items)).
 6. **Go-live thresholds:** the maximum drawdown, daily loss limit for `/pnlExit` and minimum paper sessions in the [go-live gate](#go-live-gate). Set before paper trading starts, not after seeing results.
-7. **Decision API:** whether to use one, and which provider. It stays optional and shadow-only until replays show it helps.
+7. **Decision API:** decided 2026-11-16: OpenRouter's Decisions API, as a gate on paper entries. Whether it stays is judged from the stored runs (approved against turned-down trades, after charges).

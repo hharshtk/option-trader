@@ -13,6 +13,7 @@ import {
   type TelemetryHello,
   type TelemetryTopic,
 } from "../../lib/engine/protocol.ts";
+import type { DecisionRequest, TradingCommandResult, TradingHistory, TradingStatus } from "../../lib/engine/trading.ts";
 import type { LogHub } from "../telemetry/logger.ts";
 import type { Logger } from "../telemetry/logger.ts";
 import type { TelemetryHub } from "../telemetry/hub.ts";
@@ -21,7 +22,7 @@ import { clientAddress, createAuthThrottle, type AuthThrottle } from "./auth-thr
 import { handleFeedRoute, readJson } from "./feed-routes.ts";
 import { openSse, type SseClient } from "./sse.ts";
 
-const TOPICS: readonly TelemetryTopic[] = ["status", "log", "metrics", "feed", "bars", "gaps"];
+const TOPICS: readonly TelemetryTopic[] = ["status", "log", "metrics", "feed", "trading", "bars", "gaps"];
 const LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 
 export interface ControlServerOptions {
@@ -39,6 +40,13 @@ export interface ControlServerOptions {
   journalSession?: (date: string | null) => Promise<JournalSession | null>;
   /** Handles a `POST /v1/replay` body: switch the feed to a recorded day and back, and steer it. */
   replay?: (body: unknown) => Promise<ReplayCommandResult>;
+  /** Paper trading: its state, its commands (`POST /v1/trading`) and its stored runs. */
+  trading?: {
+    status(): TradingStatus;
+    command(body: unknown): Promise<TradingCommandResult>;
+    history(run: string | null): Promise<TradingHistory>;
+    decisionRequest(id: string): DecisionRequest | null;
+  };
 }
 
 export interface ControlServer {
@@ -113,8 +121,30 @@ export function createControlServer(options: ControlServerOptions): ControlServe
       if (url.pathname === "/v1/replay" && request.method === "POST" && options.replay) {
         return json(response, 200, await options.replay(await readJson(request)));
       }
+      if (url.pathname === "/v1/trading" && request.method === "POST" && options.trading) {
+        return json(response, 200, await options.trading.command(await readJson(request)));
+      }
       if (request.method !== "GET") return json(response, 404, { error: `No route ${request.method} ${url.pathname}` });
       switch (url.pathname) {
+        case "/v1/trading":
+          if (!options.trading) return json(response, 404, { error: "No trading" });
+          return json(response, 200, options.trading.status());
+        case "/v1/trading/decision": {
+          if (!options.trading) return json(response, 404, { error: "No trading" });
+          const sent = options.trading.decisionRequest(url.searchParams.get("id") ?? "");
+          return sent ? json(response, 200, sent) : json(response, 404, { error: "No such decision in the current run" });
+        }
+        case "/v1/trading/history": {
+          if (!options.trading) return json(response, 404, { error: "No trading" });
+          try {
+            return json(response, 200, await options.trading.history(url.searchParams.get("run")));
+          } catch (error) {
+            // The tables are read from the file store, which can be unreachable.
+            const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+            log.warn("could not read trading history", { error: message });
+            return json(response, 502, { error: `Could not read the stored runs: ${message}` });
+          }
+        }
         case "/v1/status":
           return json(response, 200, status());
         case "/v1/logs": {

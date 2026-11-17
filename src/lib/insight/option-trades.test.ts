@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { candlesAsOf, OPTION_RATES, planTrades, roundTripCharges, simulateTrades, type OptionChoices } from "./option-trades.ts";
+import { OPTION_RATES, roundTripCharges } from "../trading/charges.ts";
+import { candlesAsOf, planTrades, simulateTrades, type OptionChoices } from "./option-trades.ts";
 
 const M = 60_000;
 const T0 = Date.UTC(2026, 10, 16, 5, 0);
@@ -35,7 +36,7 @@ test("a trade buys at the firing minute's close and sells at the close a horizon
   assert.equal(trade.skipped, null);
   assert.deepEqual([trade.entry, trade.exit], [100, 110]);
   assert.equal(trade.gross, (109.5 - 100.5) * 65);
-  assert.ok(Math.abs(trade.charges - roundTripCharges(100.5 * 65, 109.5 * 65, OPTION_RATES)) < 1e-9);
+  assert.ok(Math.abs(trade.charges - roundTripCharges(100.5 * 65, 109.5 * 65, OPTION_RATES).total) < 1e-9);
   assert.equal(trade.ratio, 0.5);
 });
 
@@ -45,12 +46,6 @@ test("a trade waits until Dhan has the exit minute's candle", () => {
   const [trade] = simulateTrades(planned, candles, { horizon: 5, qty: 65, slippage: 0, spotAt });
   assert.match(trade.skipped ?? "", /Waiting/);
   assert.equal(trade.net, 0);
-});
-
-test("round-trip charges include brokerage on both orders and STT on the sell side only", () => {
-  const zero = roundTripCharges(0, 0, OPTION_RATES);
-  assert.ok(Math.abs(zero - 40 * 1.18) < 1e-9);
-  assert.ok(roundTripCharges(0, 10_000, OPTION_RATES) - roundTripCharges(10_000, 0, OPTION_RATES) > 0);
 });
 
 test("candlesAsOf keeps only minutes that had closed, so a replay prices nothing from its future", () => {

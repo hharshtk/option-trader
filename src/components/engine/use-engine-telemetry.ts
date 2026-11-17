@@ -11,6 +11,7 @@ import type {
   TelemetryMessage,
   TelemetryTopic,
 } from "@/lib/engine/protocol";
+import type { TradingStatus, TradingUpdate } from "@/lib/engine/trading";
 
 const BASE = "/api/engine/v1";
 const MAX_LOGS = 2_000;
@@ -29,6 +30,8 @@ export interface EngineTelemetry {
   metrics: MetricsSnapshot | null;
   /** The engine's Dhan feed: sockets, instruments, tick flow. */
   feed: FeedHealth | null;
+  /** Paper trading: run, positions, trades, decisions. */
+  trading: TradingStatus | null;
   logs: LogEntry[];
   /** Messages the engine dropped because this tab fell behind. */
   dropped: number;
@@ -39,6 +42,7 @@ type Action =
   | { type: "status"; status: EngineStatus; at: number }
   | { type: "metrics"; metrics: MetricsSnapshot }
   | { type: "feed"; feed: FeedHealth }
+  | { type: "trading"; update: TradingUpdate }
   | { type: "logs"; entries: LogEntry[] }
   | { type: "gap"; dropped: number };
 
@@ -49,6 +53,7 @@ const INITIAL: EngineTelemetry = {
   statusReceivedAt: null,
   metrics: null,
   feed: null,
+  trading: null,
   logs: [],
   dropped: 0,
 };
@@ -69,12 +74,22 @@ function reduce(state: EngineTelemetry, action: Action): EngineTelemetry {
         logs: restarted ? [] : state.logs,
         metrics: restarted ? null : state.metrics,
         feed: restarted ? null : state.feed,
+        trading: restarted ? null : state.trading,
       };
     }
     case "metrics":
       return { ...state, metrics: action.metrics };
     case "feed":
       return { ...state, feed: action.feed };
+    case "trading": {
+      const update = action.update;
+      // A message with the lists is the whole status.
+      if (update.trades && update.orders && update.intents && update.decisions && update.events) return { ...state, trading: update as TradingStatus };
+      // Without them: fresh numbers on the lists already held. When those are out of date the
+      // whole status is on its way (see the listener), so their revision is left as it was.
+      if (!state.trading) return state;
+      return { ...state, trading: { ...state.trading, ...update, listsRevision: state.trading.listsRevision } };
+    }
     case "logs": {
       const logs = state.logs.concat(action.entries);
       return { ...state, logs: logs.length > MAX_LOGS ? logs.slice(-MAX_LOGS) : logs };
@@ -97,6 +112,27 @@ export function useEngineTelemetry(topics: readonly TelemetryTopic[]): EngineTel
     // Log lines arrive in bursts (the backlog on connect); batch them into one render.
     let pendingLogs: LogEntry[] = [];
     let flushScheduled = false;
+
+    // The trading stream sends its lists only when they change. A tab that joins between
+    // changes, or missed one, reads the whole status once.
+    let heldLists: number | null = null;
+    let loadingTrading = false;
+    async function loadTrading() {
+      if (loadingTrading || disposed) return;
+      loadingTrading = true;
+      try {
+        const response = await fetch(`${BASE}/trading`, { cache: "no-store" });
+        if (response.ok && !disposed) {
+          const full = (await response.json()) as TradingStatus;
+          heldLists = full.listsRevision;
+          dispatch({ type: "trading", update: full });
+        }
+      } catch {
+        // The next message tries again.
+      } finally {
+        loadingTrading = false;
+      }
+    }
 
     const flushLogs = () => {
       flushScheduled = false;
@@ -140,6 +176,12 @@ export function useEngineTelemetry(topics: readonly TelemetryTopic[]): EngineTel
       );
       source.addEventListener("metrics", (event) => dispatch({ type: "metrics", metrics: read<MetricsSnapshot>(event) }));
       source.addEventListener("feed", (event) => dispatch({ type: "feed", feed: read<FeedHealth>(event) }));
+      source.addEventListener("trading", (event) => {
+        const update = read<TradingUpdate>(event);
+        dispatch({ type: "trading", update });
+        if (update.trades) heldLists = update.listsRevision;
+        else if (update.listsRevision !== heldLists) void loadTrading();
+      });
       source.addEventListener("log", (event) => {
         pendingLogs.push(read<LogEntry>(event));
         if (!flushScheduled) {

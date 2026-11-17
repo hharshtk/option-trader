@@ -3,9 +3,10 @@
 // close `horizon` minutes later, both from Dhan's 1-minute option candles. Buying only: a long
 // firing buys a call, a short firing buys a put.
 //
-// Pure: contracts, candles and settings in, trades out. Charges use the rates below, which are
-// assumptions to check against Dhan's charges page, not figures read from Dhan.
+// Pure: contracts, candles and settings in, trades out. Charges come from ../trading/charges.ts,
+// the same rates the engine's paper trading uses, checked against Dhan's brokerage calculator.
 
+import { FUTURES_RATES, OPTION_RATES, roundTripCharges } from "../trading/charges.ts";
 import type { SignalEvent } from "./pulse.ts";
 
 export interface OptionLeg {
@@ -56,50 +57,6 @@ export interface OptionTrade extends PlannedTrade {
   net: number;
   /** Option move per NIFTY point over the trade: roughly its delta. */
   ratio: number | null;
-}
-
-export interface ChargeRates {
-  /** Rupees per executed order. */
-  brokeragePerOrder: number;
-  /** Fraction of sell-side premium. */
-  stt: number;
-  /** Fraction of premium turnover (buy + sell). */
-  exchange: number;
-  sebi: number;
-  /** Fraction of buy-side value. */
-  stamp: number;
-  gst: number;
-}
-
-/** Assumed NSE index option rates. Verify against Dhan's charges page before trusting the totals. */
-export const OPTION_RATES: ChargeRates = {
-  brokeragePerOrder: 20,
-  stt: 0.001,
-  exchange: 0.0003503,
-  sebi: 0.000001,
-  stamp: 0.00003,
-  gst: 0.18,
-};
-
-/** Assumed NSE index futures rates, for the comparison line. */
-export const FUTURES_RATES: ChargeRates = {
-  brokeragePerOrder: 20,
-  stt: 0.0002,
-  exchange: 0.0000173,
-  sebi: 0.000001,
-  stamp: 0.00002,
-  gst: 0.18,
-};
-
-/** Charges on one round trip (one buy order, one sell order). */
-export function roundTripCharges(buyValue: number, sellValue: number, rates: ChargeRates) {
-  const brokerage = 2 * rates.brokeragePerOrder;
-  const exchange = (buyValue + sellValue) * rates.exchange;
-  const sebi = (buyValue + sellValue) * rates.sebi;
-  const stt = sellValue * rates.stt;
-  const stamp = buyValue * rates.stamp;
-  const gst = (brokerage + exchange + sebi) * rates.gst;
-  return brokerage + exchange + sebi + stt + stamp + gst;
 }
 
 /** The contract each firing would buy. Firings on a side not traded are left out. */
@@ -178,7 +135,7 @@ export function simulateTrades(
     const buy = entry + slippage;
     const sell = Math.max(0, exit - slippage);
     const gross = (sell - buy) * qty;
-    const charges = roundTripCharges(buy * qty, sell * qty, OPTION_RATES);
+    const charges = roundTripCharges(buy * qty, sell * qty, OPTION_RATES).total;
     const niftyThen = spotAt(p.event.at);
     const niftyLater = spotAt(exitAt);
     const move = niftyThen !== null && niftyLater !== null ? niftyLater - niftyThen : null;
@@ -207,7 +164,7 @@ export function futuresComparison(trades: OptionTrade[], qty: number, slippagePo
     const points = t.event.vote * t.event.outcome - 2 * slippagePoints;
     const value = t.spot * qty;
     gross += points * qty;
-    net += points * qty - roundTripCharges(value, value, FUTURES_RATES);
+    net += points * qty - roundTripCharges(value, value, FUTURES_RATES).total;
     count += 1;
   }
   return { gross, net, count };

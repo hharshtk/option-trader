@@ -117,6 +117,8 @@ export type Packet =
       totalBuyQty: number;
       /** Open interest (Full packets only). */
       oi?: number;
+      /** The best five bids and asks, best first (Full packets only). A level with no orders has price 0. */
+      depth?: DepthLevel[];
       open: number;
       /** Day close; Dhan sends it only after the market closes. */
       close: number;
@@ -127,7 +129,21 @@ export type Packet =
   | { kind: "disconnect"; reason: number }
   | { kind: "unknown"; code: number; length: number; key: string | null };
 
+/** One level of the order book: the bid and the ask at that rank. */
+export interface DepthLevel {
+  bid: number;
+  bidQty: number;
+  bidOrders: number;
+  ask: number;
+  askQty: number;
+  askOrders: number;
+}
+
 const HEADER_BYTES = 8;
+/** A Full packet ends with five 20-byte depth levels, from byte 62. */
+const DEPTH_OFFSET = 62;
+const DEPTH_LEVELS = 5;
+const DEPTH_LEVEL_BYTES = 20;
 
 // Packet sizes by response code. Code 1 (index) is listed in the Annexure without a layout;
 // it's read as a ticker until captured frames say otherwise. Code 7 (market status) is
@@ -217,8 +233,27 @@ function readPacket(view: DataView, at: number, code: number, size: number): Pac
         close: f32(50),
         high: f32(54),
         low: f32(58),
+        depth: readDepth(view, at + DEPTH_OFFSET),
       };
     default:
       return { kind: "unknown", code, length: size, key };
   }
+}
+
+// Each level: bid quantity i32, ask quantity i32, bid orders i16, ask orders i16, bid price f32,
+// ask price f32 (Dhan's "Market Depth" structure in the Full packet).
+function readDepth(view: DataView, at: number): DepthLevel[] {
+  const levels: DepthLevel[] = [];
+  for (let i = 0; i < DEPTH_LEVELS; i += 1) {
+    const base = at + i * DEPTH_LEVEL_BYTES;
+    levels.push({
+      bidQty: view.getInt32(base, true),
+      askQty: view.getInt32(base + 4, true),
+      bidOrders: view.getInt16(base + 8, true),
+      askOrders: view.getInt16(base + 10, true),
+      bid: view.getFloat32(base + 12, true),
+      ask: view.getFloat32(base + 16, true),
+    });
+  }
+  return levels;
 }

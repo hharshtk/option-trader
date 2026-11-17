@@ -106,7 +106,7 @@ Three candidate signals, each a fixed rule read at the end of every minute from 
 
 **Scoring.** A firing "follows NIFTY" for the hold time: the outcome is NIFTY's points from the firing minute's close to the close the hold later. Only firings whose outcome is complete count. After each firing the next hold is skipped, so samples never overlap.
 
-**Controls.** Hold: 1, 3, 5, 10 or 15 minutes. Cost per trade: 0, 2, 4, 8 (default) or 12 NIFTY points, an assumed round-trip cost for one futures lot.
+**Controls.** Hold: 1, 3, 5, 10 or 15 minutes. Cost per trade: 0, 4, 8, 12, 16 (default) or 20 NIFTY points. 16 is one futures lot, round trip, at Dhan's charges: about ₹975 (15 points) since futures STT rose to 0.05% on 1 April 2026, plus about a point of spread. It was 8 until 16 November 2026, from the old 0.02% STT.
 
 **What's on the page:**
 
@@ -148,18 +148,17 @@ Replays one signal's firings at the Signal lab's hold time, with real NIFTY opti
 
 **Each trade** buys at the option's 1-minute close for the firing minute and sells at the close the hold later. A minute with no trade in that option uses the last close within 3 minutes. If Dhan hasn't published the exit minute's candle yet, the trade shows "Waiting" rather than using an old price.
 
-**Charges** are assumptions, not figures read from Dhan:
+**Charges** are Dhan's, from [charges.ts](../src/lib/trading/charges.ts), the same module the engine's paper trading uses. They reproduce a result from Dhan's brokerage calculator to the paisa ([trading.md](trading.md#charges)):
 
 | | Options | Futures (comparison only) |
 |---|---|---|
 | Brokerage | ₹20 an order, 2 orders | Same |
-| STT | 0.1% of sell premium | 0.02% of sell value |
+| STT | 0.15% of sell premium | 0.05% of sell value |
 | Exchange fees | 0.03503% of turnover | 0.00173% of turnover |
+| IPFT | 0.0005% of turnover | 0.0001% of turnover |
 | SEBI fees | 0.0001% of turnover | Same |
 | Stamp duty | 0.003% of buy value | 0.002% of buy value |
-| GST | 18% on brokerage, exchange and SEBI fees | Same |
-
-Check them against Dhan's charges page; they are `OPTION_RATES` and `FUTURES_RATES` in [option-trades.ts](../src/lib/insight/option-trades.ts).
+| GST | 18% on brokerage, exchange, IPFT and SEBI fees | Same |
 
 **What's on the page:** net P&L, trades priced, winners after costs, result before costs, charges plus slippage, and the most premium at risk at once. Below that:
 - the running P&L after costs;
@@ -167,7 +166,7 @@ Check them against Dhan's charges page; they are `OPTION_RATES` and `FUTURES_RAT
 - the best and worst trade;
 - a trade table: contract, NIFTY's move, buy and sell, the option's move, the move per NIFTY point (roughly delta; shown only when NIFTY moved 5 pts or more), gross, charges and net.
 
-**Example, 16 November** (Breadth thrust, 5-minute hold, ATM, 1 lot of 65):
+**Example, 16 November** (Breadth thrust, 5-minute hold, ATM, 1 lot of 65), computed with the rates in use before 16 November's correction (STT at 0.1% and 0.02%), so today's page shows slightly higher charges:
 
 | | Before costs | Costs | Net |
 |---|---|---|---|
@@ -182,10 +181,10 @@ Futures caught the move, but their charges took it all. Options cost about ₹59
 
 ## What it doesn't do
 
-- **No orders.** The verdict is a shadow call and the option replay is paper only. Nothing on the page reaches an order path.
+- **No orders.** The verdict is a shadow call and the option replay is a calculation. The engine trades these signals on paper as they fire: see [trading.md](trading.md).
 - **Today only.** Past days and replays of journal files come with E4 in the engine plan.
 - **One day of evidence.** No signal here is validated. The page shows how a signal would be judged, not that any signal works.
-- **Assumed costs.** Both the Signal lab's points cost and the option replay's rates need checking against Dhan's charges.
+- **A round cost in the Signal lab.** Its cost in NIFTY points per trade is one figure for every trade. The option replay's charges are computed per trade at Dhan's rates.
 - **Buying options only.** No option selling, spreads, stop losses or targets.
 - **Minute closes.** Entries and exits are at 1-minute closes; real fills would differ by the spread and latency, which slippage only approximates.
 
@@ -202,7 +201,7 @@ src/app/api/insight/options/route.ts     NIFTY expiries and strikes from the scr
 src/app/api/insight/option-candles/route.ts  1-minute option candles from Dhan, up to 20 contracts a call
 ```
 
-`pulse.ts` and `option-trades.ts` are pure and deterministic: data in, results out, no clock or network. They run in the browser today and can run unchanged in the engine on live, replay and backtest later. They import with relative `.ts` paths so plain Node can load them. The page reuses `useJournalSession` from the Engine page's [session-view.tsx](../src/components/engine/session-view.tsx).
+`pulse.ts` and `option-trades.ts` are pure and deterministic: data in, results out, no clock or network. They run in the browser, and `pulse.ts` also runs in the engine, where trading reads its signals at each minute close. They import with relative `.ts` paths so plain Node can load them. The page reuses `useJournalSession` from the Engine page's [session-view.tsx](../src/components/engine/session-view.tsx).
 
 ## Changing it
 
@@ -211,5 +210,5 @@ src/app/api/insight/option-candles/route.ts  1-minute option candles from Dhan, 
 | Add a signal | Add an entry to `definitions` in `computePulse()` (id, name, rule, `read(t)` using only data up to minute `t`, threshold, format). It is scored at every hold, appears in the lab, the chart and the verdict with no UI changes |
 | Change a verdict threshold | The `evidence.push` calls and `decide()` in `pulse.ts` |
 | Change the Signal lab's costs or holds | `COSTS`, `DEFAULT_COST` in `pulse-view.tsx`; `HORIZONS` in `pulse.ts` |
-| Change charge rates | `OPTION_RATES`, `FUTURES_RATES` in `option-trades.ts` |
+| Change charge rates | `OPTION_RATES`, `FUTURES_RATES` in [charges.ts](../src/lib/trading/charges.ts) |
 | Test | `node --test src/lib/insight/*.test.ts`, or `npm test` |

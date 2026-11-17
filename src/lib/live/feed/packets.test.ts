@@ -159,3 +159,26 @@ test("accepts only well-formed instrument keys", () => {
   assert.equal(parseInstrumentKey("NSE_EQ:abc"), null);
   assert.equal(parseInstrumentKey("NSE_EQ"), null);
 });
+
+test("reads a full packet's five depth levels, best first", () => {
+  const view = new DataView(new ArrayBuffer(162));
+  header(view, 0, 8, 162, 2, 52175);
+  view.setFloat32(8, 182.45, true);
+  for (let level = 0; level < 5; level += 1) {
+    const base = 62 + level * 20;
+    view.setInt32(base, 650 + level, true);
+    view.setInt32(base + 4, 1300 + level, true);
+    view.setInt16(base + 8, 4 + level, true);
+    view.setInt16(base + 10, 7 + level, true);
+    view.setFloat32(base + 12, 182.4 - level * 0.05, true);
+    view.setFloat32(base + 16, 182.5 + level * 0.05, true);
+  }
+  const [packet] = parseFrame(view.buffer);
+  assert.equal(packet.kind, "quote");
+  if (packet.kind !== "quote") return;
+  assert.equal(packet.depth?.length, 5);
+  const [best, second] = packet.depth!;
+  assert.deepEqual([best.bidQty, best.askQty, best.bidOrders, best.askOrders], [650, 1300, 4, 7]);
+  assert.ok(Math.abs(best.bid - 182.4) < 1e-4 && Math.abs(best.ask - 182.5) < 1e-4);
+  assert.ok(Math.abs(second.bid - 182.35) < 1e-4 && Math.abs(second.ask - 182.55) < 1e-4);
+});

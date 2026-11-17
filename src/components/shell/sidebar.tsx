@@ -38,7 +38,7 @@ const NAV: NavItem[][] = [
     { href: "/market-watch", label: "Market Watch", icon: MarketWatchIcon, built: true },
     { href: "/options-chain", label: "Options Chain", icon: OptionsChainIcon, built: true },
     { href: "/pulse", label: "Pulse", icon: PulseIcon, built: true },
-    { href: "/strategies", label: "Strategies", icon: StrategiesIcon, built: false },
+    { href: "/strategies", label: "Strategies", icon: StrategiesIcon, built: true },
   ],
   [
     { href: "/orders", label: "Orders", icon: OrdersIcon, built: true },
@@ -47,7 +47,7 @@ const NAV: NavItem[][] = [
     { href: "/funds", label: "Funds", icon: FundsIcon, built: true },
   ],
   [
-    { href: "/activity", label: "Activity", icon: ActivityIcon, built: false },
+    { href: "/activity", label: "Activity", icon: ActivityIcon, built: true },
     { href: "/engine", label: "Engine", icon: EngineIcon, built: true },
     { href: "/live-feed", label: "Live Feed", icon: LiveFeedIcon, built: true },
     { href: "/instruments", label: "Instruments", icon: InstrumentsIcon, built: true },

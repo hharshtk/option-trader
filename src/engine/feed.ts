@@ -42,6 +42,7 @@ export function startFeed({
   universe,
   calendar,
   source,
+  onFrame,
 }: {
   log: Logger;
   health: Health;
@@ -53,6 +54,11 @@ export function startFeed({
   calendar: SessionCalendar;
   /** Defaults to Dhan with the configured credentials. */
   source?: FeedSource;
+  /**
+   * Every frame as it arrives, with its time on the market's clock: the wall clock live, the
+   * recorded time in a replay. Trading reads the market from here.
+   */
+  onFrame?: (frame: ArrayBuffer, at: number) => void;
 }): EngineFeed {
   const store = getTokenStore();
   // When each connection last stopped delivering, so a reconnect can record the gap.
@@ -88,6 +94,8 @@ export function startFeed({
       // Every frame goes to disk during market hours; when closed, only ones that say something new.
       if (quiet.shouldJournal(frame, at)) journal.frame(connection, frame, at);
       else metrics.increment("journal.frames_skipped");
+      // Asked in the same turn the frame arrived, the replay knows that frame's recorded time exactly.
+      onFrame?.(frame, source?.retime ? source.retime.at(at) : at);
     },
     onEvent,
   });

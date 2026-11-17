@@ -11,6 +11,7 @@ const BACKLOG: Record<TelemetryTopic, number> = {
   metrics: 12,
   log: 500,
   feed: 1,
+  trading: 1,
   bars: 200,
   gaps: 200,
 };

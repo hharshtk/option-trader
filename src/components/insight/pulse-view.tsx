@@ -841,8 +841,10 @@ function Toggle<T extends string>({ value, onChange, options }: { value: T; onCh
 // --- Signals -----------------------------------------------------------------------------------
 
 /** Assumed round-trip cost of one NIFTY futures lot, in index points. Editable on the page. */
-const COSTS = [0, 2, 4, 8, 12];
-const DEFAULT_COST = 8;
+// One NIFTY futures lot, round trip, at Dhan's charges (src/lib/trading/charges.ts): about ₹975,
+// 15 points, since futures STT rose to 0.05% on 1 April 2026; the spread adds about a point.
+const COSTS = [0, 4, 8, 12, 16, 20];
+const DEFAULT_COST = 16;
 
 export interface LabFocus {
   id: string;
@@ -941,8 +943,8 @@ function SignalLab({ pulse, lab }: { pulse: Pulse; lab: LabState }) {
 
       <p className="mt-3 text-label text-muted">
         Hit rate counts firings where NIFTY then moved the signal&apos;s way. The band is the 95% range for the true rate given so few firings: while it
-        straddles 50%, a coin could have done the same. Cost is an assumption for one NIFTY futures lot round trip (brokerage, STT, exchange fees, stamp duty,
-        GST and the spread); about 8 pts at 0.02% futures STT. Check it against Dhan&apos;s charges. One day proves nothing either way: a signal earns a
+        straddles 50%, a coin could have done the same. Cost is one NIFTY futures lot round trip (brokerage, STT, exchange fees, stamp duty, GST and the
+        spread): about 16 pts at Dhan&apos;s charges since futures STT rose to 0.05% in April 2026. One day proves nothing either way: a signal earns a
         strategy only after weeks of replayed days (engine plan, step E6).
       </p>
     </Panel>

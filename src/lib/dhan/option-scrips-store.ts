@@ -1,22 +1,24 @@
-import "server-only";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { withDb } from "@/lib/db/duckdb";
-import { getFileStore } from "@/lib/storage";
+import { withDb } from "../db/duckdb.ts";
+import { getFileStore } from "../storage.ts";
 import {
   exportOptionScripsParquet,
   importOptionScrips,
   importOptionScripsParquet,
   type OptionScripsInfo,
-} from "./option-contracts";
-import { filterOptionScrips, SCRIP_MASTER_URL, type OptionScripSummary } from "./option-scrips";
+} from "./option-contracts.ts";
+import { filterOptionScrips, SCRIP_MASTER_URL, type OptionScripSummary } from "./option-scrips.ts";
 
 // Settings → Download option instruments: fetch Dhan's instrument master from its CDN (a public
 // file, so it uses neither the access token nor the API rate limits), keep the options, and
 // store them as Parquet plus a JSON summary in the app's file store (S3 when S3_BUCKET is set,
 // otherwise DATA_DIR). Lookups read them into the in-memory DuckDB: every server instance loads
 // the stored file on first use and picks up a newer download within RECHECK_MS.
+//
+// Plain Node can load this module: the engine downloads the file itself on a trading day when
+// the stored one is older, so trading never waits for someone to press the button.
 
 export const OPTION_SCRIPS_PARQUET = "instruments/options-scrip-master.parquet";
 const META_KEY = "instruments/options-scrip-master.json";

@@ -1,0 +1,336 @@
+# Trading
+
+How the engine trades: what is built, how to run it, and how each number is computed. Written 2026-11-16. For the engine itself see [engine.md](engine.md); for the signals it follows see [pulse.md](pulse.md); for the plan this came from see [engine-plan.md](engine-plan.md#trading).
+
+## Contents
+
+1. [In one paragraph](#in-one-paragraph)
+2. [What is built](#what-is-built)
+3. [Using it](#using-it)
+4. [How a trade happens](#how-a-trade-happens)
+5. [Settings](#settings)
+6. [Decision API](#decision-api)
+7. [Paper fills](#paper-fills)
+8. [Charges](#charges)
+9. [Limits](#limits)
+10. [Option contracts and recording](#option-contracts-and-recording)
+11. [Runs and storage](#runs-and-storage)
+12. [Replays](#replays)
+13. [Control API](#control-api)
+14. [Before live orders](#before-live-orders)
+15. [Code layout](#code-layout)
+16. [Testing and changing it](#testing-and-changing-it)
+
+## In one paragraph
+
+The engine paper-trades NIFTY options. At the close of every minute it reads the same signals the Pulse page shows; when the one it follows fires, it proposes buying a call (long) or a put (short), asks the decision API whether the market context supports the trade, checks its limits, and fills a paper order against the option's quote. Positions are sold on a stop, a target, a hold time, an opposite signal or the square-off time. Every fill carries Dhan's charges, so results are after costs. It runs the same way on the live feed and on a replayed day, shows everything on the Strategies and Activity pages, and stores each run as Parquet files queried with DuckDB.
+
+## What is built
+
+| Piece | State |
+|---|---|
+| Strategy: follow one Pulse signal with long options | Built |
+| Decision API as a gate on entries, with a shadow book for what it turns down | Built |
+| Limits: entry window, trades a day, daily loss, losses in a row, premium, spread, stale quotes, square-off | Built |
+| Paper fills against the order book, a last price or 1-minute candles | Built |
+| Dhan's charges on every fill | Built, checked against Dhan's calculator |
+| Option contracts loaded by the engine; today's file downloaded when missing | Built |
+| NIFTY options around the money subscribed in Full mode and journaled | Built |
+| Runs stored as Parquet (S3 when configured), read back with DuckDB | Built |
+| Strategies and Activity pages | Built |
+| Live orders through Dhan | Not built. See [Before live orders](#before-live-orders) |
+| Futures, option selling, spreads, more than one position at a time | Not built |
+
+Nothing here can reach Dhan's order API: there is no code that places an order.
+
+## Using it
+
+1. Restart the engine so it runs this code (`npm run engine`, or the systemd service).
+2. Open **Strategies**. It shows the state, the signals at the last minute close and the settings.
+3. Press **Start paper trading**. Entries are off until you do; the choice is kept across restarts.
+4. Watch **Strategies** for positions and P&L, and **Activity** for the log, the proposals and the orders.
+
+To try it with the market closed, start a replay on the Engine page (or `npm run engine:replay -- --date 2026-11-16 --speed 60`). Trading starts a new run on the replayed day and trades it as it plays.
+
+| Button | Does |
+|---|---|
+| Start paper trading / Turn entries off | Arms or disarms entries. Open positions keep their exits either way |
+| Sell open position | Sells what is open now |
+| Stop for the day | Sells what is open and takes no more entries until you press Resume or the next day starts |
+
+**What starts on its own.** With entries off the engine still reads the signals and, when "Record these options every session" is on (the default), keeps the option window subscribed so the journal records it. It never opens a position with entries off.
+
+## How a trade happens
+
+```
+feed frame ──► quotes ──► fill due orders ──► stops, targets, hold time, square-off
+minute close (+1.5 s) ──► Pulse signals ──► sell on an opposite signal
+                                        └─► followed signal fired?
+                                              quiet checks (entries on, window, limits, flat)
+                                              contract: nearest expiry, strike by the offset
+                                              fresh quote; premium and spread limits
+                                              decision API ──► approved ──► buy on the paper book
+                                                           └─► turned down ──► buy on the shadow book
+```
+
+- **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Two or more agree.
+- **One position at a time** on the paper book. A signal that fires while a position is open is ignored.
+- **Proposals** are recorded once they pass the quiet checks, with the reason when they aren't traded.
+- **Exits** are the engine's own and never wait for the decision API.
+
+## Settings
+
+Set on the Strategies page; kept in `data/engine/trading/config.json`. They apply from the next entry; an open position keeps the stop and target it was opened with.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Follow signal | Two or more agree | Which Pulse signal fires entries |
+| Trade | Calls on long, puts on short | Or calls only, or puts only |
+| Strike | At the money | Up to 2 strikes in or out of the money |
+| Lots | 1 | Quantity is lots × the contract's lot size |
+| Hold | 10 min | Sold this long after the buy filled |
+| Stop loss / Target | 20% / 30% of premium | 0 turns either off |
+| Sell on an opposite signal | On | |
+| Skip expiries nearer than | 0 days | 0 trades the nearest expiry, on expiry day too |
+| Entries from / until | 09:25 / 14:45 IST | |
+| Sell everything at | 15:10 IST | |
+| Trades a day | 12 | |
+| Stop the day at a loss of | ₹3,000 | After charges, open position included |
+| Or after losses in a row | 4 | |
+| Most premium a trade | ₹25,000 | Premium × quantity |
+| Least premium | ₹5 | |
+| Widest spread | 3% | Only checked when the order book is known |
+| Wait after a trade | 2 min | |
+| Oldest quote to trade on | 10 s | |
+| Decision role | Gate | Gate, Shadow or Off |
+| Take a trade at | 0.55 | The model's probability |
+| Turn down trades against the regime | On | A long in "trend down", a short in "trend up" |
+| No answer in time | Skip the entry | Or take it |
+| Wait at most | 4,000 ms | |
+| Slippage past the bid or ask | ₹0.05 | |
+| Slippage with no order book | ₹0.50 | Stands in for the spread |
+| Order delay | 300 ms | |
+| Option strikes kept on the feed | 6 each side | 26 contracts |
+
+The defaults are starting points, not fitted values.
+
+## Decision API
+
+OpenRouter's Decisions API, the one in [scripts/decision-demo.ts](../scripts/decision-demo.ts), with `OPENROUTER_API_KEY` from `.env.local`. For each proposal the engine sends the market context as JSON and three typed questions:
+
+| Question | Type | Answer |
+|---|---|---|
+| `take_trade` | noul | Probability that the context supports the trade |
+| `regime` | choice | trend_up, trend_down, range or chop |
+| `quality` | score | How well supported the move is, from fragile to broad |
+
+**What it is sent:** time of day, the proposal (direction, contract, premium, days to expiry, planned hold, stop, target, costs as a share of premium), NIFTY's move and place in the day's range, its last 15 one-minute closes, breadth, the Pulse evidence lines and verdict, each signal's reading, the strongest and weakest sectors, how concentrated the move is, and the strategy's wins and losses so far today. Nothing about the account. To see the exact JSON for an answer, open **Show** in the Decision API table on the Strategies page.
+
+**Roles:**
+
+| Role | Effect |
+|---|---|
+| Gate | A trade is taken when the probability is at least the threshold and it isn't against the regime. Otherwise it goes to the shadow book |
+| Shadow | Every trade is taken; the answer is recorded beside it |
+| Off | Not asked |
+
+**The shadow book** follows each trade the gate turned down with the same exits, so you can see what it would have made. The Decision API panel compares the two groups after charges: the gate earns its place when approved trades do better than turned-down ones. On the one replayed day tried so far (16 November, Breadth thrust) the turned-down trades did better, which says nothing yet either way: judge it over many stored runs.
+
+**Rules it works under:**
+
+- It can turn an entry down or annotate it. It never sizes a trade, never opens one, and exits never wait for it.
+- No answer within the time limit means no entry, unless "No answer in time" is set to take it.
+- A turned-down signal isn't asked about again while its shadow trade is running.
+- Measured 16 November: 0.5 to 1.4 seconds an answer, about 440 input tokens, free on `perplexity/pplx-decider-v1.3:free`.
+
+## Paper fills
+
+| Quote in hand | Buy fills at | Sell fills at |
+|---|---|---|
+| Order book (the contract streams in Full mode) | Best ask + slippage | Best bid − slippage |
+| Last price only | Last price + ₹0.50 | Last price − ₹0.50 |
+| 1-minute candle (a replay of a day recorded without options) | Close of the last finished minute + ₹0.50 | Stop or target: at its level if the minute crossed it, at the minute's open if it started beyond it. Otherwise the last close. Then − ₹0.50 |
+
+- Prices round to the contract's tick against you.
+- An order fills on the first quote after the order delay. An entry with no fresh quote for 15 seconds is dropped. An exit waits up to a minute for a fresh quote, then sells against the last one.
+- Stops and targets trigger on the last traded price; the position's running P&L uses the bid when the book is known.
+- A candle that holds both the stop and the target counts as the stop.
+
+**Not yet checked against the market:** the bid and ask come from the five depth levels in Dhan's Full packet, parsed from Dhan's documented layout. No Full packet had been recorded when this was written. On the first live session, compare the bid and ask on the Activity page's Orders table with Dhan's own screen.
+
+## Charges
+
+In [charges.ts](../src/lib/trading/charges.ts), used by the engine and by the Pulse page's option replay.
+
+| | Options | Futures |
+|---|---|---|
+| Brokerage | ₹20 an executed order | Same |
+| STT | 0.15% of sell premium | 0.05% of sell value |
+| Exchange transaction charge | 0.03503% of turnover | 0.00173% |
+| IPFT | 0.0005% of turnover | 0.0001% |
+| SEBI fee | 0.0001% of turnover | Same |
+| Stamp duty | 0.003% of buy value | 0.002% |
+| GST | 18% of brokerage, exchange, IPFT and SEBI charges | Same |
+
+Dhan's calculator computes on its server and publishes no formula. These rates reproduce its result of 16 November 2026 to the paisa (one NIFTY lot of 65, bought at 22.85, sold at 25.00):
+
+| | Dhan | charges.ts |
+|---|---|---|
+| Brokerage | ₹40.00 | ₹40.00 |
+| Exchange transaction charges (shown with IPFT) | ₹1.11 | ₹1.11 |
+| GST | ₹7.40 | ₹7.40 |
+| Total tax and charges | ₹50.99 | ₹50.99 |
+| Net P&L | ₹88.76 | ₹88.76 |
+| Breakeven | ₹23.63 | ₹23.63 |
+
+Dhan's STT line shows ₹2.00, rounded to the rupee; its total uses the unrounded ₹2.44, as this module does. STT rose on 1 April 2026 (options 0.1% to 0.15%, futures 0.02% to 0.05%); the earlier rates in Pulse were out of date. A contract note rounds STT to the rupee per day, so a day's real total can differ by under a rupee.
+
+## Limits
+
+| Check | When it fails |
+|---|---|
+| Entries on, not stopped for the day, inside the entry window | No proposal |
+| Flat on the paper book, cooldown over, trades a day not reached | No proposal |
+| NIFTY's price fresh | Proposal rejected: the feed may be down |
+| Contract exists; its quote is fresh | Rejected |
+| Premium within the least and most; spread within the limit | Rejected |
+| Decision gate | Shadow book, or rejected when it didn't answer |
+| Day's net P&L, open position included, at the loss limit | Day stopped, positions sold |
+| Losses in a row | Day stopped |
+| Square-off time | Everything sold |
+
+A stopped day stays stopped across an engine restart. The `trading` health component turns degraded when the day is stopped, the contracts are missing, the tables can't be saved, or the decision API has no key.
+
+## Option contracts and recording
+
+- **Contracts** are read from the instrument file in the app's file store (`instruments/options-scrip-master.parquet`) with DuckDB: NIFTY's three nearest expiries.
+- **Daily download.** When a live day starts and the stored file is older, the engine downloads Dhan's file itself (the same download as Settings → Download option instruments), and tries again every 10 minutes until Dhan has published the day's file. Meanwhile it trades on the older file and says so. The download parses a large CSV and can stall the engine for up to a second, once, before the open.
+- **Kept per day.** Dhan lists only unexpired contracts, so each live day's NIFTY contracts are saved as `reference/nifty-options/<date>.parquet`. A replay of that day reads them back.
+- **Option window.** From 20 minutes before the open the engine subscribes calls and puts within 6 strikes of the money on the trading expiry, in Full mode, and adds strikes as NIFTY moves. They are journaled like everything else, so later replays have real option ticks and depth. Expect the journal to grow by roughly 100 MB a day.
+
+## Runs and storage
+
+A **run** is one market day traded from one source.
+
+| Source | Run id | Notes |
+|---|---|---|
+| Live | `live-2026-11-17` | Starts 20 minutes before the open, ends a minute after the close. An engine restarted in the session continues it, open position included |
+| Replay | `replay-2026-11-16-20261116221351` | A new run at every replay start and seek |
+
+**Local files**, under `data/engine/trading/`:
+
+| File | Holds |
+|---|---|
+| `config.json` | The settings |
+| `runs/<run>.jsonl` | Every change in the run, appended as it happens. What a restart reads back |
+| `decisions/<date>.jsonl` | The decision API's answers for that market day, for replays |
+| `candles/<date>/<id>.json` | Dhan's 1-minute candles fetched for a replay, once the day is over |
+
+**Tables**, Parquet files in the app's file store: S3 (`S3_BUCKET` and the other `S3_*` settings) or `DATA_DIR` without it. This is the app's database: there is no SQLite or DuckDB file. [parquet-store.ts](../src/lib/db/parquet-store.ts) reads and writes them through DuckDB, with its `httpfs` extension for S3.
+
+| Key | Rows |
+|---|---|
+| `trading/<namespace>/runs/<run>.parquet` | One: the run, its settings and totals |
+| `trading/<namespace>/trades/<run>.parquet` | Closed trades with every charge line and the decision's answer |
+| `trading/<namespace>/orders/<run>.parquet` | Orders with the quote each filled against |
+| `trading/<namespace>/intents/<run>.parquet` | Proposals and what became of them |
+| `trading/<namespace>/decisions/<run>.parquet` | Decision answers and the context sent |
+
+- **Namespace:** `main` for the engine on port 3100, `dev-<port>` for any other, so a development engine sharing the bucket never overwrites production's runs.
+- **Saving:** a run's files are rewritten 3 seconds after each closed trade, every minute while anything changed, and when the run ends. If the store can't be reached the engine carries on from the local log and tries again.
+- **Times** are stored as epoch milliseconds in DOUBLE columns.
+
+Any DuckDB can query them:
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+CREATE SECRET (TYPE s3, KEY_ID '…', SECRET '…', ENDPOINT '<account>.r2.cloudflarestorage.com', URL_STYLE 'path', REGION 'auto');
+
+-- Paper results by day, live runs only
+SELECT date, sum(trades) AS trades, sum(net) AS net
+FROM read_parquet('s3://<bucket>/option-trader/trading/main/runs/*.parquet')
+WHERE source = 'live' GROUP BY date ORDER BY date;
+
+-- Did the gate help? Approved against turned-down trades, after charges
+SELECT decision_approved, count(*) AS trades, sum(net) AS net
+FROM read_parquet('s3://<bucket>/option-trader/trading/main/trades/*.parquet')
+WHERE decision_approved IS NOT NULL GROUP BY 1;
+```
+
+## Replays
+
+Trading follows the feed, so the Engine page's replay drives it:
+
+- **Time** is the recording's. Each frame carries the time it originally arrived.
+- **Fast replays wait for slow work.** At speeds above ×1 the replay pauses while trading loads contracts, reads the signals and waits for the decision API, then carries on. The time an answer took is added to the fill delay instead, so a ×300 replay trades like a ×1 one.
+- **Recorded answers.** A replay reuses the decision API's answer recorded for the same minute, direction, contract, model and questions, so a day trades the same way again. A proposal with no recorded answer is asked live.
+- **Days recorded without options** (16 November 2026 and earlier) take option prices from Dhan's 1-minute candles, which needs a valid token and the Data API plan. Dhan stops serving a contract's candles after it expires, so the candles are cached on disk once fetched.
+- **A seek ends the run** and starts another: positions can't be carried across a jump.
+
+## Control API
+
+Added to the engine's control API ([engine.md](engine.md#control-api)); the web reaches them through `/api/engine/v1/…`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /v1/trading` | `TradingStatus`: state, settings, run, contracts, signals, positions, trades, orders, proposals, decisions, log, totals |
+| `POST /v1/trading` | A command: `{ action: "arm" }`, `"disarm"`, `"flatten"`, `"halt"`, `"resume"`, or `{ action: "config", patch }`. Answers `{ ok, message }` |
+| `GET /v1/trading/decision?id=` | What was sent to the decision API for one of the current run's decisions: `{ id, model, questions, state }`. The Strategies page shows it under **Sent** in the Decision API table |
+| `GET /v1/trading/history?run=` | Stored runs, newest first, read from Parquet; with `run`, that run's trades |
+| Telemetry topic `trading` | The status about once a second while anything changes. The lists (trades, orders, proposals, decisions, log) are included only when they changed; a page reads `GET /v1/trading` once for the rest |
+
+Types are in [trading.ts](../src/lib/engine/trading.ts).
+
+## Before live orders
+
+Live orders are a separate step (E8 in the [engine plan](engine-plan.md#e8-live-orders)), and not a switch in this code. What it needs:
+
+1. **Paper results first.** The go-live gate in the engine plan: weeks of live-feed paper runs, positive after charges, and the same days replayed giving the same trades.
+2. **A static IP whitelisted with Dhan.** Dhan refuses orders from any other address, and the whitelist can change only once every 7 days. The VM's IP is still ephemeral.
+3. **A Dhan adapter** next to [paper-broker.ts](../src/engine/trading/paper-broker.ts): place and cancel with a correlation id, fills from the order-update WebSocket, reconciliation against Dhan's positions.
+4. **Broker-side protection:** exits as Super Orders, `/pnlExit` set, `/killswitch` tested.
+5. **Depth checked** against the market (see [Paper fills](#paper-fills)), since paper fills are only as good as the quotes.
+
+## Code layout
+
+```
+src/lib/trading/charges.ts            Dhan's charges, shared by engine and web
+src/lib/engine/trading.ts             types and settings shared by engine and web
+src/lib/db/parquet-store.ts           Parquet tables in the file store, through DuckDB
+src/engine/trading/
+  trader.ts                           runs, proposals, orders, exits, limits, status, commands
+  strategy.ts                         reads the followed signal from Pulse
+  decision.ts                         questions, context, the gate's rules, the OpenRouter client
+  paper-broker.ts                     fill prices
+  market.ts                           latest quote per instrument
+  contracts.ts                        NIFTY contracts: expiries, strikes, the day's snapshot
+  sources.ts                          instrument file download and Dhan candles
+  run-log.ts                          the run's local log and reading it back
+  store.ts                            the Parquet tables
+src/components/trading/               Strategies and Activity pages
+src/app/(cockpit)/strategies/         route and the command Server Function
+src/app/(cockpit)/activity/           route
+```
+
+The engine's feed passes every frame, with its market time, to `trader.onFrame()` ([feed.ts](../src/engine/feed.ts)); [main.ts](../src/engine/main.ts) ticks the trader once a second and wires its sources.
+
+## Testing and changing it
+
+`npm run test:engine` covers the trader end to end on fakes ([trader.test.ts](../src/engine/trading/trader.test.ts)) and its parts ([parts.test.ts](../src/engine/trading/parts.test.ts)); `node --test src/lib/trading/*.test.ts src/lib/db/*.test.ts` covers charges and the Parquet store. No test calls Dhan, OpenRouter or S3.
+
+To run a whole day against the real services without touching either running engine, start a third engine on a copy of a journal:
+
+```bash
+mkdir -p /tmp/try/journal && cp data/engine/journal/2026-11-16.bin /tmp/try/journal/
+ENGINE_PORT=3199 ENGINE_DATA_DIR=/tmp/try npm run engine:replay -- --date 2026-11-16 --speed 300
+```
+
+Its tables go to `trading/dev-3199/`.
+
+| To | Change |
+|---|---|
+| Add a signal | Add it in `computePulse()` ([pulse.md](pulse.md#changing-it)), then to `SIGNALS` in trading.ts and `readSignal()` in strategy.ts |
+| Change a charge rate | `OPTION_RATES`, `FUTURES_RATES` in charges.ts; keep charges.test.ts matching a fresh calculator result |
+| Change what the decision API is asked | `QUESTIONS` and `buildDecisionState()` in decision.ts. Recorded answers to the old questions are not reused |
+| Change a default | `DEFAULT_TRADING_CONFIG` in trading.ts; add a field to `mergeTradingConfig()` and the Settings form |
+| Add an exit rule | `onQuote()` or `advance()` in trader.ts, and `ExitReason` in trading.ts |

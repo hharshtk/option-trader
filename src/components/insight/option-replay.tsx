@@ -419,8 +419,9 @@ function Results({ trades, qty, slippage, loading, focus }: { trades: OptionTrad
 
       <p className="text-label text-muted">
         Each firing buys at the option&apos;s 1-minute close when the signal fires and sells at the close {focus.horizon} minutes later, paying the slippage
-        both ways. Charges assume ₹20 an order, STT 0.1% on the sell premium, NSE fees 0.035%, stamp 0.003% on the buy, SEBI fees and 18% GST: check them
-        against Dhan&apos;s charges page. Minutes with no trade in an option use the last close within 3 minutes. Paper only: this places no orders.
+        both ways. Charges are Dhan&apos;s: ₹20 an order, STT 0.15% on the sell premium, NSE fees 0.03503% and IPFT 0.0005%, stamp 0.003% on the buy, SEBI
+        fees and 18% GST, matched to Dhan&apos;s brokerage calculator. Minutes with no trade in an option use the last close within 3 minutes. Paper only:
+        this places no orders.
       </p>
     </div>
   );

@@ -32,9 +32,10 @@ This document describes what is built. For what comes next, see [engine-plan.md]
 | E0 Groundwork | Built | Shared modules run under plain Node; clock, event types, logger, metrics, session calendar |
 | E1 Skeleton and monitoring | Built | `npm run engine`, control API, health checks, Engine page, header status dot |
 | E2 Engine owns Dhan | In progress | Done: the feed runs in the engine and the web forwards to it; always-on journal; always-on NIFTY universe; per-instrument Ticker/Quote/Full modes (constituents stream in Quote mode). Next: journal upload to S3, NIFTY futures in Full mode, one REST limiter, daily scrip snapshot |
-| E3–E8 | Planned | See [engine-plan.md](engine-plan.md#build-steps). Trading (signals, paper first, then live) is planned in [engine-plan.md](engine-plan.md#trading) |
+| E6–E7 Signals and paper trading | First version built | The engine follows a Pulse signal with NIFTY options on paper: decision API gate, limits, Dhan's charges, Parquet tables, Strategies and Activity pages. See [trading.md](trading.md) |
+| E3–E5, E8 | Planned | See [engine-plan.md](engine-plan.md#build-steps). Live orders (E8) wait for the go-live gate in [engine-plan.md](engine-plan.md#go-live-gate) |
 
-Today the engine monitors itself and the Dhan account, **owns the live Dhan feed**, keeps the NIFTY universe subscribed at all times, and **journals every raw frame** to disk. With `ENGINE_URL` set, the web never opens Dhan sockets: its quote stream, Live Feed stream and Live Feed actions forward to the engine. Without `ENGINE_URL`, the web runs its own feed as it did before the engine. The engine doesn't place orders.
+Today the engine monitors itself and the Dhan account, **owns the live Dhan feed**, keeps the NIFTY universe subscribed at all times, and **journals every raw frame** to disk. With `ENGINE_URL` set, the web never opens Dhan sockets: its quote stream, Live Feed stream and Live Feed actions forward to the engine. Without `ENGINE_URL`, the web runs its own feed as it did before the engine. The engine also **trades on paper** ([trading.md](trading.md)). It doesn't place orders with Dhan.
 
 **Host:** the OCI VM `option-trading-e5` (Ubuntu 24.04, Node 26.13). See [oci-setup.md](oci-setup.md).
 
@@ -79,6 +80,8 @@ All settings come from `.env.local`, which both the engine and the web read.
 | `DHAN_CLIENT_ID` | none | Dhan account |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | none | Where the access token saved on the Settings page lives |
 | `DHAN_ACCESS_TOKEN` | none | Fallback token when Redis has none |
+| `OPENROUTER_API_KEY` | none | The decision API for paper trading. Without it the decision gate can't answer |
+| `S3_BUCKET` and the other `S3_*` | none | Where trading's Parquet tables and the instrument file live. Without them, under `DATA_DIR` |
 
 The web reads `.env.local` changes on its own. The engine reads it at start, so restart the engine after changing it. The access token is the exception: the engine re-reads it from Redis every 30 seconds, so a token saved on the Settings page needs no restart.
 
@@ -152,6 +155,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://140.245.240.9/v1/status
 
 **Cost.** The first request for a day reads the whole file in 1 MB chunks with a yield between them (a 135 MB, 2-million-frame day reads in under a second, stalling the event loop at most about 20 ms at a time). Later requests read only the bytes appended since. The last 4 days read are kept in memory.
 
+**Strategies and Activity pages:** the engine's paper trading. See [trading.md](trading.md#using-it).
+
 **Engine page, Logs:** a live tail that starts with the last 500 lines. Filter by minimum level, component (a component includes its children: `dhan` includes `dhan.feed`) and text. Follow keeps the newest line in view; scrolling up turns it off. The tab keeps the last 2,000 lines; the full history is in `data/engine/logs/`.
 
 When the engine stops, the page says so and how to start it. It reconnects within about 2 seconds of the engine coming back, and clears old log lines when the engine restarted.
@@ -168,7 +173,7 @@ Browser ──► Next.js (session cookie) ──► /api/engine/v1/* ──► 
                                                                       └─ Dhan profile every 15 min
 ```
 
-- **The browser never talks to the engine.** The route [src/app/api/engine/[...path]/route.ts](../src/app/api/engine/[...path]/route.ts) checks the session cookie, adds the token and streams the response through. It allows only `v1/status`, `v1/logs`, `v1/telemetry` and `v1/journal/session`. Closing the tab aborts the upstream request.
+- **The browser never talks to the engine.** The route [src/app/api/engine/[...path]/route.ts](../src/app/api/engine/[...path]/route.ts) checks the session cookie, adds the token and streams the response through. It allows only `v1/status`, `v1/logs`, `v1/telemetry`, `v1/journal/session`, `v1/trading` and `v1/trading/history`. Closing the tab aborts the upstream request.
 - **Market data goes through the engine too.** `/api/market/stream` (quotes for a tab), `/api/market/feed` (Live Feed page) and the Live Feed Server Actions forward to the engine's `/v1/quotes`, `/v1/feed` and `/v1/feed/*` when `ENGINE_URL` is set ([web.ts](../src/lib/engine/web.ts)). Browser code is unchanged. Closing a tab releases its instruments in the engine.
 - **The engine never waits for the web.** A browser that falls behind loses its oldest messages and gets a `gap` notice; the engine carries on.
 - **Each side works without the other.** The engine runs with no browser attached. The web works without the engine, minus the engine panels.
@@ -195,6 +200,7 @@ Each component reports `ok`, `degraded` or `failing`. The overall state is the w
 | `data-plan` | Less than 7 days left | Not active | With the profile check |
 | `clock` | Offset from Dhan above 1 s | Offset above 5 s | After every Dhan REST call |
 | `calendar` | No holiday list for the current year | — | At start |
+| `trading` | The day is stopped (loss limit, losses in a row, or by you); option contracts are missing with entries on; the tables can't be saved; the decision API has no key | — | Every second |
 
 **Clock offset.** Every Dhan REST response carries a `Date` header with 1-second resolution. [client.ts](../src/lib/dhan/client.ts) turns it into an offset estimate with an uncertainty (about ±500 ms plus half the round trip) and keeps the tighter of recent samples. The clock check only flags what lies beyond that uncertainty, so a ±540 ms reading never raises a false alarm. The VM's clock is NTP-synchronised; typical offsets are under 100 ms.
 
@@ -213,6 +219,7 @@ Plain HTTP on `127.0.0.1:3100`. Every request needs `Authorization: Bearer <ENGI
 | `POST /v1/feed/pin` | `{ key, connection: number \| "new", name?, connectionName? }`: keep an instrument subscribed |
 | `POST /v1/feed/unpin` | `{ key }` |
 | `POST /v1/feed/connections/:id/close` | Close a socket other than Main |
+| `GET /v1/trading`, `POST /v1/trading`, `GET /v1/trading/history?run=` | Paper trading: its status, its commands and its stored runs. See [trading.md](trading.md#control-api) |
 | `POST /v1/replay` | Switch the feed to a recorded day and back, and steer it: `{ action: "start", date?, from?, speed? }`, `"stop"` (back to live), `"play"`, `"pause"`, `{ action: "speed", speed }`, `{ action: "seek", to: "HH:MM[:SS]" }`. Answers `{ ok, message }`. See [Replay](#replay) |
 
 Feed routes answer 503 for the second or so after start-up, before the feed exists.
@@ -266,6 +273,7 @@ data: {"run":"live","seq":42,"topic":"log","at":1794758217612,"wall":17947582176
 | `metrics` | `MetricsSnapshot` | Every 5 seconds | The last 12 (one minute) |
 | `log` | `LogEntry` | As they happen | The last 500 |
 | `feed` | `FeedHealth`: sockets, instruments, tabs, capture | 1 a second | The latest |
+| `trading` | `TradingUpdate`: the trading status; its lists only when they changed | About 1 a second while anything changes, else every 5 | The latest |
 | `bars`, `gaps` | Reserved for E3 | — | — |
 
 A client that can't keep up gets up to 1,000 queued messages, then loses the oldest.
@@ -351,6 +359,8 @@ Code: [player.ts](../src/engine/replay/player.ts) (the stand-in socket and the t
 
 [config/engine/universe.json](../config/engine/universe.json) lists instruments the engine subscribes at start and never releases, so sessions are journaled even with no page open. Pages still add what they show on top. Today: the NIFTY index in Ticker mode and its 50 constituents in Quote mode (51 instruments, one socket). NIFTY futures follow, in Full mode, once the instrument download includes futures.
 
+NIFTY options aren't in this file, because which ones matter moves with the index. Trading subscribes the calls and puts around the money in Full mode from 20 minutes before each open, and they are journaled with everything else ([trading.md](trading.md#option-contracts-and-recording)).
+
 Entries are `{ "kind": "index", "index": "NIFTY" }`, `{ "kind": "constituents", "index": "NIFTY" }`, `{ "kind": "instrument", "key": "NSE_EQ:1333" }`, or plain keys in `instruments` (always Ticker). Each entry takes an optional `"mode"`:
 
 | Mode | Dhan request codes | What Dhan streams | Packet |
@@ -391,16 +401,20 @@ src/engine/
   replay/                 a journal file loaded for replay, the player that stands in for Dhan's socket, and recorded times for the web
   journal/                journal format (encode/decode), writer, and the session reader behind the Session view
   market/universe.ts      always-on universe from config/engine/universe.json
+  trading/                paper trading: trader, strategy, decision gate, paper fills, contracts, run log, Parquet tables
   api/feed-routes.ts      quote stream, Live Feed stream and actions
   telemetry/              logger, log file, metrics, health, telemetry hub, process stats, ring buffer
-src/lib/engine/protocol.ts    types shared by engine and web (the web imports only this)
+src/lib/engine/protocol.ts    types shared by engine and web (the web imports only this and trading.ts)
+src/lib/engine/trading.ts     trading types and settings shared by engine and web
+src/lib/trading/charges.ts    Dhan's charges
+src/lib/db/parquet-store.ts   Parquet tables in the file store, read and written with DuckDB
 src/lib/engine/web.ts         web side: reads ENGINE_URL and ENGINE_TOKEN
 src/app/api/engine/[...path]/ web-to-engine proxy
 src/app/(cockpit)/engine/     Engine page
 src/components/engine/        header dot, Engine page, telemetry hook
 config/engine/                checked-in configuration
 deploy/                       systemd unit
-data/engine/                  runtime files, git-ignored: lock, logs, journal
+data/engine/                  runtime files, git-ignored: lock, logs, journal, trading (settings, run logs)
 ```
 
 The engine runs TypeScript directly with Node's type stripping: no build step. That brings rules, enforced by `tsconfig.json` and ESLint:
@@ -413,7 +427,7 @@ The engine runs TypeScript directly with Node's type stripping: no build step. T
 | No enums, namespaces or constructor parameter properties | Node can only strip syntax that has no runtime effect | `erasableSyntaxOnly` |
 | No `Date.now`, `performance.now` or timers in `kernel/` and `market/` | Kernel code gets time from the injected `Clock`, so a replay matches the live run exactly | ESLint |
 
-**Shared modules.** The engine reuses the web's Dhan client, config, API, errors, rate limiter, token store, storage, DuckDB and feed modules. They no longer import `server-only`; the web's entry point `@/lib/dhan` still does. [shared-modules.test.ts](../src/engine/shared-modules.test.ts) loads each one under plain Node, so a stray Next-only import fails the tests.
+**Shared modules.** The engine reuses the web's Dhan client, config, API, errors, rate limiter, token store, instrument download, storage, DuckDB, feed and Pulse modules. They no longer import `server-only`; the web's entry point `@/lib/dhan` still does. [shared-modules.test.ts](../src/engine/shared-modules.test.ts) loads each one under plain Node, so a stray Next-only import fails the tests.
 
 ## Testing
 
@@ -459,4 +473,6 @@ Tests use `node --test`, inject clocks and sockets, and never call Dhan. The con
 | Local `next dev` still logs `[feed ...] Main: live` | It started before `ENGINE_URL` was set, or kept a hub from before this change. Restart `next dev`; with `ENGINE_URL` set it never opens Dhan sockets |
 | `data-plan` degraded or failing | Renew the Data API plan on web.dhan.co. It ends 2026-12-16 |
 | `calendar` degraded | The year's holidays are missing from `config/engine/calendar.json` |
+| `trading` degraded | The reason is on the Engine page and the Strategies page: a stopped day (press Resume), missing option contracts (Settings → Download option instruments), unsaved tables (check the `S3_*` settings), or no `OPENROUTER_API_KEY` |
+| Strategies page says the engine doesn't report trading | The engine runs code from before trading. Restart it |
 | Node warns about module type | Old checkout without `"type": "module"` in package.json |

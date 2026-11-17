@@ -5,11 +5,13 @@ import nextTs from "eslint-config-next/typescript";
 // Code the engine runs under plain Node: no Next.js, no server-only, no @/ path alias.
 const PLAIN_NODE = [
   "src/engine/**/*.ts",
-  "src/lib/engine/protocol.ts",
-  "src/lib/dhan/{api,client,config,errors,instruments,option-contracts,option-scrips,rate-limit,token-store,types}.ts",
+  "src/lib/engine/{protocol,trading}.ts",
+  "src/lib/trading/**/*.ts",
+  "src/lib/insight/{pulse,option-trades}.ts",
+  "src/lib/dhan/{api,client,config,errors,instruments,option-contracts,option-scrips,option-scrips-store,rate-limit,token-store,types}.ts",
   "src/lib/live/feed/{dhan-feed,feed-hub,monitor,packets}.ts",
   "src/lib/{storage,index-constituents}.ts",
-  "src/lib/db/duckdb.ts",
+  "src/lib/db/{duckdb,parquet-store}.ts",
 ];
 
 const eslintConfig = defineConfig([

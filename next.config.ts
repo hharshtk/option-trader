@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
+  // Let the dev server answer pages opened through an SSH port forward as http://127.0.0.1:3000
+  // (e.g. from a phone).
+  allowedDevOrigins: ["127.0.0.1"],
   // Native module: load it with Node's require instead of bundling it.
   serverExternalPackages: ["@duckdb/node-api"],
   // DuckDB's duckdb.node loads libduckdb.so through the system linker, which file tracing can't

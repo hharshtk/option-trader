@@ -95,6 +95,15 @@ export interface FeedSwitch {
   replaySession(date: string): Promise<JournalSession> | null;
   /** Why a replay can't start now; null when it can. */
   replayBlocked(): string | null;
+  /** Where the replay is, for trading; null when live. */
+  replayPosition(): { date: string; at: number; jumps: number; speed: number; ended: boolean } | null;
+  /**
+   * Pauses a replay running faster than real time until the returned function is called. Trading
+   * holds it while it reads the signals and waits for the decision API, so that work costs the
+   * market time it would cost live instead of minutes of a fast replay. Does nothing when live,
+   * at ×1 or slower, or while paused.
+   */
+  holdReplay(): () => void;
   startLive(): void;
   /** Handles a `POST /v1/replay` body. Never throws; bad input comes back as `ok: false`. */
   command(body: unknown): Promise<ReplayCommandResult>;
@@ -113,7 +122,10 @@ export function createFeedSwitch({
   universe,
   calendar,
   now,
+  onFrame,
 }: {
+  /** Every frame, with its time on the market's clock. See `startFeed`. */
+  onFrame?: (frame: ArrayBuffer, at: number) => void;
   /** Loggers by component: `feed` for the live feed, `replay` and `replay.feed` for a replay. */
   logger: (component: string) => Logger;
   health: Health;
@@ -131,10 +143,36 @@ export function createFeedSwitch({
   let replay: { player: ReplayPlayer; session: ReplaySession; date: string; since: number } | null = null;
   let loading = false;
   let jumps = 0;
+  /** The player trading has paused, and how many holds are out on it. */
+  let held: { player: ReplayPlayer; count: number } | null = null;
 
   function startLive() {
     feed?.shutdown();
-    feed = startFeed({ log: feedLog, health, metrics, telemetry, journal, universe, calendar });
+    feed = startFeed({ log: feedLog, health, metrics, telemetry, journal, universe, calendar, onFrame });
+  }
+
+  function holdReplay() {
+    if (!replay) return () => {};
+    const player = replay.player;
+    if (held?.player !== player) {
+      const { state, speed } = player.status();
+      if (state !== "playing" || speed <= 1) return () => {};
+      player.pause();
+      held = { player, count: 0 };
+    }
+    const hold = held;
+    hold.count += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      hold.count -= 1;
+      // Play again unless someone else took over meanwhile (a pause, a stop, another replay).
+      if (hold.count === 0 && held === hold) {
+        held = null;
+        if (replay?.player === player && player.status().state === "paused") player.play();
+      }
+    };
   }
 
   async function startReplay(request: { date?: unknown; from?: unknown; speed?: unknown }): Promise<ReplayCommandResult> {
@@ -182,6 +220,7 @@ export function createFeedSwitch({
     });
     const at = now();
     const since = replay?.since ?? at;
+    held = null;
     // Close the old feed's sockets before the old player, so the feed doesn't see them drop.
     feed?.shutdown();
     feed = null;
@@ -196,6 +235,7 @@ export function createFeedSwitch({
       journal: NO_JOURNAL,
       universe,
       calendar,
+      onFrame,
       source: {
         openSocket: player.openSocket,
         readCredentials: () => REPLAY_CREDENTIALS,
@@ -215,6 +255,7 @@ export function createFeedSwitch({
     if (!replay) return fail("The feed is already live.");
     const { player, date, since } = replay;
     replay = null;
+    held = null;
     feed?.shutdown();
     feed = null;
     player.shutdown();
@@ -231,9 +272,12 @@ export function createFeedSwitch({
     const { player, date } = replay;
     switch (action) {
       case "play":
+        held = null;
         player.play();
         return ok("Playing.");
       case "pause":
+        // A pause asked for while trading holds the replay stays a pause when the hold ends.
+        held = null;
         player.pause();
         return ok(`Paused at ${istClock(player.status().at)} IST.`);
       case "speed": {
@@ -260,9 +304,18 @@ export function createFeedSwitch({
     liveHub: () => (replay ? null : (feed?.hub ?? null)),
     replayStatus() {
       if (!replay) return null;
-      return { date: replay.date, ...replay.player.status(), jumps, since: replay.since, liveAt: replayWindow(calendar, now()).liveAt };
+      const status = replay.player.status();
+      // A hold by trading lasts a moment; the replay still counts as playing.
+      const state = held?.player === replay.player && status.state === "paused" ? "playing" : status.state;
+      return { date: replay.date, ...status, state, jumps, since: replay.since, liveAt: replayWindow(calendar, now()).liveAt };
     },
     replayBlocked: () => replayWindow(calendar, now()).blocked,
+    replayPosition() {
+      if (!replay) return null;
+      const { at, speed, state } = replay.player.status();
+      return { date: replay.date, at, jumps, speed, ended: state === "ended" };
+    },
+    holdReplay,
     replayDate: () => replay?.date ?? null,
     replaySession(date) {
       if (!replay || date !== replay.date) return null;
