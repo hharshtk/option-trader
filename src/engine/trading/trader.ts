@@ -21,11 +21,13 @@ import path from "node:path";
 import { INDEX } from "../../lib/dhan/instruments.ts";
 import type { JournalSession } from "../../lib/engine/protocol.ts";
 import {
+  DECISION_PROVIDERS,
   DEFAULT_TRADING_CONFIG,
   mergeTradingConfig,
   type Book,
   type BookTotals,
   type ContractsStatus,
+  type DecisionProviderId,
   type DecisionRecord,
   type DecisionRequest,
   type DecisionScore,
@@ -119,7 +121,8 @@ export interface TraderOptions {
   hold: () => () => void;
   /** The day so far, decoded from the journal: what the Pulse page reads. */
   session: (date: string) => Promise<JournalSession | null>;
-  decisions: DecisionProvider;
+  /** One client per provider; the settings choose which answers. */
+  decisions: Record<DecisionProviderId, DecisionProvider>;
   loadContracts: (marketDate: string, live: boolean) => Promise<{ book: ContractBook | null; problem: string | null }>;
   /** 1-minute candles for a contract on a day, for replays of days recorded without options. */
   loadCandles: (contract: OptionRef, date: string) => Promise<Candle[]>;
@@ -1028,7 +1031,7 @@ export function createTrader(options: TraderOptions): Trader {
     } else {
       const started = performance.now();
       try {
-        answer = await decisions.ask({ model: config.decision.model, state, timeoutMs: config.decision.timeoutMs });
+        answer = await decisions[config.decision.provider].ask({ model: config.decision.model, state, timeoutMs: config.decision.timeoutMs });
         decision.latencyMs = Math.round(performance.now() - started);
         active.answers.set(key, { answer, latencyMs: decision.latencyMs });
         void rememberAnswer(active.info.date, key, answer, decision.latencyMs);
@@ -1138,7 +1141,8 @@ export function createTrader(options: TraderOptions): Trader {
         error: active?.saveError ?? lastStorage.error,
         pending: active?.pendingSave ?? 0,
       },
-      decisionReady: decisions.ready,
+      decisionReady: decisions[config.decision.provider].ready,
+      decisionProviders: { openrouter: decisions.openrouter.ready, liquid: decisions.liquid.ready },
     };
   }
 
@@ -1147,7 +1151,9 @@ export function createTrader(options: TraderOptions): Trader {
     if (active?.saveError) health.set("trading", "degraded", `Tables not saved: ${active.saveError}`);
     else if (active?.halt) health.set("trading", "degraded", `Stopped for the day: ${active.halt.reason}`);
     else if (active && config.armed && active.ready && (!active.book || !active.expiry)) health.set("trading", "degraded", active.contractsProblem ?? "No option contracts");
-    else if (config.armed && config.decision.mode !== "off" && !decisions.ready) health.set("trading", "degraded", "The decision API has no key (OPENROUTER_API_KEY)");
+    else if (config.armed && config.decision.mode !== "off" && !decisions[config.decision.provider].ready) {
+      health.set("trading", "degraded", `The decision API has no key (${DECISION_PROVIDERS.find((p) => p.id === config.decision.provider)!.keyName})`);
+    }
     else health.set("trading", "ok");
   }
 

@@ -128,7 +128,7 @@ async function harness(config: { strategy?: object; decision?: object; risk?: ob
     const acquired: string[] = [];
     const asked: unknown[] = [];
     const published: TradingUpdate[] = [];
-    const decisions: DecisionProvider = {
+    const fake: DecisionProvider = {
       ready: true,
       async ask({ state: context }) {
         asked.push(context);
@@ -136,6 +136,7 @@ async function harness(config: { strategy?: object; decision?: object; risk?: ob
         return state.answer;
       },
     };
+    const decisions = { openrouter: fake, liquid: fake };
     const trader = createTrader({
       namespace: "test",
       directory: path.join(root, "trading"),

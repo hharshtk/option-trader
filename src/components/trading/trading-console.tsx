@@ -8,7 +8,9 @@ import { Fragment, useEffect, useState, useTransition, type FormEvent, type Reac
 import { controlTrading } from "@/app/(cockpit)/strategies/actions";
 import { buttonClass, DataTable, EmptyState, PageHeader, Panel, Pnl, StatRow, Tag, Td } from "@/components/ui";
 import {
+  DECISION_PROVIDERS,
   SIGNALS,
+  type DecisionProviderId,
   type DecisionRecord,
   type DecisionRequest,
   type Intent,
@@ -94,7 +96,9 @@ export function TradingConsole() {
           {result && <p className={`mt-1 text-label ${result.ok ? "text-muted" : "text-down"}`}>{result.message}</p>}
           {trading.contracts.problem && <p className="mt-1 text-label text-warn">{trading.contracts.problem}</p>}
           {config.decision.mode !== "off" && !trading.decisionReady && (
-            <p className="mt-1 text-label text-warn">The decision API has no key: set OPENROUTER_API_KEY in the engine&apos;s .env.local and restart it.</p>
+            <p className="mt-1 text-label text-warn">
+              The decision API has no key: set {DECISION_PROVIDERS.find((p) => p.id === config.decision.provider)?.keyName ?? "its key"} in the engine&apos;s .env.local and restart it, or choose the other provider in Settings.
+            </p>
           )}
           {trading.storage.error && <p className="mt-1 text-label text-warn">Tables not saved: {trading.storage.error}. The engine keeps a local log and retries.</p>}
         </div>
@@ -108,7 +112,7 @@ export function TradingConsole() {
 
         <Trades trades={trading.trades} decisions={trading.decisions} />
         <Decisions trading={trading} />
-        <Settings key={JSON.stringify({ ...config, armed: null })} config={config} pending={pending} send={send} />
+        <Settings key={JSON.stringify({ ...config, armed: null })} config={config} pending={pending} send={send} providers={trading.decisionProviders ?? { openrouter: trading.decisionReady, liquid: false }} />
         <History live={run?.id ?? null} />
       </div>
     </>
@@ -485,7 +489,18 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 }
 
 /** Remounted (by its key) whenever the engine's settings change, so the form always starts from them. */
-function Settings({ config, pending, send }: { config: TradingConfig; pending: boolean; send: (command: TradingCommand) => void }) {
+function Settings({
+  config,
+  pending,
+  send,
+  providers,
+}: {
+  config: TradingConfig;
+  pending: boolean;
+  send: (command: TradingCommand) => void;
+  /** Which decision providers have a key in the engine's .env.local. */
+  providers: Record<DecisionProviderId, boolean>;
+}) {
   const [draft, setDraft] = useState(config);
   // Starting and stopping entries is the header button's job, not this form's.
   const dirty = JSON.stringify({ ...draft, armed: null }) !== JSON.stringify({ ...config, armed: null });
@@ -574,10 +589,18 @@ function Settings({ config, pending, send }: { config: TradingConfig; pending: b
             ]}
           />
           <NumberField label="Wait at most" value={draft.decision.timeoutMs} step={500} min={500} suffix="ms" onChange={(v) => decision("timeoutMs", v)} />
+          <SelectField
+            label="Provider"
+            value={draft.decision.provider}
+            // A new provider starts on its own default model.
+            onChange={(v) => setDraft((d) => ({ ...d, decision: { ...d.decision, provider: v, model: DECISION_PROVIDERS.find((p) => p.id === v)!.defaultModel } }))}
+            options={DECISION_PROVIDERS.map((p) => ({ value: p.id, label: `${p.name}${providers[p.id] ? "" : ` (no ${p.keyName})`}` }))}
+          />
           <label className="flex flex-col gap-1 text-label text-muted">
             Model
             <input type="text" value={draft.decision.model} onChange={(e) => decision("model", e.target.value)} className={`${fieldClass} w-72 font-mono`} spellCheck={false} />
           </label>
+          <p className="basis-full text-label text-muted">{DECISION_PROVIDERS.find((p) => p.id === draft.decision.provider)!.price}</p>
           <label className="inline-flex h-7 items-center gap-1.5 text-label text-muted">
             <input type="checkbox" checked={draft.decision.vetoAgainstRegime} onChange={(e) => decision("vetoAgainstRegime", e.target.checked)} />
             Turn down trades against the regime

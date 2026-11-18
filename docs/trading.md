@@ -116,7 +116,16 @@ The defaults are starting points, not fitted values.
 
 ## Decision API
 
-OpenRouter's Decisions API, the one in [scripts/decision-demo.ts](../scripts/decision-demo.ts), with `OPENROUTER_API_KEY` from `.env.local`. For each proposal the engine sends the market context as JSON and three typed questions:
+Two providers answer the same questions in the same way; **Provider** in the Strategies page's settings picks one, and choosing it also sets that provider's default model:
+
+| Provider | Key in `.env.local` | Default model | Price | Tried in |
+|---|---|---|---|---|
+| OpenRouter's Decisions API | `OPENROUTER_API_KEY` | `perplexity/pplx-decider-v1.3:free` | Free models: 50 answers a day, 1,000 once the account has bought $10 of credit; 20 a minute | [scripts/decision-demo.ts](../scripts/decision-demo.ts) |
+| Liquid's decisions API | `LIQUID_API_KEY` | `d1.2-ultra` | $0.042 per million input tokens, nothing for output: about $0.00006 an answer | [scripts/liquid-decision-test.ts](../scripts/liquid-decision-test.ts) |
+
+The clients are in [decision.ts](../src/engine/trading/decision.ts) (`createOpenRouterDecisions`, `createLiquidDecisions`); the engine builds one per key at start, so a new key needs a restart. Measured 17 November 2026 with the trader's questions and a full context: Liquid about 0.5 s and 1,330 input tokens an answer. Answers recorded for replays are keyed by model, so switching provider never reuses the other's answers.
+
+For each proposal the engine sends the market context as JSON and three typed questions:
 
 | Question | Type | Answer |
 |---|---|---|
@@ -333,5 +342,6 @@ Its tables go to `trading/dev-3199/`.
 | Add a signal | Add it in `computePulse()` ([pulse.md](pulse.md#changing-it)), then to `SIGNALS` in trading.ts and `readSignal()` in strategy.ts |
 | Change a charge rate | `OPTION_RATES`, `FUTURES_RATES` in charges.ts; keep charges.test.ts matching a fresh calculator result |
 | Change what the decision API is asked | `QUESTIONS` and `buildDecisionState()` in decision.ts. Recorded answers to the old questions are not reused |
+| Add a decision provider | A client next to `createLiquidDecisions()` in decision.ts, its entry in `DECISION_PROVIDERS` in trading.ts and in `createDecisionProviders()` |
 | Change a default | `DEFAULT_TRADING_CONFIG` in trading.ts; add a field to `mergeTradingConfig()` and the Settings form |
 | Add an exit rule | `onQuote()` or `advance()` in trader.ts, and `ExitReason` in trading.ts |

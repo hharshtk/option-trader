@@ -16,6 +16,13 @@ export const SIGNALS: readonly { id: SignalId; name: string }[] = [
 /** How the decision API takes part. */
 export type DecisionMode = "off" | "shadow" | "gate";
 
+/** Who answers the decision API's questions. Both take the same typed questions and give the same answers. */
+export type DecisionProviderId = "openrouter" | "liquid";
+export const DECISION_PROVIDERS: readonly { id: DecisionProviderId; name: string; defaultModel: string; keyName: string; price: string }[] = [
+  { id: "openrouter", name: "OpenRouter", defaultModel: "perplexity/pplx-decider-v1.3:free", keyName: "OPENROUTER_API_KEY", price: "free models: 50 answers a day, 1,000 with $10 of credit" },
+  { id: "liquid", name: "Liquid", defaultModel: "d1.2-ultra", keyName: "LIQUID_API_KEY", price: "$0.042 per million input tokens, about $0.00006 an answer" },
+];
+
 export interface TradingConfig {
   /** New entries are taken only while armed. Exits always run. */
   armed: boolean;
@@ -73,6 +80,8 @@ export interface TradingConfig {
   };
   decision: {
     mode: DecisionMode;
+    provider: DecisionProviderId;
+    /** The provider's model id. */
     model: string;
     /** Take a trade only when the model's probability that it should be taken is at least this. */
     minProbability: number;
@@ -116,6 +125,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   fills: { slippage: 0.05, looseSlippage: 0.5, latencyMs: 300 },
   decision: {
     mode: "gate",
+    provider: "openrouter",
     model: "perplexity/pplx-decider-v1.3:free",
     minProbability: 0.55,
     vetoAgainstRegime: true,
@@ -228,6 +238,12 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
     apply(next.decision, decision, "vetoAgainstRegime", bool, "Veto against the regime");
     apply(next.decision, decision, "timeoutMs", (v, n) => number(v, n, 500, 30_000, true), "Decision timeout");
     apply(next.decision, decision, "onError", (v, n) => oneOf(v, n, ["skip", "allow"] as const), "On a missing answer");
+    const provider = next.decision.provider;
+    apply(next.decision, decision, "provider", (v, n) => oneOf(v, n, ["openrouter", "liquid"] as const), "Decision provider");
+    // A new provider without a model named alongside it gets that provider's default model.
+    if (next.decision.provider !== provider && decision.model === undefined) {
+      next.decision.model = DECISION_PROVIDERS.find((p) => p.id === next.decision.provider)!.defaultModel;
+    }
     if (decision.model !== undefined) {
       if (typeof decision.model === "string" && /^[\w.:/-]{3,120}$/.test(decision.model)) next.decision.model = decision.model;
       else problems.push("Decision model must be a model id such as perplexity/pplx-decider-v1.3:free");
@@ -497,8 +513,10 @@ export interface TradingStatus {
     /** Records written since the last save. */
     pending: number;
   };
-  /** Whether the decision API has a key configured. */
+  /** Whether the chosen decision provider has a key configured. */
   decisionReady: boolean;
+  /** Which providers have a key configured. */
+  decisionProviders: Record<DecisionProviderId, boolean>;
 }
 
 export type TradingList = "trades" | "orders" | "intents" | "decisions" | "events";

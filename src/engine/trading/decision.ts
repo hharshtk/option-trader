@@ -1,6 +1,7 @@
 // The decision API as a second opinion on each entry. When the strategy proposes a trade, the
-// engine sends the market context as JSON with three typed questions (OpenRouter's Decisions API,
-// see scripts/decision-demo.ts) and gets probabilities back:
+// engine sends the market context as JSON with three typed questions and gets probabilities back,
+// from OpenRouter's Decisions API (scripts/decision-demo.ts) or Liquid's
+// (scripts/liquid-decision-test.ts): the same questions, the same answers.
 //
 //   take_trade  noul    the probability that the context supports the trade
 //   regime      choice  trend up, trend down, range or chop
@@ -12,7 +13,7 @@
 
 import { createHash } from "node:crypto";
 import type { Pulse } from "../../lib/insight/pulse.ts";
-import type { OptionRef, SignalReading, TradingConfig } from "../../lib/engine/trading.ts";
+import type { DecisionProviderId, OptionRef, SignalReading, TradingConfig } from "../../lib/engine/trading.ts";
 
 export interface DecisionAnswer {
   /** Probability the trade should be taken, 0 to 1. */
@@ -166,7 +167,7 @@ interface RawAnswer {
 }
 
 /** Reads the API's answers. Throws when the question that gates the trade wasn't answered. */
-export function readAnswers(response: { answers?: Record<string, unknown>; model?: string; usage?: { inputTokens?: number; cost?: number } }): DecisionAnswer {
+export function readAnswers(response: { answers?: Record<string, unknown>; model?: string; usage?: { inputTokens?: number; input_tokens?: number; cost?: number } }): DecisionAnswer {
   const answers = (response.answers ?? {}) as Record<string, RawAnswer | undefined>;
   const take = answers.take_trade;
   if (!take || take.type !== "noul" || typeof take.noul !== "number" || !(take.noul >= 0 && take.noul <= 1)) {
@@ -181,7 +182,8 @@ export function readAnswers(response: { answers?: Record<string, unknown>; model
     // The score is the expected level, from 0 to the number of levels minus one.
     quality: quality?.type === "score" && typeof quality.score === "number" ? Math.min(1, Math.max(0, quality.score / (QUALITY_LEVELS.length - 1))) : null,
     model: response.model ?? "",
-    inputTokens: response.usage?.inputTokens ?? null,
+    // OpenRouter's SDK says inputTokens, Liquid's API input_tokens.
+    inputTokens: response.usage?.inputTokens ?? response.usage?.input_tokens ?? null,
     cost: response.usage?.cost ?? null,
   };
 }
@@ -200,6 +202,31 @@ export function createOpenRouterDecisions(apiKey: string | undefined): DecisionP
       return readAnswers(response as Parameters<typeof readAnswers>[0]);
     },
   };
+}
+
+/** Liquid's decisions API, with plain fetch. Same questions and answers as OpenRouter's. */
+export function createLiquidDecisions(apiKey: string | undefined, fetcher: typeof fetch = fetch): DecisionProvider {
+  const key = apiKey?.trim();
+  return {
+    ready: Boolean(key),
+    async ask({ model, state, timeoutMs }) {
+      if (!key) throw new Error("LIQUID_API_KEY is not set in .env.local");
+      const response = await fetcher("https://api.liquid.ai/decisions/v1/systemone", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, state, questions: QUESTIONS }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`Liquid answered HTTP ${response.status}: ${text.slice(0, 200)}`);
+      return readAnswers(JSON.parse(text) as Parameters<typeof readAnswers>[0]);
+    },
+  };
+}
+
+/** One client per provider, from the keys in the environment. */
+export function createDecisionProviders(env: Record<string, string | undefined>): Record<DecisionProviderId, DecisionProvider> {
+  return { openrouter: createOpenRouterDecisions(env.OPENROUTER_API_KEY), liquid: createLiquidDecisions(env.LIQUID_API_KEY) };
 }
 
 /** Identifies a proposal, so a replay reuses the answer recorded for it instead of asking again. */

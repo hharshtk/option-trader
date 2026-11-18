@@ -29,7 +29,7 @@ import { INDEX } from "../lib/dhan/instruments.ts";
 import { createDepthFeed } from "./recording/depth-feed.ts";
 import { createFuturesSource } from "./recording/futures.ts";
 import { createRecorder } from "./recording/recorder.ts";
-import { createOpenRouterDecisions } from "./trading/decision.ts";
+import { createDecisionProviders } from "./trading/decision.ts";
 import { createCandleSource, createContractSource } from "./trading/sources.ts";
 import { createTradingStore } from "./trading/store.ts";
 import { createTrader } from "./trading/trader.ts";
@@ -171,7 +171,8 @@ const trader = createTrader({
   hold: () => feeds.holdReplay(),
   // The same day the Pulse page reads: as far as the replay has reached, or today's journal.
   session: (date) => feeds.replaySession(date) ?? journalSessions.read(date),
-  decisions: createOpenRouterDecisions(process.env.OPENROUTER_API_KEY),
+  // A client per Decision API provider whose key is set; the trading settings choose one.
+  decisions: createDecisionProviders(process.env),
   loadContracts,
   loadCandles: createCandleSource({
     directory: path.join(tradingDirectory, "candles"),
