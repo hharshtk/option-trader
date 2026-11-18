@@ -19,6 +19,7 @@ import { createReplayPlayer, type ReplayPlayer } from "./replay/player.ts";
 import { loadRecording, RecordingError, type Recording } from "./replay/recording.ts";
 import { createReplaySession, type ReplaySession } from "./replay/replay-session.ts";
 import { createRetimer } from "./replay/retime.ts";
+import { loadSideFiles, replaySideData, type SideFiles, type SideData } from "./replay/side-data.ts";
 import type { Health } from "./telemetry/health.ts";
 import type { TelemetryHub } from "./telemetry/hub.ts";
 import type { Logger } from "./telemetry/logger.ts";
@@ -88,6 +89,8 @@ export interface FeedSwitch {
   replayStatus(): ReplayStatus | null;
   /** The day being replayed; null when live. */
   replayDate(): string | null;
+  /** During a replay: the day's 20-level books and option chains as of the replay's position. Null when live. */
+  replaySides(): SideData | null;
   /**
    * During a replay of `date`: that day as far as the replay has reached, so session views build
    * up as they do live. Null when live or for any other day.
@@ -140,11 +143,26 @@ export function createFeedSwitch({
   const feedLog = logger("feed");
   const log = logger("replay");
   let feed: EngineFeed | null = null;
-  let replay: { player: ReplayPlayer; session: ReplaySession; date: string; since: number } | null = null;
+  let replay: {
+    player: ReplayPlayer;
+    session: ReplaySession;
+    recording: Recording;
+    sideFiles: SideFiles;
+    sides: SideData;
+    date: string;
+    since: number;
+  } | null = null;
   let loading = false;
   let jumps = 0;
   /** The player trading has paused, and how many holds are out on it. */
   let held: { player: ReplayPlayer; count: number } | null = null;
+
+  /** Stops a replay's player and closes its files. */
+  function close(old: NonNullable<typeof replay>) {
+    old.player.shutdown();
+    old.recording.close();
+    old.sideFiles.close();
+  }
 
   function startLive() {
     feed?.shutdown();
@@ -191,20 +209,28 @@ export function createFeedSwitch({
     if (request.from !== undefined && typeof request.from !== "string") return fail("Start time must be HH:MM or HH:MM:SS IST.");
 
     let recording: Recording;
+    let sideFiles: SideFiles;
     loading = true;
     try {
-      recording = await loadRecording(journalDirectory, date);
+      // The depth and chain files beside it, when the day has them; they never stop a replay.
+      [recording, sideFiles] = await Promise.all([loadRecording(journalDirectory, date), loadSideFiles(journalDirectory, date)]);
     } catch (error) {
       return fail(error instanceof RecordingError ? error.message : `Could not read the ${date} journal: ${String(error)}`);
     } finally {
       loading = false;
     }
-    if (recording.count === 0) return fail(`The ${date} journal has no frames.`);
+    for (const problem of sideFiles.problems) log.warn(`replaying without the ${problem}`);
+    const giveUp = (message: string) => {
+      recording.close();
+      sideFiles.close();
+      return fail(message);
+    };
+    if (recording.count === 0) return giveUp(`The ${date} journal has no frames.`);
 
     let from = defaultReplayStart(calendar, recording);
     if (request.from) {
       const parsed = istTimeOn(date, request.from);
-      if (parsed === null) return fail("Start time must be HH:MM or HH:MM:SS IST.");
+      if (parsed === null) return giveUp("Start time must be HH:MM or HH:MM:SS IST.");
       from = parsed;
     }
 
@@ -224,9 +250,10 @@ export function createFeedSwitch({
     // Close the old feed's sockets before the old player, so the feed doesn't see them drop.
     feed?.shutdown();
     feed = null;
-    if (replay) replay.player.shutdown();
+    if (replay) close(replay);
     else journal.control("replay-start", { date, from, speed }, at);
-    replay = { player, session: createReplaySession(recording, calendar), date, since };
+    const sides = replaySideData(sideFiles, recording.contracts, () => player.status().at);
+    replay = { player, session: createReplaySession(recording, calendar, sideFiles), recording, sideFiles, sides, date, since };
     feed = startFeed({
       log: log.child("feed"),
       health,
@@ -253,12 +280,13 @@ export function createFeedSwitch({
 
   function stopReplay(reason: string) {
     if (!replay) return fail("The feed is already live.");
-    const { player, date, since } = replay;
+    const { date, since } = replay;
+    const stopped = replay;
     replay = null;
     held = null;
     feed?.shutdown();
     feed = null;
-    player.shutdown();
+    close(stopped);
     const at = now();
     journal.control("replay-stop", { date, reason }, at);
     journal.control("gap", { reason: "replay", from: since, to: at }, at);
@@ -317,6 +345,7 @@ export function createFeedSwitch({
     },
     holdReplay,
     replayDate: () => replay?.date ?? null,
+    replaySides: () => replay?.sides ?? null,
     replaySession(date) {
       if (!replay || date !== replay.date) return null;
       return replay.session.read(replay.player.status().at);
@@ -348,7 +377,7 @@ export function createFeedSwitch({
     shutdown() {
       feed?.shutdown();
       feed = null;
-      replay?.player.shutdown();
+      if (replay) close(replay);
     },
   };
 }

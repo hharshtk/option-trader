@@ -106,16 +106,19 @@ A panel under the verdict, shown when the day's journal has NIFTY's futures and 
 | The near-month future | Its price, its premium over NIFTY and how that changed in 15 minutes, and its distance from its own VWAP |
 | Open interest | The future's open interest change in 15 minutes and since yesterday's close, and what price against open interest means: long build-up (price up, positions added), short build-up (down, added), short covering (up, closed), long unwinding (down, closed) |
 | Who is trading | The share of the future's traded quantity taken by buyers lifting the ask against sellers hitting the bid, over 5 and 15 minutes, and the net in lots. Each trade is classed by its price against the book just before it, or by its tick when it traded between bid and ask |
+| Order book, 20 levels | The share of the quantity, and of the orders, waiting on the future's 20 best bids against its 20 best asks, and the spread. From the depth file (`derivatives.book`) |
 | Options, expiry | Put open interest over call open interest within 10 strikes of the money (above 1: more puts written), now, at the open and 15 minutes ago |
 | Lots written near the money | Lots of calls and puts added within 10 strikes of the money, today and in the last 15 minutes. Writers sell options where they expect the market not to go |
 | Biggest strikes | The strike with the most call open interest above NIFTY and the most put open interest below it, among the recorded strikes (15 each side of the money), and max pain: the settlement at which option holders would collect least |
+| Option chain, expiry | From the chain snapshots (`derivatives.chain`, once a minute): at-the-money volatility worked out from bid-ask middles on the parity forward, its change in 15 minutes and since the day's first snapshot, the next expiry's, and the skew (the put 1% below the forward against the call 1% above, in volatility points). Dhan's own volatility figures aren't used: its call and put of one strike disagreed by 2 to 4 points on 18 November 2026 |
+| Every strike | Put over call open interest, lots added since yesterday's close, and the strikes with the most call open interest above NIFTY and the most put open interest below it, across every strike within 10% of NIFTY (the journal's window covers 15 each side) |
 | Typical 15-min move | What the at-the-money straddle (call plus put) prices for 15 minutes, against how far NIFTY has actually been moving (its average 1-minute move over the last 30 minutes, scaled to 15). Plus India VIX and the change in option volatility since the open |
 
 The straddle prices the move to expiry; a move over 15 minutes is that times √(15 / trading minutes left), counting weekdays but not exchange holidays. It counts no move overnight, so it reads a little high.
 
 ## Signal lab
 
-Six candidate signals, each a fixed rule read at the end of every minute from data up to that minute (no look-ahead), and two that combine them:
+Seven candidate signals, each a fixed rule read at the end of every minute from data up to that minute (no look-ahead), and two that combine them:
 
 | Signal | Reads | Fires long / short when |
 |---|---|---|
@@ -125,10 +128,11 @@ Six candidate signals, each a fixed rule read at the end of every minute from da
 | Futures order flow | The future | Buyers lifting the ask took 70% or more of what the future traded over 5 minutes / sellers hitting the bid did. Not when volume was thin: under 30% of the day's average so far |
 | Futures OI build-up | The future | The future rose / fell 0.12% or more over 15 minutes while its open interest rose 0.2% or more: new positions behind the move. Momentum with a check that someone is committing money |
 | Option writers | Options near the money | Over 15 minutes, put open interest grew faster than call open interest by 3% or more of the total (writers expect a floor) / calls faster (writers expect a ceiling) |
+| Order book lean | The future's 20-level book | The quantity waiting on the 20 best bids outweighs the 20 best asks by 20% or more of both (60% or more bids) / the asks outweigh the bids |
 | Two or more agree (combined) | | At least two of the three price signals point the same way, net |
-| Confirmed by futures and options (combined) | | The price signals that fired all point one way, at least one of the three futures and options signals agrees, and none disagrees |
+| Confirmed by futures and options (combined) | | The price signals that fired all point one way, at least one of order flow, OI build-up and option writers agrees, and none of them disagrees. Order book lean doesn't count, so adding it changed no firing |
 
-**What the record says.** Over 257 days to 17 November 2026 the three price signals and Two or more agree were right 49–51% of the time and averaged under a point a trade before costs, against about 3.9 points of costs for an option trade (the parked research study, branch `research-and-strategy-store`). The futures and options signals read data recorded only from 18 November 2026; their thresholds were set that morning so each fires on about a quarter of minutes, and they are untested. Judge them on the days that follow.
+**What the record says.** Over 257 days to 17 November 2026 the three price signals and Two or more agree were right 49–51% of the time and averaged under a point a trade before costs, against about 3.9 points of costs for an option trade (the parked research study, branch `research-and-strategy-store`). The futures and options signals read data recorded only from 18 November 2026; their thresholds were set that morning so each fires on about a quarter of minutes, and they are untested. Judge them on the days that follow. Order book lean, scored on 18 November at a 10-minute hold: 33 firings, 17 right, +10.9 NIFTY points in all before costs, against about 3.9 points of costs a trade.
 
 **No signal reads the closing auction.** From 15:15 stock prices stop and NIFTY holds still until the auction price lands near 15:28 ([research.md](research.md#things-the-data-taught-us)). Signals read nothing from 15:15, and an outcome must end by 15:14.
 

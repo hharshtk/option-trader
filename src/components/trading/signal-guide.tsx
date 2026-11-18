@@ -104,6 +104,16 @@ export const GUIDE: Record<SignalId, Guide> = {
     right: { time: "09:33", vote: -1, reading: "puts +147.5k, calls +217.0k lots", from: 25325.75, to: 25237.45, note: "Calls grew by 69,500 lots more than puts." },
     wrong: { time: "12:29", vote: 1, reading: "puts +71.5k, calls −23.2k lots", from: 25224.7, to: 25193.65 },
   },
+  book20: {
+    group: "Futures and options",
+    line: "20% lean, 20 levels",
+    watches: "The orders waiting in NIFTY's near-month future: the 20 best bids and the 20 best asks, from Dhan's 20-level depth feed. It compares how much is waiting to buy with how much is waiting to sell.",
+    votes: "When the bids outweigh the asks by 20% or more of the two together (60% bids or more), it votes ▲ long. When the asks outweigh the bids that much, ▼ short.",
+    idea: "A heavy side of the book is buyers (or sellers) lining up. The hope is that price drifts towards the side with less in the way. On 18 November it nudged the next minute by under a point, far less than a trade costs: watch it, don't expect it to pay.",
+    silent: ["The book was roughly balanced. About three minutes in four are like this.", "Days before 18 November 2026, and any day without a depth file."],
+    right: { time: "14:12", vote: 1, reading: "bids 68% of 20 levels", from: 25232.5, to: 25260.75 },
+    wrong: { time: "09:48", vote: -1, reading: "asks 75% of 20 levels", from: 25237.65, to: 25305.6 },
+  },
   agree: {
     group: "Combined",
     line: "2 of 3 price signals",
@@ -117,7 +127,7 @@ export const GUIDE: Record<SignalId, Guide> = {
   confirmed: {
     group: "Combined",
     line: "price + futures/options",
-    watches: "All six signals: the three price signals and the three futures and options signals.",
+    watches: "Six signals: the three price signals and three futures and options signals (order flow, OI build-up, option writers; not Order book lean).",
     votes: "When the price signals that fired all point one way, at least one futures or options signal agrees and none disagrees, it votes that way.",
     idea: "A price move is only a hint. When the people trading futures and options are betting the same way, the move has money behind it.",
     silent: ["No price signal fired, or they disagreed.", "No futures or options signal agreed, or one disagreed.", "Days before 18 November 2026."],

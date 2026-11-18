@@ -6,6 +6,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   PROTOCOL_VERSION,
+  type ChainView,
+  type DepthView,
   type EngineStatus,
   type JournalSession,
   type LogLevel,
@@ -38,6 +40,10 @@ export interface ControlServerOptions {
   feed?: () => FeedHub | null;
   /** A day read back from its journal file; null when there is no file for that day. */
   journalSession?: (date: string | null) => Promise<JournalSession | null>;
+  /** The latest 20-level book of `key` (null: the first contract's) and the contracts that have one. Live or at the replay's position. */
+  depth?: (key: string | null) => DepthView;
+  /** The latest option chain snapshot of an underlying's expiry (null: the nearest). Live or at the replay's position. */
+  chain?: (underlying: string, expiry: string | null) => ChainView;
   /** Handles a `POST /v1/replay` body: switch the feed to a recorded day and back, and steer it. */
   replay?: (body: unknown) => Promise<ReplayCommandResult>;
   /** Paper trading: its state, its commands (`POST /v1/trading`) and its stored runs. */
@@ -147,6 +153,20 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         }
         case "/v1/status":
           return json(response, 200, status());
+        case "/v1/depth": {
+          if (!options.depth) return json(response, 404, { error: "No depth" });
+          const key = url.searchParams.get("key");
+          if (key !== null && !/^[A-Z_]+:\d{1,10}$/.test(key)) return json(response, 400, { error: "key must look like NSE_FNO:61471" });
+          return json(response, 200, options.depth(key));
+        }
+        case "/v1/chain": {
+          if (!options.chain) return json(response, 404, { error: "No option chains" });
+          const underlying = url.searchParams.get("underlying") ?? "NIFTY";
+          const expiry = url.searchParams.get("expiry");
+          if (!/^[A-Z]{1,20}$/.test(underlying)) return json(response, 400, { error: "underlying must be a symbol such as NIFTY" });
+          if (expiry !== null && !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) return json(response, 400, { error: "expiry must be YYYY-MM-DD" });
+          return json(response, 200, options.chain(underlying, expiry));
+        }
         case "/v1/logs": {
           const level = url.searchParams.get("level") as LogLevel | null;
           const limit = Number(url.searchParams.get("limit")) || 500;

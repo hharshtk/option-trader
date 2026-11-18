@@ -170,9 +170,22 @@ test("futures and options signals read the derivatives; confirmed needs them to 
   assert.equal(against.signals.find((s) => s.id === "confirmed")!.vote, 0);
 });
 
+test("the order book lean follows the heavier side of the 20-level book, and doesn't count towards confirmed", () => {
+  const day = trending("calls");
+  const n = day.minutes.length;
+  // Bids heavy: 70% of what waits over 20 levels.
+  day.derivatives!.book = { key: "NSE_FNO:1", bidQty: Array(n).fill(700), askQty: Array(n).fill(300), bidOrders: Array(n).fill(5), askOrders: Array(n).fill(5), spread: Array(n).fill(1) };
+  const pulse = computePulse(day, [])!;
+  const lean = pulse.signals.find((s) => s.id === "book20")!;
+  assert.equal(lean.vote, 1);
+  assert.equal(lean.display, "bids 70% of 20 levels");
+  // Writers still disagree, so the lean agreeing doesn't confirm the momentum.
+  assert.equal(pulse.signals.find((s) => s.id === "confirmed")!.vote, 0);
+});
+
 test("a day recorded without futures and options gives those signals no reading", () => {
   const pulse = computePulse(session(60), constituents)!;
   assert.equal(pulse.derivatives, null);
-  for (const id of ["flow", "buildup", "writers", "confirmed"]) assert.equal(pulse.signals.find((s) => s.id === id)!.vote, 0);
+  for (const id of ["flow", "buildup", "writers", "book20", "confirmed"]) assert.equal(pulse.signals.find((s) => s.id === id)!.vote, 0);
   assert.equal(pulse.signals.find((s) => s.id === "flow")!.display, "—");
 });

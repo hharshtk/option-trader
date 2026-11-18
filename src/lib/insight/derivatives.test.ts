@@ -143,3 +143,50 @@ test("a session without derivatives has no view", () => {
   delete s.derivatives;
   assert.equal(derivativesView(s), null);
 });
+
+test("the 20-level book and the option chain series reach the snapshot", () => {
+  const s = session();
+  const n = s.minutes.length;
+  const flat = <T>(v: T) => Array.from({ length: n }, () => v);
+  const OPEN = s.session!.open;
+  s.derivatives!.book = { key: "NSE_FNO:1", bidQty: flat(600), askQty: flat(200), bidOrders: flat(10), askOrders: flat(30), spread: flat(2.5) };
+  s.derivatives!.chain = {
+    expiry: "2026-11-23",
+    nextExpiry: "2026-12-01",
+    // The first snapshot lands in minute 2.
+    at: Array.from({ length: n }, (_, t) => (t < 2 ? null : OPEN + t * 60_000 + 5_000)),
+    spot: flat(25_010),
+    atm: flat(25_000),
+    forward: flat(25_020),
+    ivPct: Array.from({ length: n }, (_, t) => (t < 2 ? null : 14 + t * 0.1)),
+    skewPct: flat(1.2),
+    straddle: flat(330),
+    callOi: flat(6_500_000),
+    putOi: flat(3_250_000),
+    callOiChange: flat(650_000),
+    putOiChange: flat(-65_000),
+    callWall: flat(25_500),
+    callWallOi: flat(1_300_000),
+    putWall: flat(24_500),
+    putWallOi: flat(650_000),
+    nextIvPct: flat(13),
+    nextStraddle: flat(500),
+  };
+  const view = derivativesView(s)!;
+  assert.deepEqual(view.book20(5), { imbalance: 0.5, orders: -0.5, spread: 2.5 });
+  const snap = derivativesSnapshot(view, 19, { spot: () => 25_010, at: OPEN + 20 * 60_000, date: s.date, session: s.session! });
+  assert.equal(snap.future?.book20Imbalance, 0.5);
+  assert.equal(snap.future?.book20OrdersImbalance, -0.5);
+  assert.equal(snap.future?.spread, 2.5);
+  const c = snap.chain!;
+  assert.equal(c.ageMinutes, 1);
+  near(c.ivPct!, 15.9, 1e-9);
+  assert.equal(c.ivChange15, 1.5);
+  assert.equal(c.ivChangeSinceFirst, 1.7);
+  assert.equal(c.pcr, 0.5);
+  assert.equal(c.callOiChangeDayLots, 10_000);
+  assert.equal(c.putOiChangeDayLots, -1_000);
+  assert.deepEqual(c.callWall, { strike: 25_500, lots: 20_000, points: 490 });
+  assert.deepEqual(c.putWall, { strike: 24_500, lots: 10_000, points: -510 });
+  assert.equal(derivativesSnapshot(view, 1, { spot: () => 25_010, at: OPEN + 2 * 60_000, date: s.date, session: s.session! }).chain, null, "no snapshot yet");
+});

@@ -58,6 +58,8 @@ function setup() {
     telemetry,
     logs,
     log: logs.logger("api"),
+    depth: (key) => ({ source: "replay", at: 42, instruments: [{ key: "NSE_FNO:61471", name: "NIFTY NOV FUT" }], book: key ? { key, name: null, at: 41, bids: [], asks: [] } : null }),
+    chain: (underlying, expiry) => ({ source: "live", at: 42, underlying, expiries: expiry ? [expiry] : [], snapshot: null }),
   });
   return { server, telemetry, logs, feed, tick: (ms: number) => (clock += ms) };
 }
@@ -121,6 +123,16 @@ test("control API", { timeout: 15_000 }, async (t) => {
   await t.test("serves status and 404s unknown routes", async () => {
     assert.deepEqual(await (await get("/v1/status")).json(), { protocol: PROTOCOL_VERSION, overall: "ok" });
     assert.equal((await get("/v1/nope")).status, 404);
+  });
+
+  await t.test("serves 20-level books and option chains, checking what is asked", async () => {
+    const depth = (await (await get("/v1/depth?key=NSE_FNO:61471")).json()) as { book: { key: string } };
+    assert.equal(depth.book.key, "NSE_FNO:61471");
+    assert.equal((await get("/v1/depth?key=../etc")).status, 400);
+    const chain = (await (await get("/v1/chain?expiry=2026-11-23")).json()) as { underlying: string; expiries: string[] };
+    assert.deepEqual([chain.underlying, chain.expiries], ["NIFTY", ["2026-11-23"]]);
+    assert.equal((await get("/v1/chain?underlying=nifty")).status, 400);
+    assert.equal((await get("/v1/chain?expiry=tomorrow")).status, 400);
   });
 
   await t.test("serves the log backlog with filters", async () => {

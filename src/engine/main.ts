@@ -27,6 +27,7 @@ import { getOptionChain } from "../lib/dhan/api.ts";
 import { getDhanCredentials, getTokenStore } from "../lib/dhan/config.ts";
 import { INDEX } from "../lib/dhan/instruments.ts";
 import { createDepthFeed } from "./recording/depth-feed.ts";
+import { chainView, createLiveSideData, depthView } from "./replay/side-data.ts";
 import { createFuturesSource } from "./recording/futures.ts";
 import { createRecorder } from "./recording/recorder.ts";
 import { createDecisionProviders } from "./trading/decision.ts";
@@ -206,10 +207,15 @@ const sideJournal = (suffix: string, describe: () => Record<string, unknown>) =>
 };
 const depthJournal = sideJournal(".depth", () => ({ feed: "twentydepth", instruments: recorder.status().depth.instruments }));
 const chainJournal = sideJournal(".chain", () => ({ indices: recorder.status().indices.map((index) => index.name) }));
+// The latest books, chains and contract names, kept as the recorder writes them, for the web.
+const liveSides = createLiveSideData(clock.now);
 const depthFeed = createDepthFeed({
   readCredentials: getDhanCredentials,
   currentToken: () => getTokenStore().current(),
-  onFrame: (frame, at) => depthJournal.frame(1, frame, at),
+  onFrame: (frame, at) => {
+    depthJournal.frame(1, frame, at);
+    liveSides.addDepthFrame(frame, at);
+  },
   onEvent: (kind, data, at) => depthJournal.control(kind, data, at, 1),
   log: (message) => recorderLog.info(message),
   now: clock.now,
@@ -220,9 +226,19 @@ const recorder = createRecorder({
   now: clock.now,
   calendar,
   hub: () => feeds.liveHub(),
-  journal,
+  journal: {
+    control(kind, data, at, connection) {
+      liveSides.addControl(kind, data, at);
+      journal.control(kind, data, at, connection);
+    },
+  },
   depth: depthFeed,
-  chainJournal,
+  chainJournal: {
+    control(kind, data, at, connection) {
+      liveSides.addControl(kind, data, at);
+      chainJournal.control(kind, data, at, connection);
+    },
+  },
   loadContracts,
   loadFutures,
   fetchChain: (underlying, expiry) => getOptionChain(INDEX[underlying as keyof typeof INDEX], expiry),
@@ -308,6 +324,8 @@ const server = createControlServer({
     return feeds.replaySession(day) ?? journalSessions.read(day);
   },
   trading: trader,
+  depth: (key) => depthView(feeds.replaySides() ?? liveSides, key),
+  chain: (underlying, expiry) => chainView(feeds.replaySides() ?? liveSides, underlying, expiry),
 });
 
 health.set("engine", "ok");

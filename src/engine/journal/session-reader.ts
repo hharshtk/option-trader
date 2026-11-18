@@ -9,14 +9,18 @@ import { INDEX } from "../../lib/dhan/instruments.ts";
 import type { JournalSession } from "../../lib/engine/protocol.ts";
 import { INDEX_CONSTITUENTS } from "../../lib/index-constituents.ts";
 import type { SessionCalendar } from "../market/session-calendar.ts";
+import { loadSideFiles, type SideFiles } from "../replay/side-data.ts";
 import { MAGIC, readRecords } from "./format.ts";
 import { createSessionAggregator, type InstrumentName, type SessionAggregator } from "./session-summary.ts";
+import { createSideSeries, type SideSeries } from "./side-series.ts";
 
 // About 15 ms of decoding per chunk, so the feed never waits long.
 const CHUNK_BYTES = 1024 * 1024;
 /** Days kept in memory. Today plus a few looked up. */
 const MAX_DAYS = 4;
 const BENCHMARK = `IDX_I:${INDEX.NIFTY.securityId}`;
+/** How often a day missing a side file looks for it again: the recorder opens them at 08:45. */
+const SIDE_RETRY_MS = 60_000;
 
 export interface JournalSessions {
   /** The day's summary, or null when there is no journal file for it. */
@@ -30,6 +34,10 @@ interface Day {
   /** The start of a record cut off at the end of the last read. */
   carry: Buffer;
   busy: Promise<unknown>;
+  /** The day's depth and chain files, once looked for. */
+  sides: SideFiles | null;
+  sidesLookedAt: number;
+  series: SideSeries;
 }
 
 export function createJournalSessions({
@@ -44,12 +52,28 @@ export function createJournalSessions({
   const days = new Map<string, Day>();
 
   function fresh(date: string): Day {
-    return {
+    const day: Day = {
       aggregator: createDayAggregator(date, calendar),
       position: 0,
       carry: Buffer.alloc(0),
       busy: Promise.resolve(),
+      sides: null,
+      sidesLookedAt: 0,
+      series: createSideSeries(() => day.sides),
     };
+    return day;
+  }
+
+  /** Opens the day's side files, or indexes what they gained; looks again for a missing one now and then. */
+  async function catchUpSides(date: string, day: Day) {
+    const missing = !day.sides || !day.sides.depth || !day.sides.chain;
+    if (missing && now() - day.sidesLookedAt >= SIDE_RETRY_MS) {
+      day.sides?.close();
+      day.sides = await loadSideFiles(directory, date);
+      day.sidesLookedAt = now();
+    } else {
+      await day.sides?.refresh();
+    }
   }
 
   async function catchUp(date: string, day: Day, file: string) {
@@ -57,7 +81,10 @@ export function createJournalSessions({
     const size = (await stat(file)).size;
     if (size < day.position) {
       // The file was replaced or truncated: start over.
-      Object.assign(day, fresh(date), { busy: day.busy });
+      day.sides?.close();
+      const { busy } = day;
+      Object.assign(day, fresh(date), { busy });
+      day.series = createSideSeries(() => day.sides);
     }
     if (size <= day.position) return;
     const handle = await open(file, "r");
@@ -96,23 +123,28 @@ export function createJournalSessions({
       if (!day) {
         day = fresh(date);
         days.set(date, day);
-        while (days.size > MAX_DAYS) days.delete(days.keys().next().value!);
+        while (days.size > MAX_DAYS) {
+          const oldest = days.keys().next().value!;
+          days.get(oldest)?.sides?.close();
+          days.delete(oldest);
+        }
       }
       const started = performance.now();
       // One read at a time per day; a second request waits for the first and reuses its work.
-      const work = day.busy.then(() => catchUp(date, day!, file));
+      const work = day.busy.then(async () => {
+        await catchUp(date, day!, file);
+        await catchUpSides(date, day!);
+      });
       day.busy = work.catch(() => {});
       try {
         await work;
       } catch (error) {
+        day.sides?.close();
         days.delete(date);
         throw error;
       }
-      return day.aggregator.summary({
-        builtAt: now(),
-        readMs: Math.round((performance.now() - started) * 10) / 10,
-        bytes: day.position - day.carry.length,
-      });
+      const summary = day.aggregator.summary({ builtAt: now(), readMs: 0, bytes: day.position - day.carry.length });
+      return { ...day.series.apply(summary, Infinity), readMs: Math.round((performance.now() - started) * 10) / 10 };
     },
   };
 }

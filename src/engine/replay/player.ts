@@ -48,6 +48,10 @@ const MAX_WAIT_MS = 1_000;
 /** Wall-clock milliseconds whose delivered frame is remembered for exact retiming. */
 const RECENT_DELIVERIES = 50_000;
 const MAX_SEGMENTS = 1_000;
+/** Frames between saved copies of the per-instrument state, so a seek back resumes from the nearest one. */
+const CHECKPOINT_FRAMES = 250_000;
+/** Frames the background checkpoint pass reads between yields. */
+const WARM_FRAMES_PER_TURN = 20_000;
 
 const CONNECTING = 0;
 const OPEN = 1;
@@ -77,6 +81,8 @@ export interface ReplayPlayerOptions {
   onEnd?: () => void;
   /** Called whenever the position jumps: the start, every seek, and a restart from the end. */
   onJump?: () => void;
+  /** Frames between checkpoints; tests set it small. */
+  checkpointFrames?: number;
 }
 
 export type ReplayState = "playing" | "paused" | "ended";
@@ -112,6 +118,20 @@ interface Span {
   end: number;
   code: number;
   key: string | null;
+}
+
+/** The latest price, previous-close and OI packet of each instrument. */
+interface State {
+  lastPrice: Map<string, PacketRef>;
+  prevClose: Map<string, PacketRef>;
+  oi: Map<string, PacketRef>;
+}
+
+/** Where a packet sits: its frame and its bytes within it. */
+interface PacketRef {
+  frame: number;
+  start: number;
+  end: number;
 }
 
 interface ReplaySocket {
@@ -177,13 +197,14 @@ function shape(packet: Uint8Array, code: number, mode: FeedMode): Uint8Array | n
 }
 
 export function createReplayPlayer(options: ReplayPlayerOptions): ReplayPlayer {
-  const { recording, now, log = () => {}, timers = DEFAULT_TIMERS, onEnd, onJump } = options;
+  const { recording, now, log = () => {}, timers = DEFAULT_TIMERS, onEnd, onJump, checkpointFrames = CHECKPOINT_FRAMES } = options;
   const { times, count, startAt, endAt } = recording;
   const sockets = new Set<ReplaySocket>();
-  // The latest packets per instrument up to the position: what a subscribe snapshot sends.
-  const lastPrice = new Map<string, Uint8Array>();
-  const prevClose = new Map<string, Uint8Array>();
-  const oi = new Map<string, Uint8Array>();
+  // Where the latest packets per instrument up to the position are: what a subscribe snapshot
+  // sends. Positions, not bytes, so frames read from disk aren't kept alive by them.
+  const lastPrice = new Map<string, PacketRef>();
+  const prevClose = new Map<string, PacketRef>();
+  const oi = new Map<string, PacketRef>();
 
   let speed = clampSpeed(options.speed ?? 1);
   let state: ReplayState = "paused";
@@ -219,18 +240,80 @@ export function createReplayPlayer(options: ReplayPlayerOptions): ReplayPlayer {
     return Math.min(endAt, segment.at + Math.max(0, wall - segment.wall) * segment.rate);
   }
 
-  function remember(bytes: Uint8Array, span: Span) {
+  function remember(frameIndex: number, span: Span) {
     if (span.key === null) return;
-    const packet = bytes.subarray(span.start, span.end);
-    if (PRICE_RANK[span.code] !== undefined) lastPrice.set(span.key, packet);
-    else if (span.code === CODE.prevClose) prevClose.set(span.key, packet);
-    else if (span.code === CODE.oi) oi.set(span.key, packet);
+    const into = PRICE_RANK[span.code] !== undefined ? lastPrice : span.code === CODE.prevClose ? prevClose : span.code === CODE.oi ? oi : null;
+    if (!into) return;
+    const ref = into.get(span.key);
+    if (ref) {
+      ref.frame = frameIndex;
+      ref.start = span.start;
+      ref.end = span.end;
+    } else {
+      into.set(span.key, { frame: frameIndex, start: span.start, end: span.end });
+    }
   }
+
+  /** The per-instrument state after every CHECKPOINT_FRAMES frames passed so far, by frame count. */
+  const checkpoints = new Map<number, State>();
+  const copy = (map: Map<string, PacketRef>) => new Map([...map].map(([key, ref]) => [key, { ...ref }]));
+
+  /** Remembers a frame's packets without building spans: the hot loop of a long seek. */
+  function rememberFrame(frameIndex: number, frameAt = recording.frame, maps: State = { lastPrice, prevClose, oi }) {
+    const { lastPrice, prevClose, oi } = maps;
+    const bytes = frameAt(frameIndex);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let offset = 0;
+    while (offset + PACKET_HEADER_BYTES <= view.byteLength) {
+      const size = packetSizeAt(view, offset);
+      if (size < PACKET_HEADER_BYTES || offset + size > view.byteLength) break;
+      const code = view.getUint8(offset);
+      const into = PRICE_RANK[code] !== undefined ? lastPrice : code === CODE.prevClose ? prevClose : code === CODE.oi ? oi : null;
+      const segment = into && segmentByCode(view.getUint8(offset + 3));
+      if (into && segment) {
+        const key = `${segment}:${view.getInt32(offset + 4, true)}`;
+        const ref = into.get(key);
+        if (ref) {
+          ref.frame = frameIndex;
+          ref.start = offset;
+          ref.end = offset + size;
+        } else {
+          into.set(key, { frame: frameIndex, start: offset, end: offset + size });
+        }
+      }
+      offset += size;
+    }
+  }
+
+  /** Called after each frame is passed: saves the state at checkpoint boundaries. */
+  function passed(frames: number, maps: State = { lastPrice, prevClose, oi }) {
+    if (frames % checkpointFrames === 0 && !checkpoints.has(frames)) {
+      checkpoints.set(frames, { lastPrice: copy(maps.lastPrice), prevClose: copy(maps.prevClose), oi: copy(maps.oi) });
+    }
+  }
+
+  /**
+   * Saves every checkpoint in the background, with its own reader and state, so no seek ever
+   * scans more than CHECKPOINT_FRAMES frames. About 3 s for 18 November's 11.8 million frames.
+   */
+  async function warm() {
+    if (count < checkpointFrames) return;
+    const frameAt = recording.reader();
+    const maps: State = { lastPrice: new Map(), prevClose: new Map(), oi: new Map() };
+    for (let i = 0; i < count; i += 1) {
+      if (stopped) return;
+      rememberFrame(i, frameAt, maps);
+      passed(i + 1, maps);
+      if ((i + 1) % WARM_FRAMES_PER_TURN === 0) await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+
+  const packetAt = (ref: PacketRef | undefined) => (ref ? recording.slice(ref.frame, ref.start, ref.end) : undefined);
 
   function deliver(frameIndex: number) {
     const bytes = recording.frame(frameIndex);
     const spans = splitFrame(bytes);
-    for (const span of spans) remember(bytes, span);
+    for (const span of spans) remember(frameIndex, span);
     // The feed stamps this frame with the wall clock as it arrives, in this same millisecond.
     recent.set(now(), times[frameIndex]);
     if (recent.size > RECENT_DELIVERIES) recent.delete(recent.keys().next().value!);
@@ -262,9 +345,9 @@ export function createReplayPlayer(options: ReplayPlayerOptions): ReplayPlayer {
       const mode = socket.subscriptions.get(key);
       if (!mode) continue;
       wanted += 1;
-      const price = lastPrice.get(key);
+      const price = packetAt(lastPrice.get(key));
       if (!price) silent += 1;
-      for (const packet of [prevClose.get(key), oi.get(key), price]) {
+      for (const packet of [packetAt(prevClose.get(key)), packetAt(oi.get(key)), price]) {
         const shaped = packet && shape(packet, packet[0], mode);
         if (shaped) packets.push(shaped);
       }
@@ -296,6 +379,7 @@ export function createReplayPlayer(options: ReplayPlayerOptions): ReplayPlayer {
     while (index < count && times[index] <= target && sent < BATCH_FRAMES) {
       deliver(index);
       index += 1;
+      passed(index);
       sent += 1;
     }
     if (index >= count) {
@@ -315,17 +399,25 @@ export function createReplayPlayer(options: ReplayPlayerOptions): ReplayPlayer {
 
   function seek(time: number) {
     const target = Math.min(endAt, Math.max(startAt, time));
-    // Going back replays the state from the start of the file.
-    if (index > 0 && target < times[index - 1]) {
-      index = 0;
-      lastPrice.clear();
-      prevClose.clear();
-      oi.clear();
+    // Frames at or before the target: the state to rebuild is after the first `goal` frames.
+    let goal = recording.indexAt(target);
+    while (goal < count && times[goal] <= target) goal += 1;
+    // Resume from the latest checkpoint at or before the goal when it saves work: always going
+    // back, and going forward past one already saved.
+    let from = -1;
+    for (const frames of checkpoints.keys()) if (frames <= goal && frames > from) from = frames;
+    if (goal < index || from > index) {
+      const saved = checkpoints.get(from);
+      index = saved ? from : 0;
+      for (const [map, source] of [[lastPrice, saved?.lastPrice], [prevClose, saved?.prevClose], [oi, saved?.oi]] as const) {
+        map.clear();
+        if (source) for (const [key, ref] of source) map.set(key, { ...ref });
+      }
     }
-    while (index < count && times[index] <= target) {
-      const bytes = recording.frame(index);
-      for (const span of splitFrame(bytes)) remember(bytes, span);
+    while (index < goal) {
+      rememberFrame(index);
       index += 1;
+      passed(index);
     }
     position = anchorAt = target;
     anchorWall = now();
@@ -418,6 +510,7 @@ export function createReplayPlayer(options: ReplayPlayerOptions): ReplayPlayer {
   }
 
   seek(options.from ?? startAt);
+  void warm().catch((error: unknown) => log(`checkpoints stopped: ${error instanceof Error ? error.message : String(error)}`));
 
   return {
     openSocket,

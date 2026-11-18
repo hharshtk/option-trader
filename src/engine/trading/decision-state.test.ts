@@ -1,4 +1,4 @@
-// The market context sent to the decision API (state version 2), built from a Pulse of a small
+// The market context sent to the decision API (state version 3), built from a Pulse of a small
 // synthetic day: with futures and options, and without them.
 
 import assert from "node:assert/strict";
@@ -138,10 +138,63 @@ test("the state carries futures and option positioning, once each, and no eviden
   assert.equal(typeof s.trigger_track_record.past_year, "object");
 });
 
+test("the 20-level book and the option chain reach the state when the day has them", () => {
+  const day = session(true);
+  const n = day.minutes.length;
+  const flat = <T>(v: T) => Array.from({ length: n }, () => v);
+  day.derivatives!.book = { key: "NSE_FNO:1", bidQty: flat(300), askQty: flat(900), bidOrders: flat(20), askOrders: flat(20), spread: flat(5) };
+  day.derivatives!.chain = {
+    expiry: "2026-11-23",
+    nextExpiry: "2026-12-01",
+    at: day.minutes.map((m) => m.at + 5_000),
+    spot: flat(25_000),
+    atm: flat(25_000),
+    forward: flat(25_010),
+    ivPct: flat(14.4),
+    skewPct: flat(0.5),
+    straddle: flat(340),
+    callOi: flat(6_500_000),
+    putOi: flat(5_200_000),
+    callOiChange: flat(650_000),
+    putOiChange: flat(130_000),
+    callWall: flat(26_000),
+    callWallOi: flat(650_000),
+    putWall: flat(24_500),
+    putWallOi: flat(325_000),
+    nextIvPct: flat(13.7),
+    nextStraddle: flat(520),
+  };
+  const pulse = computePulse(day, [])!;
+  const s = buildDecisionState({
+    pulse,
+    reading: readSignal(pulse, OPEN + (N - 2) * MIN, "momentum")!,
+    follow: "momentum",
+    direction: -1,
+    contract: PUT,
+    premium: 150.5,
+    quote: { bid: 149.5, ask: 150.5 },
+    costPct: 0.8,
+    daysToExpiry: 5,
+    strategy: { ...DEFAULT_TRADING_CONFIG.strategy, holdMinutes: 15 },
+    at: OPEN + N * MIN + 1_500,
+    date: "2026-11-18",
+    session: { open: OPEN, close: OPEN + 375 * MIN },
+    today: { trades: 0, wins: 0, lastResults: [] },
+  });
+  assert.equal(s.futures?.book_imbalance_20_levels, -0.5);
+  assert.equal(s.futures?.bid_ask_spread_points, 5);
+  assert.equal(s.option_chain?.at_the_money_iv_pct, 14.4);
+  assert.equal(s.option_chain?.next_expiry_iv_pct, 13.7);
+  assert.equal(s.option_chain?.put_call_oi_ratio_all_strikes, 0.8);
+  assert.equal(s.option_chain?.call_oi_change_today_lots_all_strikes, 10_000);
+  assert.equal(s.option_chain?.largest_call_oi_above_all_strikes?.strike, 26_000);
+});
+
 test("a day without futures and options sends those sections as null", () => {
   const s = state(false);
   assert.equal(s.futures, null);
   assert.equal(s.options_positioning, null);
+  assert.equal(s.option_chain, null);
   // Option maths still work from NIFTY's price.
   assert.ok(s.trade_math.break_even_nifty_points! > 0);
   assert.equal(s.trade_math.expected_nifty_move_over_hold_points.priced_by_options, null);

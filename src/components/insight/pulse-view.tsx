@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useJournalSession } from "@/components/engine/session-view";
 import { useEngineTelemetry } from "@/components/engine/use-engine-telemetry";
 import { OptionReplay } from "@/components/insight/option-replay";
+import { OrderBook } from "@/components/insight/order-book";
 import { formatAge } from "@/components/shell/freshness";
 import { EmptyState, Field, Panel } from "@/components/ui";
 import { INDEX_CONSTITUENTS } from "@/lib/index-constituents";
@@ -149,6 +150,7 @@ function PulseBody({ pulse, age, replay, replayAt }: { pulse: Pulse; age: number
       </Panel>
 
       {pulse.derivatives && <FuturesOptions pulse={pulse} />}
+      <OrderBook />
       <PulseChart pulse={pulse} focus={focus} />
       <SignalLab pulse={pulse} lab={lab} />
       <OptionReplay pulse={pulse} focus={focus} horizon={lab.horizon} onSelect={lab.setFocus} replayAt={replayAt} />
@@ -176,6 +178,7 @@ const POSITIONING: Record<string, string> = {
 function FuturesOptions({ pulse }: { pulse: Pulse }) {
   const f = pulse.derivatives?.future ?? null;
   const o = pulse.derivatives?.options ?? null;
+  const c = pulse.derivatives?.chain ?? null;
   const v = pulse.volatility;
   const pct = (value: number | null, digits = 2) => (value === null ? "—" : `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value).toFixed(digits)}%`);
   const side = (flow: number | null) => (flow === null ? "—" : `${flow >= 0 ? "buyers" : "sellers"} ${Math.round(((1 + Math.abs(flow)) / 2) * 100)}%`);
@@ -188,12 +191,37 @@ function FuturesOptions({ pulse }: { pulse: Pulse }) {
       ["Open interest", <>{pct(f.oiChange15Pct)} in 15 min, {pct(f.oiChangeDayPct)} today{f.positioning15 ? ` · ${POSITIONING[f.positioning15]}` : ""}</>],
       ["Who is trading", <>{side(f.flow5)} of the last 5 min, {side(f.flow15)} of 15 min{f.netLots15 === null ? "" : ` (${lotsFormat.format(f.netLots15)} lots net)`}</>],
     );
+    if (f.book20Imbalance !== null) {
+      const lean = (value: number | null) => (value === null ? "—" : `${value >= 0 ? "bids" : "asks"} ${Math.round(((1 + Math.abs(value)) / 2) * 100)}%`);
+      rows.push(["Order book, 20 levels", <>{lean(f.book20Imbalance)} of the quantity waiting, {lean(f.book20OrdersImbalance)} of the orders{f.spread === null ? "" : ` · spread ${f.spread.toFixed(2)} pts`}</>]);
+    }
   }
   if (o) {
     rows.push(
       [`Options, ${o.expiry.slice(5)} expiry`, <>put/call open interest near the money {o.pcr?.toFixed(2) ?? "—"} (open {o.pcrAtOpen?.toFixed(2) ?? "—"}, 15 min ago {o.pcr15?.toFixed(2) ?? "—"})</>],
       ["Lots written near the money", <>today calls {o.callOiChangeDayLots === null ? "—" : lotsFormat.format(o.callOiChangeDayLots)}, puts {o.putOiChangeDayLots === null ? "—" : lotsFormat.format(o.putOiChangeDayLots)} · last 15 min calls {o.callOiChange15Lots === null ? "—" : lotsFormat.format(o.callOiChange15Lots)}, puts {o.putOiChange15Lots === null ? "—" : lotsFormat.format(o.putOiChange15Lots)}</>],
       ["Biggest strikes", <>calls at {o.callWall ? `${price.format(o.callWall.strike)} (${signedPts(o.callWall.points)} pts)` : "—"}, puts at {o.putWall ? `${price.format(o.putWall.strike)} (${signedPts(o.putWall.points)} pts)` : "—"}{o.maxPain === null ? "" : ` · max pain ${price.format(o.maxPain)}`}</>],
+    );
+  }
+  if (c) {
+    const points = (n: number | null, digits = 2) => (n === null ? "—" : `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n).toFixed(digits)}`);
+    rows.push(
+      [
+        `Option chain, ${c.expiry.slice(5)} expiry`,
+        <>
+          volatility {c.ivPct === null ? "—" : `${c.ivPct.toFixed(1)}%`} ({points(c.ivChange15)} in 15 min, {points(c.ivChangeSinceFirst)} today)
+          {c.nextIvPct === null ? "" : ` · ${c.nextExpiry?.slice(5)} expiry ${c.nextIvPct.toFixed(1)}%`} · puts 1% out cost {points(c.skewPct, 1)} points of volatility more than calls 1% out
+          {c.ageMinutes > 2 ? ` · snapshot ${c.ageMinutes} min old` : ""}
+        </>,
+      ],
+      [
+        "Every strike",
+        <>
+          put/call open interest {c.pcr?.toFixed(2) ?? "—"} · today calls {c.callOiChangeDayLots === null ? "—" : lotsFormat.format(c.callOiChangeDayLots)}, puts{" "}
+          {c.putOiChangeDayLots === null ? "—" : lotsFormat.format(c.putOiChangeDayLots)} lots · most calls at {c.callWall ? `${price.format(c.callWall.strike)} (${signedPts(c.callWall.points)} pts)` : "—"}, puts at{" "}
+          {c.putWall ? `${price.format(c.putWall.strike)} (${signedPts(c.putWall.points)} pts)` : "—"}
+        </>,
+      ],
     );
   }
   rows.push([

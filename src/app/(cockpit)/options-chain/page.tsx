@@ -2,11 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 import { OptionChainTable } from "@/components/option-chain";
+import { RefreshEvery } from "@/components/refresh-every";
 import { DataAge } from "@/components/shell/freshness";
 import { EmptyState, InlineError, PageHeader, Panel, WorkspaceSkeleton } from "@/components/ui";
 import { MARKET_INDICES, requireSession, settle, type IndexKey } from "@/lib/cockpit";
-import { getOptionChain, getOptionExpiries, getProfile, INDEX } from "@/lib/dhan";
-import { price } from "@/lib/format";
+import { getOptionChain, getOptionExpiries, getProfile, INDEX, type OptionChain } from "@/lib/dhan";
+import type { ChainView } from "@/lib/engine/protocol";
+import { engineConfig, engineFetch } from "@/lib/engine/web";
+import { istTime, price } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Options Chain" };
 
@@ -37,6 +40,10 @@ async function OptionsChain({ searchParams }: { searchParams: SearchParams }) {
   const underlyingKey = parseUnderlying(first(params.u));
   const underlying = MARKET_INDICES.find(({ key }) => key === underlyingKey) ?? MARKET_INDICES[0];
   const showAll = first(params.all) === "1";
+
+  // While the engine replays a recorded day, show that day's chain as recorded, not today's.
+  const replayed = await recordedChain(underlyingKey, first(params.expiry));
+  if (replayed) return <RecordedChain view={replayed} underlying={underlyingKey} showAll={showAll} />;
 
   const profile = await settle(getProfile());
   if (!profile.ok) {
@@ -127,6 +134,82 @@ async function OptionsChain({ searchParams }: { searchParams: SearchParams }) {
         </Panel>
       }
     />
+  );
+}
+
+/** The engine's recorded chain when it is replaying a day; null when it is live, unreachable or not set up. */
+async function recordedChain(underlying: IndexKey, expiry: string | undefined): Promise<ChainView | null> {
+  const config = engineConfig();
+  if (!config) return null;
+  const ask = async (wanted?: string) => {
+    const query = new URLSearchParams({ underlying });
+    if (wanted) query.set("expiry", wanted);
+    const response = await engineFetch(config, `/v1/chain?${query}`, { signal: AbortSignal.timeout(3_000) });
+    return response.ok ? ((await response.json()) as ChainView) : null;
+  };
+  try {
+    const view = await ask();
+    if (!view || view.source !== "replay") return null;
+    if (expiry && expiry !== view.snapshot?.expiry && view.expiries.includes(expiry)) return (await ask(expiry)) ?? view;
+    return view;
+  } catch {
+    // The engine is offline: the page falls back to Dhan as it always has.
+    return null;
+  }
+}
+
+const replayDay = new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" });
+
+/** A replayed day's chain: the latest snapshot the recorder took by the replay's position. Refreshes to follow the replay. */
+function RecordedChain({ view, underlying, showAll }: { view: ChainView; underlying: IndexKey; showAll: boolean }) {
+  const name = MARKET_INDICES.find(({ key }) => key === underlying)?.name ?? underlying;
+  const snapshot = view.snapshot;
+  const day = replayDay.format(view.at);
+  const firstYear = view.expiries[0]?.slice(0, 4) ?? "";
+  const meta = (
+    <>
+      <span className="text-warn">Replay of {day}</span> · {snapshot ? `recorded at ${istTime.format(snapshot.at)} IST, once a minute` : `at ${istTime.format(view.at)} IST`}
+    </>
+  );
+  return (
+    <>
+      <RefreshEvery ms={10_000} />
+      <ChainLayout
+        underlying={underlying}
+        meta={meta}
+        expiryPicker={
+          view.expiries.length > 0 ? (
+            <nav aria-label="Expiry" className="flex min-w-0 gap-1 overflow-x-auto">
+              {view.expiries.map((value) => (
+                <Link key={value} href={chainHref(underlying, value, showAll)} aria-current={value === snapshot?.expiry ? "true" : undefined} className={`${chipClass} tabular-nums`}>
+                  {formatExpiry(value, firstYear)}
+                </Link>
+              ))}
+            </nav>
+          ) : undefined
+        }
+        chain={
+          snapshot ? (
+            <Panel title={`${name} · ${formatExpiry(snapshot.expiry, firstYear)} expiry`} meta={`Spot ${price.format(snapshot.lastPrice)}`} flush>
+              <OptionChainTable
+                chain={{ last_price: snapshot.lastPrice, oc: snapshot.oc as OptionChain["oc"] }}
+                underlyingName={name}
+                scrollToken={`replay:${underlying}:${snapshot.expiry}:${showAll}`}
+                showAll={showAll}
+                toggleHref={chainHref(underlying, snapshot.expiry, !showAll)}
+              />
+            </Panel>
+          ) : undefined
+        }
+      >
+        {!snapshot && (
+          <EmptyState>
+            No {name} option chain recorded on {day} by {istTime.format(view.at)} IST. The recorder keeps NIFTY&apos;s three nearest expiries and BANKNIFTY&apos;s two, once a minute,
+            from 18 November 2026.
+          </EmptyState>
+        )}
+      </ChainLayout>
+    </>
   );
 }
 

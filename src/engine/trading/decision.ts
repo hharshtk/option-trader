@@ -77,7 +77,7 @@ export const QUESTIONS_HASH = createHash("sha256").update(JSON.stringify(QUESTIO
  *   1: Pulse evidence, signals, verdict, breadth, sectors (16 November 2026)
  *   2: trade maths, futures, option positioning, volatility, the trigger's record; evidence lines dropped (18 November 2026)
  */
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 const round = (value: number | null | undefined, digits = 2) => (value === null || value === undefined ? null : Number(value.toFixed(digits)));
 
@@ -125,6 +125,7 @@ export function buildDecisionState(input: {
   const der = pulse.derivatives;
   const fut = der?.future ?? null;
   const opt = der?.options ?? null;
+  const chain = der?.chain ?? null;
 
   // --- Can the trade pay for itself? -----------------------------------------------------------
   const spread = quote.bid !== null && quote.ask !== null && quote.ask >= quote.bid ? quote.ask - quote.bid : null;
@@ -234,6 +235,9 @@ export function buildDecisionState(input: {
       buyers_share_of_volume_15m: share(fut.flow15),
       net_lots_bought_15m: fut.netLots15,
       book_imbalance_5_levels: fut.bookImbalance,
+      book_imbalance_20_levels: fut.book20Imbalance,
+      orders_imbalance_20_levels: fut.book20OrdersImbalance,
+      bid_ask_spread_points: fut.spread,
     },
     options_positioning: opt && {
       expiry: opt.expiry,
@@ -248,6 +252,21 @@ export function buildDecisionState(input: {
       largest_call_oi_above: wall(opt.callWall),
       largest_put_oi_below: wall(opt.putWall),
       max_pain_strike: opt.maxPain,
+    },
+    option_chain: chain && {
+      expiry: chain.expiry,
+      snapshot_minutes_old: chain.ageMinutes,
+      at_the_money_iv_pct: chain.ivPct,
+      iv_change_15m_points: chain.ivChange15,
+      iv_change_since_first_snapshot_points: chain.ivChangeSinceFirst,
+      put_minus_call_iv_1pct_out_points: chain.skewPct,
+      next_expiry: chain.nextExpiry,
+      next_expiry_iv_pct: chain.nextIvPct,
+      put_call_oi_ratio_all_strikes: chain.pcr,
+      call_oi_change_today_lots_all_strikes: chain.callOiChangeDayLots,
+      put_oi_change_today_lots_all_strikes: chain.putOiChangeDayLots,
+      largest_call_oi_above_all_strikes: wall(chain.callWall),
+      largest_put_oi_below_all_strikes: wall(chain.putWall),
     },
     signals: reading.readings.map((r) => ({ name: r.name, reading: r.reading, vote: r.vote })),
     trigger_track_record: {

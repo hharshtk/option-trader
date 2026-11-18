@@ -165,6 +165,56 @@ export interface JournalSession {
 export interface SessionDerivatives {
   future: SessionFuture | null;
   options: SessionOptions | null;
+  /** The near-month future's 20-level book, from the day's `.depth` file. Absent for days without one. */
+  book?: SessionBook | null;
+  /** Option chain readings, from the day's `.chain` file. Absent for days without one. */
+  chain?: SessionChain | null;
+}
+
+/** The near-month future's 20-level book at each minute's end (aligned with `minutes`); null before it has one. */
+export interface SessionBook {
+  key: string;
+  /** Quantity and orders waiting over the 20 best bids and over the 20 best asks. */
+  bidQty: (number | null)[];
+  askQty: (number | null)[];
+  bidOrders: (number | null)[];
+  askOrders: (number | null)[];
+  /** Best ask minus best bid, in points. */
+  spread: (number | null)[];
+}
+
+/**
+ * The nearest NIFTY expiry's option chain, read each minute from the latest snapshot taken by its
+ * end (aligned with `minutes`; null before the first). Snapshots come once a minute, 5 seconds in.
+ * Volatility is worked out from bid-ask middles, not taken from Dhan (see lib/insight/chain.ts).
+ */
+export interface SessionChain {
+  expiry: string;
+  /** The expiry after it, for comparing their volatilities. Null when the file has none. */
+  nextExpiry: string | null;
+  /** When the snapshot read for each minute was received. */
+  at: (number | null)[];
+  spot: (number | null)[];
+  atm: (number | null)[];
+  forward: (number | null)[];
+  /** At-the-money volatility, annualised, percent. */
+  ivPct: (number | null)[];
+  /** Put 1% below minus call 1% above, volatility points. */
+  skewPct: (number | null)[];
+  straddle: (number | null)[];
+  /** Open interest over every strike in the snapshot (within 10% of the index), and its change since the previous close. */
+  callOi: (number | null)[];
+  putOi: (number | null)[];
+  callOiChange: (number | null)[];
+  putOiChange: (number | null)[];
+  /** The strike with the most call open interest at or above the index, and its open interest; the same for puts at or below. */
+  callWall: (number | null)[];
+  callWallOi: (number | null)[];
+  putWall: (number | null)[];
+  putWallOi: (number | null)[];
+  /** At-the-money volatility and straddle of `nextExpiry`. */
+  nextIvPct: (number | null)[];
+  nextStraddle: (number | null)[];
 }
 
 /** Series are aligned with `minutes` and hold the value at each minute's end, carried forward. */
@@ -226,6 +276,59 @@ export interface SessionOptionQuote {
   /** Open interest before the day started. */
   oiBefore: number | null;
   volume: number | null;
+}
+
+/** One price level of a 20-level book. */
+export interface BookLevel {
+  price: number;
+  qty: number;
+  orders: number;
+}
+
+/** The latest 20-level book of a contract: from the depth feed live, from the `.depth` file in a replay. */
+export interface DepthBook {
+  key: string;
+  /** Contract name from the recorder's `instruments` records, e.g. "NIFTY NOV FUT". */
+  name: string | null;
+  /** When the newest of its bid and ask updates arrived. */
+  at: number;
+  /** Best first; levels with no orders left out. */
+  bids: BookLevel[];
+  asks: BookLevel[];
+}
+
+/** `GET /v1/depth?key=`: the contracts with a 20-level book and one contract's book, as of now (or the replay's position). */
+export interface DepthView {
+  source: "live" | "replay";
+  /** Live: now. Replay: the replay's position. */
+  at: number;
+  instruments: { key: string; name: string | null }[];
+  /** The asked contract's book; the first instrument's when none was asked. Null when there is none yet. */
+  book: DepthBook | null;
+}
+
+/** One option chain snapshot as the recorder saved it: Dhan's `/optionchain` answer, strikes within 10% of the index. */
+export interface ChainSnapshot {
+  underlying: string;
+  expiry: string;
+  /** When it was received. */
+  at: number;
+  /** Start of the minute it was taken in. */
+  minute: number;
+  lastPrice: number;
+  /** Dhan's per-strike object, keyed by strike ("25300.000000"), with `ce` and `pe`. */
+  oc: Record<string, unknown>;
+}
+
+/** `GET /v1/chain?underlying=&expiry=`: the latest recorded chain as of now (or the replay's position). */
+export interface ChainView {
+  source: "live" | "replay";
+  at: number;
+  underlying: string;
+  /** Expiries with a snapshot so far, nearest first. */
+  expiries: string[];
+  /** The asked expiry's latest snapshot; the nearest expiry's when none was asked. */
+  snapshot: ChainSnapshot | null;
 }
 
 export interface SessionMinute {

@@ -15,7 +15,7 @@ What data there is for building and testing strategies, where it lives, and what
 |---|---|---|---|
 | 1-minute candles: NIFTY, India VIX, BANKNIFTY, FINNIFTY and the NIFTY and BANKNIFTY stocks (63 instruments) | November 2025 onwards | `history/candles-1m/YYYY-MM.parquet` in the file store | Price, volume, breadth, momentum, volatility and time-of-day features over a year |
 | Journal: every raw feed frame | From 16 November 2026 | `data/engine/journal/<date>.bin` | Tick-level checks, replays, and from 18 November order-book and option features. The session summary turns NIFTY's futures and options into per-minute series (`derivatives`): open interest, who traded, the book, near-the-money call and put open interest, the straddle |
-| 20-level depth and option chain snapshots | From 18 November 2026 | `<date>.depth.bin`, `<date>.chain.bin` beside the journal | Order-book and IV/OI features |
+| 20-level depth and option chain snapshots | From 18 November 2026 | `<date>.depth.bin`, `<date>.chain.bin` beside the journal | Order-book and IV/OI features. Replays read them at their position; the journal session carries them per minute (`derivatives.book`, `derivatives.chain`), see [engine.md](engine.md#replay) |
 
 Order-book data can't be downloaded later: it exists only from the day it was recorded.
 

@@ -404,7 +404,21 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
         return `puts ${lots(w.puts / lotSize)}, calls ${lots(w.calls / lotSize)} lots`;
       },
     },
+    // The 20-level book from the depth feed, from 18 November 2026. On that day the book leaned
+    // 20% or more one way in about a quarter of minutes, and NIFTY's future moved that way by
+    // about 0.8 points the next minute on average: far less than a trade costs.
+    {
+      id: "book20",
+      name: "Order book lean",
+      group: "derivatives",
+      rule: "Over the 20 best bids and 20 best asks of NIFTY's near-month future, the quantity waiting to buy outweighs the quantity waiting to sell by 20% or more of both (or the reverse): follow the heavier side",
+      read: (t) => view?.book20(t)?.imbalance ?? null,
+      threshold: 0.2,
+      format: (v) => `${v >= 0 ? "bids" : "asks"} ${Math.round(((1 + Math.abs(v)) / 2) * 100)}% of 20 levels`,
+    },
   ];
+  /** The futures and options signals "Confirmed by futures and options" asks: the three it was built on. */
+  const confirming = new Set(["flow", "buildup", "writers"]);
   // No signal reads the closing auction (see AUCTION_MINUTE).
   const readAt = (d: (typeof definitions)[number], t: number) => (t >= AUCTION_MINUTE ? null : d.read(t));
 
@@ -419,7 +433,7 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
     return votes;
   };
   const priceIndex = definitions.flatMap((d, i) => (d.group === "price" ? [i] : []));
-  const derivativesIndex = definitions.flatMap((d, i) => (d.group === "derivatives" ? [i] : []));
+  const derivativesIndex = definitions.flatMap((d, i) => (d.group === "derivatives" && confirming.has(d.id) ? [i] : []));
   const agreeVote = (t: number): -1 | 0 | 1 => {
     const votes = singleVote(t);
     const sum = priceIndex.reduce<number>((a, i) => a + votes[i], 0);
@@ -505,7 +519,7 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
     display:
       confirmedNow === 0
         ? "not confirmed"
-        : `${confirmedNow > 0 ? "long" : "short"}: ${signals.filter((x) => x.kind === "single" && x.vote === confirmedNow).map((x) => x.name).join(", ")}`,
+        : `${confirmedNow > 0 ? "long" : "short"}: ${signals.filter((x) => x.kind === "single" && (x.group === "price" || confirming.has(x.id)) && x.vote === confirmedNow).map((x) => x.name).join(", ")}`,
     vote: confirmedNow,
     stats: score(confirmedVote),
   });

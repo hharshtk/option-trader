@@ -76,7 +76,7 @@ minute close (+1.5 s) ──► Pulse signals ──► sell on an opposite sign
                                                            └─► turned down ──► buy on the shadow book
 ```
 
-- **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Futures order flow, Futures OI build-up, Option writers, Two or more agree, Confirmed by futures and options ([pulse.md](pulse.md#signal-lab)). None has shown an edge after costs: the price signals were coin flips over a year, and the futures and options ones have days, not years, of data.
+- **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Futures order flow, Futures OI build-up, Option writers, Order book lean, Two or more agree, Confirmed by futures and options ([pulse.md](pulse.md#signal-lab)). None has shown an edge after costs: the price signals were coin flips over a year, and the futures and options ones have days, not years, of data.
 - **Positions at once** (default 1) caps how many positions the paper book holds together. A signal that fires while that many are open is ignored. With more than one allowed, a signal that stays on buys again once **Wait after a trade** has passed since the last buy. The cooldown counts from buys as well as sells, so the engine doesn't buy every minute. Each position keeps its own stop, target and hold time. **Most premium a trade** applies to each position, so the most premium at risk is that limit times **Positions at once**. The daily loss limit counts every open position.
 - **Proposals** are recorded once they pass the quiet checks, with the reason when they aren't traded.
 - **Exits** are the engine's own and never wait for the decision API.
@@ -176,7 +176,7 @@ For each proposal the engine sends the market context as JSON and three typed qu
 | `regime` | choice | trend_up, trend_down, range or chop |
 | `quality` | score | How well supported the move is, from fragile to broad |
 
-**What it is sent** (state version 2, from 18 November 2026), grouped by what a trader checks before buying an option. Each fact appears once, with its unit in its name. Nothing about the account. To see the exact JSON for an answer, open **Show** in the Decision API table on the Strategies page.
+**What it is sent** (state version 3, from 18 November 2026), grouped by what a trader checks before buying an option. Each fact appears once, with its unit in its name. Nothing about the account. To see the exact JSON for an answer, open **Show** in the Decision API table on the Strategies page.
 
 | Section | Holds | Why |
 |---|---|---|
@@ -188,11 +188,12 @@ For each proposal the engine sends the market context as JSON and three typed qu
 | `breadth` | NIFTY's 50 stocks: up, down, weight above VWAP, pending-order imbalance | |
 | `futures` | The near-month future: premium over NIFTY and its 15-minute change, distance from VWAP, open interest change (15 minutes, today), positioning (long or short build-up, short covering, long unwinding), buyers' share of traded volume (5 and 15 minutes), net lots, book imbalance | Whether money is committing to the move. Null on days without futures |
 | `options_positioning` | Near the money (10 strikes each side): put/call open interest ratio now, 15 minutes ago and at the open; lots of calls and puts written in 15 minutes and today; the biggest call strike above and put strike below; max pain | Where option writers expect NIFTY to stop. Null on days without options |
+| `option_chain` | From the chain snapshots: at-the-money volatility (from bid-ask middles) and its change in 15 minutes and since the first snapshot, the put-minus-call skew 1% out, the next expiry's volatility, and across every strike the put/call open interest ratio, lots added today and the biggest call and put strikes; how old the snapshot is | Volatility rising or falling changes what an option costs over the hold, apart from NIFTY's move |
 | `signals` | Every signal's reading and vote | |
 | `trigger_track_record` | The followed signal today at the hold (trades, right, points) and over the past year from the research study, or that it has no history yet | The base rate: a model that knows the trigger is a coin flip judges on the context instead |
 | `pulse_verdict`, `sectors_last_15_minutes`, `concentration`, `strategy_today` | As before | |
 
-Version 1 also sent Pulse's evidence lines; they repeated numbers already in the state, so version 2 drops them. Measured on 18 November 2026 at 12:04: about 3,600 characters a request (Liquid charges about $0.00006).
+Version 1 also sent Pulse's evidence lines; they repeated numbers already in the state, so version 2 drops them. Version 3 adds the future's 20-level book (`book_imbalance_20_levels`, `orders_imbalance_20_levels`, `bid_ask_spread_points`) and an `option_chain` section from the chain snapshots: at-the-money volatility worked out from bid-ask middles and its changes, the skew, the next expiry's volatility, and put/call open interest, lots added today and the walls across every strike. Both are null on a day without side files. Measured on 18 November 2026 at 12:04: about 3,600 characters a request (Liquid charges about $0.00006).
 
 **What it is asked:** the `take_trade` question names the break-even and expected moves and the trigger's record, and its criteria include futures and option positioning. Recorded answers are keyed by the questions' hash and by `STATE_VERSION`, so a replay never reuses an answer given to other questions or another shape of context.
 
@@ -372,7 +373,7 @@ src/lib/db/parquet-store.ts           Parquet tables in the file store, through 
 src/engine/trading/
   trader.ts                           runs, proposals, orders, exits, limits, status, commands
   strategy.ts                         reads the followed signal from Pulse
-  decision.ts                         questions, context (state version 2), the gate's rules, the OpenRouter and Liquid clients
+  decision.ts                         questions, context (state version 3), the gate's rules, the OpenRouter and Liquid clients
   paper-broker.ts                     fill prices
   market.ts                           latest quote per instrument
   contracts.ts                        NIFTY contracts: expiries, strikes, the day's snapshot

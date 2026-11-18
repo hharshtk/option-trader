@@ -31,11 +31,13 @@ export interface DerivativesView {
   oiChange(t: number, h: number): number | null;
   /** Near-the-money put open interest change minus call open interest change over `h` minutes, as a share of near-the-money open interest now. */
   writers(t: number, h: number): { calls: number; puts: number; share: number } | null;
+  /** The near-month future's 20-level book at minute `t`: (bids − asks) / (bids + asks) by quantity and by orders, and the spread in points. */
+  book20(t: number): { imbalance: number; orders: number | null; spread: number | null } | null;
 }
 
 export function derivativesView(session: JournalSession): DerivativesView | null {
   const data = session.derivatives;
-  if (!data || (!data.future && !data.options)) return null;
+  if (!data || (!data.future && !data.options && !data.book && !data.chain)) return null;
   const f = data.future;
   const o = data.options;
   // Running totals, so a reading over any window is two lookups.
@@ -77,6 +79,15 @@ export function derivativesView(session: JournalSession): DerivativesView | null
       // shift a little when NIFTY crosses a strike; over 15 minutes that is small against the flow.
       return { calls: c - c0, puts: p - p0, share: (p - p0 - (c - c0)) / (c + p) };
     },
+    book20(t) {
+      const b = data.book;
+      const bid = b?.bidQty[t];
+      const ask = b?.askQty[t];
+      if (!b || bid == null || ask == null || bid + ask <= 0) return null;
+      const bo = b.bidOrders[t];
+      const ao = b.askOrders[t];
+      return { imbalance: (bid - ask) / (bid + ask), orders: bo != null && ao != null && bo + ao > 0 ? (bo - ao) / (bo + ao) : null, spread: b.spread[t] };
+    },
   };
 }
 
@@ -117,6 +128,11 @@ export interface DerivativesSnapshot {
     netLots15: number | null;
     /** (bids − asks) / (bids + asks) over the best five levels. */
     bookImbalance: number | null;
+    /** The same over the best 20 levels (the depth feed), by quantity and by number of orders. */
+    book20Imbalance: number | null;
+    book20OrdersImbalance: number | null;
+    /** Best ask minus best bid, in points, from the 20-level book. */
+    spread: number | null;
     vwap: number | null;
     /** Future minus its VWAP, in points. */
     vsVwap: number | null;
@@ -146,6 +162,30 @@ export interface DerivativesSnapshot {
     putWall: { strike: number; lots: number; points: number } | null;
     /** The settlement price at which option buyers would collect least, over the recorded strikes. Means most near expiry. */
     maxPain: number | null;
+  } | null;
+  /** From the option chain snapshots (every strike within 10% of NIFTY, once a minute). */
+  chain: {
+    expiry: string;
+    nextExpiry: string | null;
+    /** Minutes between the snapshot read and `at`. */
+    ageMinutes: number;
+    /** At-the-money volatility, annualised, percent; worked out from bid-ask middles. */
+    ivPct: number | null;
+    /** Its change in volatility points over 15 minutes and since the day's first snapshot. */
+    ivChange15: number | null;
+    ivChangeSinceFirst: number | null;
+    /** Put 1% below minus call 1% above, volatility points. */
+    skewPct: number | null;
+    nextIvPct: number | null;
+    straddle: number | null;
+    forward: number | null;
+    /** Put over call open interest across every strike. */
+    pcr: number | null;
+    /** Lots added since the previous close across every strike. */
+    callOiChangeDayLots: number | null;
+    putOiChangeDayLots: number | null;
+    callWall: { strike: number; lots: number; points: number } | null;
+    putWall: { strike: number; lots: number; points: number } | null;
   } | null;
 }
 
@@ -187,6 +227,9 @@ export function derivativesSnapshot(view: DerivativesView, t: number, input: { s
       flow15: round(flow15?.share),
       netLots15: flow15 ? Math.round((flow15.buys - flow15.sells) / f.lotSize) : null,
       bookImbalance: bid != null && ask != null && bid + ask > 0 ? round((bid - ask) / (bid + ask)) : null,
+      book20Imbalance: round(view.book20(t)?.imbalance),
+      book20OrdersImbalance: round(view.book20(t)?.orders),
+      spread: round(view.book20(t)?.spread),
       vwap,
       vsVwap: vwap != null ? round(price - vwap, 1) : null,
     };
@@ -247,7 +290,37 @@ export function derivativesSnapshot(view: DerivativesView, t: number, input: { s
       maxPain: maxPain(o.strikes),
     };
   }
-  return { future, options };
+
+  let chain: DerivativesSnapshot["chain"] = null;
+  const c = data.chain;
+  const when = c?.at[t];
+  if (c && when != null) {
+    const lot = data.options?.lotSize ?? data.future?.lotSize ?? 1;
+    const iv = c.ivPct[t];
+    const first = c.ivPct.findIndex((v) => v !== null);
+    const diff = (a: number | null | undefined, b: number | null | undefined) => (a == null || b == null ? null : round(a - b));
+    const wallAt = (strike: number | null, oi: number | null, level: number | null) =>
+      strike === null || oi === null || level === null ? null : { strike, lots: Math.round(oi / lot), points: Math.round((strike - level) * 10) / 10 };
+    const level = spot ?? c.spot[t];
+    chain = {
+      expiry: c.expiry,
+      nextExpiry: c.nextExpiry,
+      ageMinutes: Math.max(0, Math.round((input.at - when) / MINUTE_MS)),
+      ivPct: iv,
+      ivChange15: t >= 15 ? diff(iv, c.ivPct[t - 15]) : null,
+      ivChangeSinceFirst: first >= 0 && first <= t ? diff(iv, c.ivPct[first]) : null,
+      skewPct: c.skewPct[t],
+      nextIvPct: c.nextIvPct[t],
+      straddle: c.straddle[t],
+      forward: c.forward[t],
+      pcr: c.callOi[t] ? round(c.putOi[t]! / c.callOi[t]!) : null,
+      callOiChangeDayLots: c.callOiChange[t] == null ? null : Math.round(c.callOiChange[t]! / lot),
+      putOiChangeDayLots: c.putOiChange[t] == null ? null : Math.round(c.putOiChange[t]! / lot),
+      callWall: wallAt(c.callWall[t], c.callWallOi[t], level),
+      putWall: wallAt(c.putWall[t], c.putWallOi[t], level),
+    };
+  }
+  return { future, options, chain };
 }
 
 function wall(strikes: SessionStrike[], side: "call" | "put", keep: (strike: number) => boolean, spot: number, lotSize: number) {

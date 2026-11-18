@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { after, describe, it } from "node:test";
 import { createDhanFeed } from "../../lib/live/feed/dhan-feed.ts";
 import { parseFrame, type Packet } from "../../lib/live/feed/packets.ts";
 import { defaultReplayStart, istTimeOn, replayWindow } from "../feed-switch.ts";
 import { encodeRecord, MAGIC } from "../journal/format.ts";
 import { createSessionCalendar } from "../market/session-calendar.ts";
 import { createReplayPlayer, type ReplayTimers } from "./player.ts";
-import { indexRecording } from "./recording.ts";
+import { indexRecording, loadRecording } from "./recording.ts";
 import { createReplaySession } from "./replay-session.ts";
 import { retimeHealth, retimeSse, retimeStream, type Retimer } from "./retime.ts";
 
@@ -128,6 +131,29 @@ function feedOn(player: ReturnType<typeof createReplayPlayer>) {
 
 const prices = (packets: Packet[], key: string) =>
   packets.filter((p) => (p.kind === "ticker" || p.kind === "quote") && p.key === key).map((p) => (p as { ltp: number }).ltp);
+
+describe("loading a journal file", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "replay-"));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("indexes from disk and reads frames back as an in-memory index does, with the contracts described", async () => {
+    const records: Buffer[] = [MAGIC];
+    const items = [{ key: "NSE_FNO:61471", kind: "future", underlying: "NIFTY", name: "NIFTY NOV FUT", expiry: "2026-11-23", lotSize: 65 }];
+    records.push(encodeRecord("control", 0, 1, T0 - 1, Buffer.from(JSON.stringify({ kind: "instruments", source: "recorder", items }))));
+    for (let i = 0; i < 2_000; i += 1) records.push(encodeRecord("frame", 1, i + 2, T0 + i * 10, ticker(IDX, 13, 100 + i, i)));
+    const bytes = Buffer.concat(records);
+    writeFileSync(path.join(dir, "2026-11-16.bin"), bytes);
+    const fromDisk = await loadRecording(dir, "2026-11-16");
+    const inMemory = indexRecording("2026-11-16", bytes);
+    assert.equal(fromDisk.count, 2_000);
+    assert.deepEqual([...fromDisk.times], [...inMemory.times]);
+    for (const i of [0, 1, 999, 1_999, 5]) assert.deepEqual(Buffer.from(fromDisk.frame(i)), Buffer.from(inMemory.frame(i)));
+    assert.deepEqual(Buffer.from(fromDisk.slice(7, 8, 12)), Buffer.from(inMemory.frame(7).subarray(8, 12)));
+    assert.equal(fromDisk.contracts.get("NSE_FNO:61471")?.name, "NIFTY NOV FUT");
+    fromDisk.close();
+    await assert.rejects(loadRecording(dir, "2026-11-17"), /No journal for 2026-11-17/);
+  });
+});
 
 describe("indexRecording", () => {
   it("indexes frames only, keeps times from going back, and finds a time", () => {
@@ -261,6 +287,34 @@ describe("replay player through the Dhan feed client", () => {
     assert.deepEqual(prices(packets, "IDX_I:13"), [100, 101, 102]);
     assert.equal(player.status().at, T0 + 2_000);
     feed.shutdown();
+    player.shutdown();
+  });
+
+  it("rebuilds the same state from a checkpoint as from the start", async () => {
+    const frames: [number, ...Buffer[]][] = [];
+    for (let i = 0; i < 95; i += 1) frames.push([i * 100, ticker(IDX, 13, 1_000 + i, i), ...(i % 7 === 0 ? [quote(NSE_EQ, 2885, 2_000 + i, i, 10 * i)] : [])]);
+    const big = journal(frames);
+    const stateAt = (player: ReturnType<typeof createReplayPlayer>, time: ReturnType<typeof fakeTime>, at: number) => {
+      const { feed, packets } = feedOn(player);
+      feed.subscribe([NIFTY], "ticker");
+      feed.subscribe([RELIANCE], "quote");
+      time.advance(0);
+      player.seek(at);
+      time.advance(0);
+      const result = [prices(packets, "IDX_I:13").at(-1), prices(packets, "NSE_EQ:2885").at(-1), player.status().frames];
+      feed.shutdown();
+      return result;
+    };
+    const time = fakeTime();
+    const player = createReplayPlayer({ recording: big, now: time.now, timers: time.timers, checkpointFrames: 10 });
+    // Let the background pass save every checkpoint.
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const at of [T0 + 9_000, T0 + 2_050, T0 + 6_300, T0 + 50, T0 + 9_400]) {
+      const fresh = fakeTime();
+      const scratch = createReplayPlayer({ recording: big, now: fresh.now, timers: fresh.timers, checkpointFrames: 1_000_000 });
+      assert.deepEqual(stateAt(player, time, at), stateAt(scratch, fresh, at), `at +${at - T0} ms`);
+      scratch.shutdown();
+    }
     player.shutdown();
   });
 

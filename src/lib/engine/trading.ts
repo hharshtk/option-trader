@@ -5,7 +5,7 @@
 import type { Charges } from "../trading/charges.ts";
 
 /** Which signal from the Pulse signal lab the strategy follows. */
-export type SignalId = "breadth" | "lead" | "momentum" | "flow" | "buildup" | "writers" | "agree" | "confirmed";
+export type SignalId = "breadth" | "lead" | "momentum" | "flow" | "buildup" | "writers" | "book20" | "agree" | "confirmed";
 
 /** How a signal did over a year of minute history, before costs: the base rate the decision API is told. */
 export interface SignalRecord {
@@ -29,6 +29,7 @@ export const SIGNALS: readonly { id: SignalId; name: string; kind: "single" | "c
   { id: "flow", name: "Futures order flow", kind: "single", pastYear: null },
   { id: "buildup", name: "Futures OI build-up", kind: "single", pastYear: null },
   { id: "writers", name: "Option writers", kind: "single", pastYear: null },
+  { id: "book20", name: "Order book lean", kind: "single", pastYear: null },
   { id: "agree", name: "Two or more agree", kind: "combined", pastYear: { span: "257 days to 17 Nov 2026", holdMinutes: 10, trades: 1433, winRate: 0.49, pointsPerTrade: -0.1 } },
   { id: "confirmed", name: "Confirmed by futures and options", kind: "combined", pastYear: null },
 ];
