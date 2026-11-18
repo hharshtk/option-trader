@@ -7,8 +7,10 @@ import { logout } from "@/app/login/actions";
 import {
   ChevronDownIcon,
   LogOutIcon,
+  MoonIcon,
   RefreshIcon,
   SettingsIcon,
+  SunIcon,
   UserIcon,
 } from "@/components/icons";
 import { useStreamStatus } from "@/components/live/live-quote";
@@ -19,6 +21,7 @@ import type { IndexQuotes } from "@/lib/cockpit";
 import { istTime } from "@/lib/format";
 import type { FeedStatus } from "@/lib/live/store";
 import { DataAge, useNow } from "./freshness";
+import { setTheme, useTheme } from "./preferences";
 
 export const popupClass =
   "m-0 rounded-sm border border-line-strong bg-raised text-fg shadow-lg shadow-black/40";
@@ -168,6 +171,24 @@ export function RefreshButton() {
         className="grid size-7 place-items-center rounded-sm text-muted hover:bg-raised hover:text-fg aria-disabled:opacity-60"
       >
         <RefreshIcon className={pending ? "motion-safe:animate-spin" : undefined} />
+      </button>
+    </Tooltip>
+  );
+}
+
+export function ThemeToggle() {
+  const theme = useTheme();
+  const next = theme === "dark" ? "light" : "dark";
+
+  return (
+    <Tooltip type="label" side="bottom" sideOffset={6} className={tooltipClass} content={`Switch to ${next} mode`}>
+      <button
+        type="button"
+        onClick={() => setTheme(next)}
+        aria-label={`Switch to ${next} mode`}
+        className="grid size-7 place-items-center rounded-sm text-muted hover:bg-raised hover:text-fg"
+      >
+        {theme === "dark" ? <SunIcon /> : <MoonIcon />}
       </button>
     </Tooltip>
   );

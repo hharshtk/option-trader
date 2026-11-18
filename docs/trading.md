@@ -8,7 +8,7 @@ How the engine trades: what is built, how to run it, and how each number is comp
 2. [What is built](#what-is-built)
 3. [Using it](#using-it)
 4. [How a trade happens](#how-a-trade-happens)
-5. [Settings](#settings)
+5. [Settings](#settings) ([Scalping](#scalping))
 6. [Decision API](#decision-api)
 7. [Paper fills](#paper-fills)
 8. [Charges](#charges)
@@ -47,7 +47,7 @@ Nothing here can reach Dhan's order API: there is no code that places an order.
 ## Using it
 
 1. Restart the engine so it runs this code (`npm run engine`, or the systemd service).
-2. Open **Strategies**. It shows the state, the signals at the last minute close and the settings.
+2. Open **Strategies**. Beside the buttons a small indicator says what trading is doing ("Looking for a signal" with a live dot while it waits for the followed one). The **Signals** table shows each signal's reading at the last minute close, the line it must cross and how close it is, how it has done today at your hold time, and when it last fired and what NIFTY did next. The ⓘ beside a signal opens a guide with a tab per signal: what it watches, when it votes, why it stays silent, a right and a wrong example from 18 November 2026, its live record today and its past year. **Open positions** appear above **Trades**, in the same columns, only while something is open.
 3. Press **Start paper trading**. Entries are off until you do; the choice is kept across restarts.
 4. Watch **Strategies** for positions and P&L, and **Activity** for the log, the proposals and the orders.
 
@@ -74,7 +74,7 @@ minute close (+1.5 s) ──► Pulse signals ──► sell on an opposite sign
                                                            └─► turned down ──► buy on the shadow book
 ```
 
-- **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Two or more agree.
+- **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Futures order flow, Futures OI build-up, Option writers, Two or more agree, Confirmed by futures and options ([pulse.md](pulse.md#signal-lab)). None has shown an edge after costs: the price signals were coin flips over a year, and the futures and options ones have days, not years, of data.
 - **Positions at once** (default 1) caps how many positions the paper book holds together. A signal that fires while that many are open is ignored. With more than one allowed, a signal that stays on buys again once **Wait after a trade** has passed since the last buy. The cooldown counts from buys as well as sells, so the engine doesn't buy every minute. Each position keeps its own stop, target and hold time. **Most premium a trade** applies to each position, so the most premium at risk is that limit times **Positions at once**. The daily loss limit counts every open position.
 - **Proposals** are recorded once they pass the quiet checks, with the reason when they aren't traded.
 - **Exits** are the engine's own and never wait for the decision API.
@@ -91,6 +91,9 @@ Set on the Strategies page; kept in `data/engine/trading/config.json`. They appl
 | Lots | 1 | Quantity is lots × the contract's lot size |
 | Hold | 10 min | Sold this long after the buy filled |
 | Stop loss / Target | 20% / 30% of premium | 0 turns either off |
+| Style | Standard | Or **Scalping** (see [Scalping](#scalping)). Hold, stop, target and wait above are Standard's |
+| Scalping: take profit / cut loss | ₹250 / ₹250 after charges | 0 turns either off |
+| Scalping: sell anyway after / wait between trades | 3 min / 0 min | Scalping's own hold and wait |
 | Sell on an opposite signal | On | |
 | Skip expiries nearer than | 0 days | 0 trades the nearest expiry, on expiry day too |
 | Entries from / until | 09:25 / 14:45 IST | |
@@ -116,6 +119,14 @@ Set on the Strategies page; kept in `data/engine/trading/config.json`. They appl
 
 The defaults are starting points, not fitted values.
 
+### Scalping
+
+The Settings panel has a tab for each style, **Scalping** and **Standard**, each with its own take-profit, cut-loss, hold and wait. A dot on the tab marks the style in use; **Use scalping** (or **Use standard**) on the other tab switches, and Save keeps it. The other tabs (What to buy, Safety limits, AI check, Paper fills) apply to both styles. In config.json the style is `strategy.exitIn` (`"rupees"` is Scalping), with `strategy.targetNet`, `strategy.stopNet`, `strategy.scalpHoldMinutes` and `risk.scalpCooldownMinutes`.
+
+With the stop and target in rupees, each entry fill works out the sell prices from [exits.ts](../src/lib/trading/exits.ts): the price at which the trade nets the amount after Dhan's charges on both orders (`sellPriceForNet` in charges.ts, solved exactly), plus the sale's slippage, rounded up to the tick. So the sale, not the trigger, nets the amount; a stop loses at most its amount unless the price jumps past it. Rupee levels trigger on the bid when the order book is known (what the position can be sold for), not on the last trade as percent levels do. The Activity log shows each position's target, stop and breakeven price.
+
+What the charges mean for a scalp: one lot of 65 bought (filled) at ₹100 pays about ₹63 a round trip in charges, and the sale loses ₹0.05 a unit to slippage, so the option must rise about ₹1.00 just to break even. A ₹250 target sells at ₹104.90; a ₹250 stop at ₹97.20. The Strategies page shows these figures for your lots as you type. A stop smaller than the charges can't be met (selling at the entry already loses more); it is put one tick below the entry and the log warns. Entries are still decided at each minute's close; exits are checked on every quote.
+
 ## Decision API
 
 Two providers answer the same questions in the same way; **Provider** in the Strategies page's settings picks one, and choosing it also sets that provider's default model:
@@ -135,7 +146,25 @@ For each proposal the engine sends the market context as JSON and three typed qu
 | `regime` | choice | trend_up, trend_down, range or chop |
 | `quality` | score | How well supported the move is, from fragile to broad |
 
-**What it is sent:** time of day, the proposal (direction, contract, premium, days to expiry, planned hold, stop, target, costs as a share of premium), NIFTY's move and place in the day's range, its last 15 one-minute closes, breadth, the Pulse evidence lines and verdict, each signal's reading, the strongest and weakest sectors, how concentrated the move is, and the strategy's wins and losses so far today. Nothing about the account. To see the exact JSON for an answer, open **Show** in the Decision API table on the Strategies page.
+**What it is sent** (state version 2, from 18 November 2026), grouped by what a trader checks before buying an option. Each fact appears once, with its unit in its name. Nothing about the account. To see the exact JSON for an answer, open **Show** in the Decision API table on the Strategies page.
+
+| Section | Holds | Why |
+|---|---|---|
+| `time` | IST time, weekday, minutes since the open and to the close | |
+| `proposal` | Direction, the signal followed and the signals that agree, contract, premium, hold, stop, target | What is being judged |
+| `trade_math` | Costs and spread as a share of the premium; the option's delta, implied volatility and time value lost over the hold; **the NIFTY move that pays for the trade** (costs, spread and decay over delta); the move the target needs and the move that hits the stop; the move NIFTY typically makes over the hold, as priced by the at-the-money straddle and as NIFTY has actually moved lately | The question that decides a short option hold: is the expected move comfortably bigger than the break-even move? A 30% target on an at-the-money weekly needs about 100 points in 15 minutes, which the typical move rarely reaches |
+| `nifty` | Last, change, move from the open, day high and low, place in the range, last 15 minutes and the last 15 one-minute closes | |
+| `volatility` | India VIX and its change, NIFTY's average 1-minute move, option volatility since the open | |
+| `breadth` | NIFTY's 50 stocks: up, down, weight above VWAP, pending-order imbalance | |
+| `futures` | The near-month future: premium over NIFTY and its 15-minute change, distance from VWAP, open interest change (15 minutes, today), positioning (long or short build-up, short covering, long unwinding), buyers' share of traded volume (5 and 15 minutes), net lots, book imbalance | Whether money is committing to the move. Null on days without futures |
+| `options_positioning` | Near the money (10 strikes each side): put/call open interest ratio now, 15 minutes ago and at the open; lots of calls and puts written in 15 minutes and today; the biggest call strike above and put strike below; max pain | Where option writers expect NIFTY to stop. Null on days without options |
+| `signals` | Every signal's reading and vote | |
+| `trigger_track_record` | The followed signal today at the hold (trades, right, points) and over the past year from the research study, or that it has no history yet | The base rate: a model that knows the trigger is a coin flip judges on the context instead |
+| `pulse_verdict`, `sectors_last_15_minutes`, `concentration`, `strategy_today` | As before | |
+
+Version 1 also sent Pulse's evidence lines; they repeated numbers already in the state, so version 2 drops them. Measured on 18 November 2026 at 12:04: about 3,600 characters a request (Liquid charges about $0.00006).
+
+**What it is asked:** the `take_trade` question names the break-even and expected moves and the trigger's record, and its criteria include futures and option positioning. Recorded answers are keyed by the questions' hash and by `STATE_VERSION`, so a replay never reuses an answer given to other questions or another shape of context.
 
 **Roles:**
 
@@ -312,14 +341,14 @@ src/lib/db/parquet-store.ts           Parquet tables in the file store, through 
 src/engine/trading/
   trader.ts                           runs, proposals, orders, exits, limits, status, commands
   strategy.ts                         reads the followed signal from Pulse
-  decision.ts                         questions, context, the gate's rules, the OpenRouter client
+  decision.ts                         questions, context (state version 2), the gate's rules, the OpenRouter and Liquid clients
   paper-broker.ts                     fill prices
   market.ts                           latest quote per instrument
   contracts.ts                        NIFTY contracts: expiries, strikes, the day's snapshot
   sources.ts                          instrument file download and Dhan candles
   run-log.ts                          the run's local log and reading it back
   store.ts                            the Parquet tables
-src/components/trading/               Strategies and Activity pages
+src/components/trading/               Strategies and Activity pages; signal-guide.tsx explains each signal
 src/app/(cockpit)/strategies/         route and the command Server Function
 src/app/(cockpit)/activity/           route
 ```
@@ -328,7 +357,7 @@ The engine's feed passes every frame, with its market time, to `trader.onFrame()
 
 ## Testing and changing it
 
-`npm run test:engine` covers the trader end to end on fakes ([trader.test.ts](../src/engine/trading/trader.test.ts)) and its parts ([parts.test.ts](../src/engine/trading/parts.test.ts)); `node --test src/lib/trading/*.test.ts src/lib/db/*.test.ts` covers charges and the Parquet store. No test calls Dhan, OpenRouter or S3.
+`npm run test:engine` covers the trader end to end on fakes ([trader.test.ts](../src/engine/trading/trader.test.ts)) its parts ([parts.test.ts](../src/engine/trading/parts.test.ts)) and the decision API's context ([decision-state.test.ts](../src/engine/trading/decision-state.test.ts)); `node --test src/lib/trading/*.test.ts src/lib/db/*.test.ts` covers charges and the Parquet store. No test calls Dhan, OpenRouter or S3.
 
 To run a whole day against the real services without touching either running engine, start a third engine on a copy of a journal:
 
@@ -341,9 +370,9 @@ Its tables go to `trading/dev-3199/`.
 
 | To | Change |
 |---|---|
-| Add a signal | Add it in `computePulse()` ([pulse.md](pulse.md#changing-it)), then to `SIGNALS` in trading.ts and `readSignal()` in strategy.ts |
+| Add a signal | Add it in `computePulse()` ([pulse.md](pulse.md#changing-it)), then to `SIGNALS` in trading.ts and its explanation to `GUIDE` in [signal-guide.tsx](../src/components/trading/signal-guide.tsx). `readSignal()` in strategy.ts reads every Pulse signal by itself |
 | Change a charge rate | `OPTION_RATES`, `FUTURES_RATES` in charges.ts; keep charges.test.ts matching a fresh calculator result |
-| Change what the decision API is asked | `QUESTIONS` and `buildDecisionState()` in decision.ts. Recorded answers to the old questions are not reused |
+| Change what the decision API is asked | `QUESTIONS` and `buildDecisionState()` in decision.ts. Raise `STATE_VERSION` when the state changes. Recorded answers to other questions or another state version are not reused |
 | Add a decision provider | A client next to `createLiquidDecisions()` in decision.ts, its entry in `DECISION_PROVIDERS` in trading.ts and in `createDecisionProviders()` |
 | Change a default | `DEFAULT_TRADING_CONFIG` in trading.ts; add a field to `mergeTradingConfig()` and the Settings form |
 | Add an exit rule | `onQuote()` or `advance()` in trader.ts, and `ExitReason` in trading.ts |

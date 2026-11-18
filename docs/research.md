@@ -14,7 +14,7 @@ What data there is for building and testing strategies, where it lives, and what
 | Data | Span | Where | Good for |
 |---|---|---|---|
 | 1-minute candles: NIFTY, India VIX, BANKNIFTY, FINNIFTY and the NIFTY and BANKNIFTY stocks (63 instruments) | November 2025 onwards | `history/candles-1m/YYYY-MM.parquet` in the file store | Price, volume, breadth, momentum, volatility and time-of-day features over a year |
-| Journal: every raw feed frame | From 16 November 2026 | `data/engine/journal/<date>.bin` | Tick-level checks, replays, and from 18 November order-book and option features |
+| Journal: every raw feed frame | From 16 November 2026 | `data/engine/journal/<date>.bin` | Tick-level checks, replays, and from 18 November order-book and option features. The session summary turns NIFTY's futures and options into per-minute series (`derivatives`): open interest, who traded, the book, near-the-money call and put open interest, the straddle |
 | 20-level depth and option chain snapshots | From 18 November 2026 | `<date>.depth.bin`, `<date>.chain.bin` beside the journal | Order-book and IV/OI features |
 
 Order-book data can't be downloaded later: it exists only from the day it was recorded.
@@ -46,7 +46,7 @@ WHERE key = 'IDX_I:13' AND t >= epoch_ms(TIMESTAMP '2026-11-17 03:45:00') ORDER 
 
 - From 15:15, only futures and options show live prices. Index- and stock-based features (breadth, basket lead, index momentum) must stop at 15:15.
 - The jump at about 15:28 is the auction price, not a move anyone could trade. A backtest that trades it books profits that never existed.
-- The trading engine's signals don't know this yet.
+- Pulse and the trading engine's signals read nothing from 15:15 and measure no outcome across it (`AUCTION_MINUTE` in [pulse.ts](../src/lib/insight/pulse.ts), since 18 November 2026).
 
 **The feed's timestamp is the last trade's.** Dhan's `ltt` is when the instrument last traded, and quote packets also arrive between trades, when the book or the totals change. So `ltt` can lag the arrival time by seconds for a stock and hours for an illiquid option, and can step back a second. It is not feed latency. Feed latency, measured on the NIFTY index (which updates every second), is about 0.5 s typically and 1 s at worst.
 

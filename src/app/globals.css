@@ -33,6 +33,23 @@
   scrollbar-width: thin;
 }
 
+/* Light theme: the same tokens with new values. Dark is the default above. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-canvas: #f3f5f7;
+  --color-panel: #ffffff;
+  --color-raised: #eceff3;
+  --color-itm: #f1f5fa;
+  --color-line: #e1e6ec;
+  --color-line-strong: #c9d1da;
+  --color-fg: #12171c;
+  --color-muted: #5b6672;
+  --color-up: #0b8a5a;
+  --color-down: #d42a42;
+  --color-warn: #9a6700;
+  --color-accent: #2563eb;
+}
+
 body {
   background: var(--color-canvas);
   color: var(--color-fg);

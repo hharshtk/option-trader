@@ -22,7 +22,9 @@ import { INDEX } from "../../lib/dhan/instruments.ts";
 import type { JournalSession } from "../../lib/engine/protocol.ts";
 import {
   DECISION_PROVIDERS,
+  cooldownMinutesFor,
   DEFAULT_TRADING_CONFIG,
+  holdMinutesFor,
   mergeTradingConfig,
   type Book,
   type BookTotals,
@@ -49,7 +51,8 @@ import {
 import { computePulse, type Pulse } from "../../lib/insight/pulse.ts";
 import type { FeedHub } from "../../lib/live/feed/feed-hub.ts";
 import { parseFrame, parseInstrumentKey, type Instrument } from "../../lib/live/feed/packets.ts";
-import { addCharges, NO_CHARGES, orderCharges, roundTripCharges } from "../../lib/trading/charges.ts";
+import { addCharges, breakevenSellPrice, NO_CHARGES, orderCharges, roundTripCharges } from "../../lib/trading/charges.ts";
+import { exitLevels } from "../../lib/trading/exits.ts";
 import type { SessionCalendar } from "../market/session-calendar.ts";
 import type { Health } from "../telemetry/health.ts";
 import type { Logger } from "../telemetry/logger.ts";
@@ -628,15 +631,30 @@ export function createTrader(options: TraderOptions): Trader {
       position.entrySource = order.priceSource ?? "ltp";
       position.entryCharges = order.charges;
       position.spotAtEntry = market.get(NIFTY_KEY)?.ltp ?? null;
-      position.stopPrice = config.strategy.stopLossPct > 0 ? order.price * (1 - config.strategy.stopLossPct / 100) : null;
-      position.targetPrice = config.strategy.targetPct > 0 ? order.price * (1 + config.strategy.targetPct / 100) : null;
-      position.exitBy = order.filledAt + config.strategy.holdMinutes * MINUTE_MS;
+      // Rupee exits are raised by the sale's slippage, so the fill, not the trigger, nets the amount.
+      const exitSlippage = order.priceSource === "book" ? config.fills.slippage : config.fills.looseSlippage;
+      const levels = exitLevels(config.strategy, order.price, position.quantity, position.contract.tickSize, exitSlippage);
+      position.exitIn = config.strategy.exitIn;
+      position.stopPrice = levels.stopPrice;
+      position.targetPrice = levels.targetPrice;
+      position.exitBy = order.filledAt + holdMinutesFor(config) * MINUTE_MS;
       position.mark = order.price;
       position.markAt = order.filledAt;
       position.unrealisedGross = 0;
       position.unrealisedNet = -order.charges.total - orderCharges("SELL", order.price * position.quantity).total;
       record(active, { kind: "position", position });
       event(active, "fill", `${tag}Bought ${position.quantity} ${position.contract.name} at ${price(order.price)} (${against}); charges ${rupees(order.charges.total)}`);
+      if (position.exitIn === "rupees") {
+        const at = (level: number | null) => (level === null ? "off" : price(level));
+        event(
+          active,
+          "fill",
+          `${tag}Target ${at(levels.targetPrice)} to make ${config.strategy.targetNet > 0 ? rupees(config.strategy.targetNet) : "—"} after charges, stop ${at(levels.stopPrice)} to lose at most ${config.strategy.stopNet > 0 ? rupees(config.strategy.stopNet) : "—"}; breakeven ${price(breakevenSellPrice(order.price, position.quantity) + exitSlippage)}`,
+        );
+        if (levels.stopClamped) {
+          event(active, "risk", `${tag}A stop of ${rupees(config.strategy.stopNet)} is less than this trade's own charges; the stop is one tick below the entry instead`, "warn");
+        }
+      }
       return;
     }
 
@@ -740,9 +758,12 @@ export function createTrader(options: TraderOptions): Trader {
       if (position.contract.feedKey !== quote.key || position.status === "opening") continue;
       refreshMark(position, quote);
       if (position.status !== "open") continue;
-      // Stops and targets trigger on the traded price, as a broker's stop order does.
-      if (position.stopPrice !== null && quote.ltp <= position.stopPrice) exit(active, position, "stop", position.stopPrice, at);
-      else if (position.targetPrice !== null && quote.ltp >= position.targetPrice) exit(active, position, "target", position.targetPrice, at);
+      // Percent stops and targets trigger on the traded price, as a broker's stop order does. Rupee
+      // ones trigger on what the position can be sold for (the bid when the book is known), since
+      // they promise an amount after the sale.
+      const level = position.exitIn === "rupees" ? position.mark : quote.ltp;
+      if (position.stopPrice !== null && level <= position.stopPrice) exit(active, position, "stop", position.stopPrice, at);
+      else if (position.targetPrice !== null && level >= position.targetPrice) exit(active, position, "target", position.targetPrice, at);
     }
   }
 
@@ -808,7 +829,7 @@ export function createTrader(options: TraderOptions): Trader {
     const session = await options.session(active.info.date);
     if (run !== active) return;
     const pulse = session ? computePulse(session, NIFTY_CONSTITUENTS) : null;
-    const reading = pulse ? readSignal(pulse, minute, config.strategy.signal) : null;
+    const reading = pulse ? readSignal(pulse, minute, config.strategy.signal, holdMinutesFor(config)) : null;
     if (!pulse || !reading) return;
     active.signal = reading;
     touch();
@@ -840,7 +861,7 @@ export function createTrader(options: TraderOptions): Trader {
     // Measured from the last buy as well as the last sell: with several positions allowed, a signal that stays on
     // for minutes would otherwise buy again every minute.
     const last = Math.max(active.lastExitAt ?? -Infinity, active.lastEntryAt ?? -Infinity);
-    if (at < last + config.risk.cooldownMinutes * MINUTE_MS) return "Cooling down after the last trade";
+    if (at < last + cooldownMinutesFor(config) * MINUTE_MS) return "Cooling down after the last trade";
     return null;
   }
 
@@ -928,13 +949,17 @@ export function createTrader(options: TraderOptions): Trader {
       const state = buildDecisionState({
         pulse,
         reading,
+        follow: config.strategy.signal,
         direction,
         contract,
         premium: ask,
+        quote: { bid: quote.bid, ask: quote.ask },
         costPct,
+        slippage: { book: config.fills.slippage, loose: config.fills.looseSlippage },
         daysToExpiry: daysBetween(active.info.date, contract.expiry),
-        strategy: config.strategy,
+        strategy: { ...config.strategy, holdMinutes: holdMinutesFor(config) },
         at: marketTime,
+        date: active.info.date,
         session: active.session,
         today: { trades: paper.length, wins: paper.filter((t) => t.net > 0).length, lastResults: paper.slice(-3).map((t) => t.net) },
       });
@@ -972,7 +997,7 @@ export function createTrader(options: TraderOptions): Trader {
       spotAtEntry: spot.ltp,
       stopPrice: null,
       targetPrice: null,
-      exitBy: marketTime + config.strategy.holdMinutes * MINUTE_MS,
+      exitBy: marketTime + holdMinutesFor(config) * MINUTE_MS,
       mark: latest.ltp,
       markAt: latest.at,
       unrealisedGross: 0,

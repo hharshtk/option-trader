@@ -25,6 +25,7 @@ import {
   type SignalReport,
   type SignalStats,
 } from "@/lib/insight/pulse";
+import { impliedMove } from "@/lib/insight/derivatives";
 import { istTime, price, signedPercent } from "@/lib/format";
 
 const IST_OFFSET_SECONDS = 5.5 * 3600;
@@ -147,6 +148,7 @@ function PulseBody({ pulse, age, replay, replayAt }: { pulse: Pulse; age: number
         </div>
       </Panel>
 
+      {pulse.derivatives && <FuturesOptions pulse={pulse} />}
       <PulseChart pulse={pulse} focus={focus} />
       <SignalLab pulse={pulse} lab={lab} />
       <OptionReplay pulse={pulse} focus={focus} horizon={lab.horizon} onSelect={lab.setFocus} replayAt={replayAt} />
@@ -157,6 +159,63 @@ function PulseBody({ pulse, age, replay, replayAt }: { pulse: Pulse; age: number
         <Sectors pulse={pulse} />
       </div>
     </>
+  );
+}
+
+// --- Futures and options ----------------------------------------------------------------------------
+
+const lotsFormat = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0, signDisplay: "exceptZero" });
+const POSITIONING: Record<string, string> = {
+  "long build-up": "long build-up: price up, positions added",
+  "short build-up": "short build-up: price down, positions added",
+  "short covering": "short covering: price up, positions closed",
+  "long unwinding": "long unwinding: price down, positions closed",
+};
+
+/** What NIFTY's near-month future and nearest option expiry say now, in plain words. Shown when the day has them (from 18 November 2026). */
+function FuturesOptions({ pulse }: { pulse: Pulse }) {
+  const f = pulse.derivatives?.future ?? null;
+  const o = pulse.derivatives?.options ?? null;
+  const v = pulse.volatility;
+  const pct = (value: number | null, digits = 2) => (value === null ? "—" : `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value).toFixed(digits)}%`);
+  const side = (flow: number | null) => (flow === null ? "—" : `${flow >= 0 ? "buyers" : "sellers"} ${Math.round(((1 + Math.abs(flow)) / 2) * 100)}%`);
+  const priced = o ? impliedMove(o.straddle, o.minutesToExpiry, RECENT_MINUTES) : null;
+  const actual = v.minuteMove === null ? null : v.minuteMove * Math.sqrt(RECENT_MINUTES);
+  const rows: [string, ReactNode][] = [];
+  if (f) {
+    rows.push(
+      [f.name, <>{price.format(f.price)}, {f.basis === null ? "" : `${signedPts(f.basis)} pts over NIFTY`}{f.basisChange15 === null ? "" : ` (${signedPts(f.basisChange15)} in 15 min)`}{f.vsVwap === null ? "" : `, ${signedPts(f.vsVwap)} from its VWAP`}</>],
+      ["Open interest", <>{pct(f.oiChange15Pct)} in 15 min, {pct(f.oiChangeDayPct)} today{f.positioning15 ? ` · ${POSITIONING[f.positioning15]}` : ""}</>],
+      ["Who is trading", <>{side(f.flow5)} of the last 5 min, {side(f.flow15)} of 15 min{f.netLots15 === null ? "" : ` (${lotsFormat.format(f.netLots15)} lots net)`}</>],
+    );
+  }
+  if (o) {
+    rows.push(
+      [`Options, ${o.expiry.slice(5)} expiry`, <>put/call open interest near the money {o.pcr?.toFixed(2) ?? "—"} (open {o.pcrAtOpen?.toFixed(2) ?? "—"}, 15 min ago {o.pcr15?.toFixed(2) ?? "—"})</>],
+      ["Lots written near the money", <>today calls {o.callOiChangeDayLots === null ? "—" : lotsFormat.format(o.callOiChangeDayLots)}, puts {o.putOiChangeDayLots === null ? "—" : lotsFormat.format(o.putOiChangeDayLots)} · last 15 min calls {o.callOiChange15Lots === null ? "—" : lotsFormat.format(o.callOiChange15Lots)}, puts {o.putOiChange15Lots === null ? "—" : lotsFormat.format(o.putOiChange15Lots)}</>],
+      ["Biggest strikes", <>calls at {o.callWall ? `${price.format(o.callWall.strike)} (${signedPts(o.callWall.points)} pts)` : "—"}, puts at {o.putWall ? `${price.format(o.putWall.strike)} (${signedPts(o.putWall.points)} pts)` : "—"}{o.maxPain === null ? "" : ` · max pain ${price.format(o.maxPain)}`}</>],
+    );
+  }
+  rows.push([
+    `Typical ${RECENT_MINUTES}-min move`,
+    <>
+      {priced === null ? "" : `options price ±${priced.toFixed(0)} pts`}
+      {priced !== null && actual !== null ? ", " : ""}
+      {actual === null ? "" : `NIFTY has been moving ±${actual.toFixed(0)}`} · India VIX {v.vix?.toFixed(2) ?? "—"} ({pct(v.vixChangePct)})
+      {o?.ivChangeSinceOpenPct == null ? "" : `, option volatility ${pct(o.ivChangeSinceOpenPct, 1)} since the open`}
+    </>,
+  ]);
+  return (
+    <Panel title="Futures and options" meta="NIFTY's near-month future and nearest expiry, as recorded today; also sent to the decision API">
+      <dl className="grid gap-x-4 gap-y-1 text-body sm:grid-cols-[auto_minmax(0,1fr)]">
+        {rows.map(([label, value]) => (
+          <div key={label} className="contents">
+            <dt className="text-muted">{label}</dt>
+            <dd className="min-w-0 tabular-nums">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </Panel>
   );
 }
 
@@ -531,7 +590,7 @@ function PulseChart({ pulse, focus }: { pulse: Pulse; focus: LabFocus | null }) 
           <span className="font-medium text-fg">Middle:</span> breadth, stocks up minus down
         </span>
         <span>
-          <span className="font-medium text-fg">Bottom:</span> signal votes, long minus short (−3 to +3); faint bars are a single vote
+          <span className="font-medium text-fg">Bottom:</span> signal votes, long minus short (−{singles.length} to +{singles.length}); faint bars are a single vote
         </span>
         {focus && (
           <span>

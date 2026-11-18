@@ -5,12 +5,32 @@
 import type { Charges } from "../trading/charges.ts";
 
 /** Which signal from the Pulse signal lab the strategy follows. */
-export type SignalId = "breadth" | "lead" | "momentum" | "agree";
-export const SIGNALS: readonly { id: SignalId; name: string }[] = [
-  { id: "breadth", name: "Breadth thrust" },
-  { id: "lead", name: "Basket leads index" },
-  { id: "momentum", name: "15-minute momentum" },
-  { id: "agree", name: "Two or more agree" },
+export type SignalId = "breadth" | "lead" | "momentum" | "flow" | "buildup" | "writers" | "agree" | "confirmed";
+
+/** How a signal did over a year of minute history, before costs: the base rate the decision API is told. */
+export interface SignalRecord {
+  /** Over what, and when it was measured. */
+  span: string;
+  holdMinutes: number;
+  trades: number;
+  /** Share of trades NIFTY then moved the signal's way. */
+  winRate: number;
+  /** Average NIFTY points a trade, before costs. */
+  pointsPerTrade: number;
+}
+
+export const SIGNALS: readonly { id: SignalId; name: string; kind: "single" | "combined"; pastYear: SignalRecord | null }[] = [
+  // From the first research study (17 November 2026, branch research-and-strategy-store): 257 days,
+  // 3 Nov 2025 to 17 Nov 2026, entries 09:25 to 14:45, 10-minute hold. An option trade costs about 3.9 points.
+  { id: "breadth", name: "Breadth thrust", kind: "single", pastYear: { span: "257 days to 17 Nov 2026", holdMinutes: 10, trades: 2832, winRate: 0.498, pointsPerTrade: 0.3 } },
+  { id: "lead", name: "Basket leads index", kind: "single", pastYear: { span: "257 days to 17 Nov 2026", holdMinutes: 10, trades: 1755, winRate: 0.501, pointsPerTrade: -0.4 } },
+  { id: "momentum", name: "15-minute momentum", kind: "single", pastYear: { span: "257 days to 17 Nov 2026", holdMinutes: 10, trades: 3313, winRate: 0.497, pointsPerTrade: 0.3 } },
+  // Futures and options were first recorded on 18 November 2026: no history yet.
+  { id: "flow", name: "Futures order flow", kind: "single", pastYear: null },
+  { id: "buildup", name: "Futures OI build-up", kind: "single", pastYear: null },
+  { id: "writers", name: "Option writers", kind: "single", pastYear: null },
+  { id: "agree", name: "Two or more agree", kind: "combined", pastYear: { span: "257 days to 17 Nov 2026", holdMinutes: 10, trades: 1433, winRate: 0.49, pointsPerTrade: -0.1 } },
+  { id: "confirmed", name: "Confirmed by futures and options", kind: "combined", pastYear: null },
 ];
 
 /** How the decision API takes part. */
@@ -45,6 +65,17 @@ export interface TradingConfig {
     stopLossPct: number;
     /** Sell when the premium rises this far above the entry, in percent. 0 turns it off. */
     targetPct: number;
+    /**
+     * How the stop and target are set: a share of the premium (`stopLossPct`, `targetPct`), or
+     * rupees made or lost after charges on both orders (`stopNet`, `targetNet`), the scalping way.
+     */
+    exitIn: "percent" | "rupees";
+    /** Sell when the trade would lose this many rupees after charges. 0 turns it off. */
+    stopNet: number;
+    /** Sell when the trade would make this many rupees after charges. 0 turns it off. */
+    targetNet: number;
+    /** Scalping's own hold, used instead of `holdMinutes` while `exitIn` is rupees. */
+    scalpHoldMinutes: number;
     /** Sell when the signal fires the other way. */
     exitOnOpposite: boolean;
     /** Skip an expiry closer than this many days. 0 trades the nearest expiry on expiry day too. */
@@ -69,6 +100,8 @@ export interface TradingConfig {
     maxSpreadPct: number;
     /** Minutes to wait after a buy or a sell before the next entry. */
     cooldownMinutes: number;
+    /** Scalping's own wait, used instead of `cooldownMinutes` while `exitIn` is rupees. */
+    scalpCooldownMinutes: number;
     /** No entry on a quote older than this, in seconds. */
     maxQuoteAgeSeconds: number;
   };
@@ -108,6 +141,10 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     holdMinutes: 10,
     stopLossPct: 20,
     targetPct: 30,
+    exitIn: "percent",
+    stopNet: 250,
+    targetNet: 250,
+    scalpHoldMinutes: 3,
     exitOnOpposite: true,
     minDaysToExpiry: 0,
   },
@@ -123,6 +160,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     minPremium: 5,
     maxSpreadPct: 3,
     cooldownMinutes: 2,
+    scalpCooldownMinutes: 0,
     maxQuoteAgeSeconds: 10,
   },
   fills: { slippage: 0.05, looseSlippage: 0.5, latencyMs: 300 },
@@ -136,6 +174,21 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     onError: "skip",
   },
 };
+
+/** True when trading the scalping way: stop and target in rupees after charges, with its own hold and wait. */
+export function isScalping(config: Pick<TradingConfig, "strategy">): boolean {
+  return config.strategy.exitIn === "rupees";
+}
+
+/** Minutes a position is held at most, under the style in use. */
+export function holdMinutesFor(config: Pick<TradingConfig, "strategy">): number {
+  return isScalping(config) ? config.strategy.scalpHoldMinutes : config.strategy.holdMinutes;
+}
+
+/** Minutes to wait between trades, under the style in use. */
+export function cooldownMinutesFor(config: Pick<TradingConfig, "strategy" | "risk">): number {
+  return isScalping(config) ? config.risk.scalpCooldownMinutes : config.risk.cooldownMinutes;
+}
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -208,6 +261,10 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
     apply(next.strategy, strategy, "holdMinutes", (v, n) => number(v, n, 1, 240, true), "Hold");
     apply(next.strategy, strategy, "stopLossPct", (v, n) => number(v, n, 0, 90), "Stop loss");
     apply(next.strategy, strategy, "targetPct", (v, n) => number(v, n, 0, 500), "Target");
+    apply(next.strategy, strategy, "exitIn", (v, n) => oneOf(v, n, ["percent", "rupees"] as const), "Stop and target in");
+    apply(next.strategy, strategy, "stopNet", (v, n) => number(v, n, 0, 1_000_000), "Stop loss in rupees");
+    apply(next.strategy, strategy, "targetNet", (v, n) => number(v, n, 0, 1_000_000), "Target in rupees");
+    apply(next.strategy, strategy, "scalpHoldMinutes", (v, n) => number(v, n, 1, 240, true), "Scalping hold");
     apply(next.strategy, strategy, "exitOnOpposite", bool, "Exit on opposite signal");
     apply(next.strategy, strategy, "minDaysToExpiry", (v, n) => number(v, n, 0, 30, true), "Minimum days to expiry");
   }
@@ -225,6 +282,7 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
     apply(next.risk, risk, "minPremium", (v, n) => number(v, n, 0, 1_000), "Minimum premium");
     apply(next.risk, risk, "maxSpreadPct", (v, n) => number(v, n, 0.1, 50), "Spread limit");
     apply(next.risk, risk, "cooldownMinutes", (v, n) => number(v, n, 0, 120), "Cooldown");
+    apply(next.risk, risk, "scalpCooldownMinutes", (v, n) => number(v, n, 0, 120), "Scalping wait");
     apply(next.risk, risk, "maxQuoteAgeSeconds", (v, n) => number(v, n, 1, 120), "Quote age");
   }
 
@@ -329,6 +387,8 @@ export interface Position {
   spotAtEntry: number | null;
   stopPrice: number | null;
   targetPrice: number | null;
+  /** What the stop and target trigger on: the last traded price (percent), or the bid when known (rupees). */
+  exitIn?: "percent" | "rupees";
   /** Market time the hold runs out. */
   exitBy: number;
   /** Latest price and when, for the running P&L. */
@@ -462,11 +522,25 @@ export interface SignalReading {
   /** Start of the minute this was read at the close of. */
   minute: number;
   nifty: number | null;
-  /** Each single signal's reading and vote, then the chosen signal's vote. */
-  readings: { id: SignalId; name: string; reading: string; vote: -1 | 0 | 1 }[];
+  /** Each signal's reading and vote (singles, then combined), then the chosen signal's vote. */
+  readings: SignalReadingLine[];
   vote: -1 | 0 | 1;
   stance: string;
   score: number;
+}
+
+export interface SignalReadingLine {
+  id: SignalId;
+  name: string;
+  reading: string;
+  vote: -1 | 0 | 1;
+  /** The number a single signal compares with its line, and the line: it votes when the number's size reaches the line. Null for combined signals; absent from older engines. */
+  value?: number | null;
+  threshold?: number | null;
+  /** Today so far, at the Signal lab hold nearest the strategy's (not longer): firings whose hold has ended, how many NIFTY then moved the signal's way, and NIFTY points gained following them before costs. */
+  today?: { horizon: number; fired: number; right: number; points: number };
+  /** Its latest firings today, newest first, at most three. `outcome` is NIFTY's points over the hold after it (null while the hold is still running). `at` is the start of the firing minute. */
+  recent?: { at: number; vote: 1 | -1; reading: string; outcome: number | null }[];
 }
 
 export interface DecisionScore {

@@ -103,12 +103,20 @@ export function roundTripCharges(buyValue: number, sellValue: number, rates: Cha
  * "points to breakeven". Solved exactly, since the sell-side charges grow with the sell price.
  */
 export function breakevenSellPrice(buyPrice: number, quantity: number, rates: ChargeRates = OPTION_RATES): number {
+  return sellPriceForNet(buyPrice, quantity, 0, rates);
+}
+
+/**
+ * The sell price at which a long round trip nets `net` rupees after charges on both orders
+ * (negative for a loss). Solved exactly, since the sell-side charges grow with the sell price.
+ */
+export function sellPriceForNet(buyPrice: number, quantity: number, net: number, rates: ChargeRates = OPTION_RATES): number {
   if (quantity <= 0) return buyPrice;
   const buy = orderCharges("BUY", buyPrice * quantity, rates).total;
   const fixed = rates.brokeragePerOrder * (1 + rates.gst);
   // Net of a sale at price p: p·q·(1 − k) − fixed, with k the sell-side rate per rupee sold.
   const k = (rates.exchange + rates.ipft + rates.sebi) * (1 + rates.gst) + rates.stt;
-  return (buyPrice * quantity + buy + fixed) / (quantity * (1 - k));
+  return (net + buyPrice * quantity + buy + fixed) / (quantity * (1 - k));
 }
 
 /** Rupees to two decimals, for display and stored totals. */

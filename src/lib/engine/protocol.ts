@@ -153,6 +153,79 @@ export interface JournalSession {
   /** One entry per session minute up to the last data, starting at 09:15 IST. */
   minutes: SessionMinute[];
   instruments: SessionInstrument[];
+  /**
+   * NIFTY's futures and options, from the Full-mode packets the research recorder journals and
+   * the `instruments` records that describe them. Absent for days recorded before 18 November 2026
+   * and when the recorder held none.
+   */
+  derivatives?: SessionDerivatives;
+}
+
+/** NIFTY's near-month future and nearest option expiry, as the day's journal holds them. */
+export interface SessionDerivatives {
+  future: SessionFuture | null;
+  options: SessionOptions | null;
+}
+
+/** Series are aligned with `minutes` and hold the value at each minute's end, carried forward. */
+export interface SessionFuture {
+  key: string;
+  name: string;
+  /** YYYY-MM-DD. */
+  expiry: string;
+  lotSize: number;
+  /** Open interest before the day started: the previous session's close. */
+  oiBefore: number | null;
+  closes: (number | null)[];
+  oi: (number | null)[];
+  /** The exchange's average traded price for the day (VWAP). */
+  vwap: (number | null)[];
+  /**
+   * Quantity traded in each minute by buyers taking the ask (`buys`) and by sellers hitting the
+   * bid (`sells`): each trade is classed by its price against the book just before it, or by the
+   * last price's tick when it traded between the two.
+   */
+  buys: number[];
+  sells: number[];
+  /** Quantity waiting on the best five bids and on the best five asks. */
+  bidQty: (number | null)[];
+  askQty: (number | null)[];
+}
+
+export interface SessionOptions {
+  /** YYYY-MM-DD: the nearest expiry that hasn't passed. */
+  expiry: string;
+  lotSize: number;
+  /** Gap between strikes, e.g. 50. */
+  step: number;
+  /** Strikes each side of the money counted in `callOi` and `putOi`. */
+  band: number;
+  /** Per minute: the strike nearest NIFTY's close. */
+  atm: (number | null)[];
+  /** Open interest summed over the calls (puts) within `band` strikes of `atm`; null while any of them is unknown. */
+  callOi: (number | null)[];
+  putOi: (number | null)[];
+  /** Last price of the at-the-money call plus the at-the-money put. */
+  straddle: (number | null)[];
+  /** The latest of each strike on the expiry, lowest strike first. */
+  strikes: SessionStrike[];
+}
+
+export interface SessionStrike {
+  strike: number;
+  call: SessionOptionQuote | null;
+  put: SessionOptionQuote | null;
+}
+
+export interface SessionOptionQuote {
+  key: string;
+  ltp: number | null;
+  bid: number | null;
+  ask: number | null;
+  oi: number | null;
+  /** Open interest before the day started. */
+  oiBefore: number | null;
+  volume: number | null;
 }
 
 export interface SessionMinute {

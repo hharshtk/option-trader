@@ -116,6 +116,86 @@ test("the morning snapshot is the reference; the day's ticks build bars, breadth
   assert.equal(s.file.packets.prevClose, 1);
 });
 
+/** A Full packet for an NSE_FNO contract: price, volume, VWAP, OI and the best bid and ask (one level). */
+function full(securityId: number, q: { ltp: number; volume: number; oi: number; bid?: number; ask?: number; bidQty?: number; askQty?: number; atp?: number }) {
+  const view = new DataView(new ArrayBuffer(162));
+  header(view, 8, 162, 2, securityId);
+  view.setFloat32(8, q.ltp, true);
+  view.setFloat32(18, q.atp ?? q.ltp, true);
+  view.setInt32(22, q.volume, true);
+  view.setInt32(34, q.oi, true);
+  view.setInt32(62, q.bidQty ?? 0, true);
+  view.setInt32(66, q.askQty ?? 0, true);
+  view.setFloat32(74, q.bid ?? 0, true);
+  view.setFloat32(78, q.ask ?? 0, true);
+  return Buffer.from(view.buffer);
+}
+
+test("futures and options: open interest, who traded, the book and near-the-money totals per minute", () => {
+  const agg = aggregator();
+  const before = ist(`${DATE}T08:45:00`);
+  // 21 strikes either side of 25,000 make a complete band of 10 each side; a call's id is the strike, a put's the strike + 1.
+  const strikes = Array.from({ length: 21 }, (_, i) => 24_500 + i * 50);
+  const items: Record<string, unknown>[] = [{ key: "NSE_FNO:900", kind: "future", underlying: "NIFTY", name: "NIFTY NOV FUT", expiry: "2026-11-24", lotSize: 65 }];
+  for (const k of strikes) {
+    items.push({ key: `NSE_FNO:${k}`, kind: "option", underlying: "NIFTY", name: `NIFTY ${k} CALL`, expiry: "2026-11-17", strike: k, type: "CE", lotSize: 65 });
+    items.push({ key: `NSE_FNO:${k + 1}`, kind: "option", underlying: "NIFTY", name: `NIFTY ${k} PUT`, expiry: "2026-11-17", strike: k, type: "PE", lotSize: 65 });
+  }
+  // A later expiry is ignored: the nearest one is read.
+  items.push({ key: "NSE_FNO:777", kind: "option", underlying: "NIFTY", name: "far", expiry: "2026-11-24", strike: 25_000, type: "CE", lotSize: 65 });
+  agg.add(control(before, { kind: "instruments", source: "recorder", date: DATE, items }));
+  // Yesterday's figures arrive with the morning snapshot.
+  agg.add(frame(before, full(900, { ltp: 25_050, volume: 5_000_000, oi: 10_000_000, bid: 25_049, ask: 25_051, bidQty: 650, askQty: 650 })));
+  for (const k of strikes) {
+    agg.add(frame(before, full(k, { ltp: 100, volume: 1, oi: 1_000 })));
+    agg.add(frame(before, full(k + 1, { ltp: 100, volume: 1, oi: 2_000 })));
+  }
+
+  agg.add(frame(OPEN + 500, ticker(13, 25_010)));
+  // The day's first future packet starts the count; then a buy at the ask, a sell at the bid, and an uptick between them.
+  agg.add(frame(OPEN + 1_000, full(900, { ltp: 25_060, volume: 100, oi: 10_010_000, bid: 25_059, ask: 25_061, bidQty: 650, askQty: 1_300, atp: 25_055 })));
+  agg.add(frame(OPEN + 2_000, full(900, { ltp: 25_061, volume: 300, oi: 10_010_000, bid: 25_060, ask: 25_062, bidQty: 650, askQty: 1_300 })));
+  agg.add(frame(OPEN + 3_000, full(900, { ltp: 25_060, volume: 350, oi: 10_020_000, bid: 25_059, ask: 25_061, bidQty: 650, askQty: 1_300 })));
+  agg.add(frame(OPEN + 61_000, full(900, { ltp: 25_060.5, volume: 450, oi: 10_030_000, bid: 25_059, ask: 25_061, bidQty: 1_950, askQty: 650, atp: 25_058 })));
+  for (const k of strikes) {
+    agg.add(frame(OPEN + 2_000, full(k, { ltp: k === 25_000 ? 120 : 50, volume: 10, oi: 1_100 })));
+    agg.add(frame(OPEN + 2_000, full(k + 1, { ltp: k === 25_000 ? 110 : 50, volume: 10, oi: 2_300 })));
+  }
+  // One strike's OI changes in minute 1.
+  agg.add(frame(OPEN + 62_000, full(25_000 + 1, { ltp: 115, volume: 20, oi: 2_965 })));
+
+  const s = agg.summary({ builtAt: OPEN + 63_000, readMs: 1, bytes: 1 });
+  const f = s.derivatives!.future!;
+  assert.equal(f.name, "NIFTY NOV FUT");
+  assert.equal(f.oiBefore, 10_000_000);
+  assert.deepEqual(f.oi, [10_020_000, 10_030_000]);
+  assert.deepEqual(f.closes, [25_060, 25_060.5]);
+  // The last packet of each minute sets it (the helper sends the price as VWAP when none is given).
+  assert.deepEqual(f.vwap, [25_060, 25_058]);
+  // 200 bought at the ask, then 50 sold at the bid in minute 0; 100 traded on an uptick in minute 1.
+  assert.deepEqual(f.buys, [200, 100]);
+  assert.deepEqual(f.sells, [50, 0]);
+  assert.deepEqual([f.bidQty, f.askQty], [[650, 1_950], [1_300, 650]]);
+
+  const o = s.derivatives!.options!;
+  assert.equal(o.expiry, "2026-11-17");
+  assert.equal(o.step, 50);
+  assert.deepEqual(o.atm, [25_000, 25_000]);
+  assert.deepEqual(o.callOi, [21 * 1_100, 21 * 1_100]);
+  assert.deepEqual(o.putOi, [21 * 2_300, 20 * 2_300 + 2_965]);
+  assert.deepEqual(o.straddle, [230, 235]);
+  const atm = o.strikes.find((row) => row.strike === 25_000)!;
+  assert.deepEqual([atm.put?.oi, atm.put?.oiBefore], [2_965, 2_000]);
+  // Contracts are named from the instruments record.
+  assert.equal(s.instruments.find((i) => i.key === "NSE_FNO:900")?.symbol, "NIFTY NOV FUT");
+});
+
+test("a day without instruments records has no derivatives", () => {
+  const agg = aggregator();
+  agg.add(frame(OPEN + 1_000, ticker(13, 25000)));
+  assert.equal(agg.summary({ builtAt: 0, readMs: 0, bytes: 0 }).derivatives, undefined);
+});
+
 test("a previous-close packet received during the day is used when there was no morning snapshot", () => {
   const agg = aggregator();
   agg.add(frame(OPEN + 1_000, prevClose(13, 24900)));

@@ -7,6 +7,7 @@
 import type { HistogramData, IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { formatAge } from "@/components/shell/freshness";
+import { useTheme } from "@/components/shell/preferences";
 import { DataTable, EmptyState, Field, Panel, StatRow, Td } from "@/components/ui";
 import type { EngineStatus, JournalSession, SessionInstrument } from "@/lib/engine/protocol";
 import { compactNumber, istTime, price, quantity, signedPercent } from "@/lib/format";
@@ -219,6 +220,8 @@ function SessionBody({ data, live, now }: { data: JournalSession; live: boolean;
 
 function SessionChart({ data, symbol, waiting }: { data: JournalSession; symbol: string; waiting: string | null }) {
   const container = useRef<HTMLDivElement>(null);
+  // The chart reads its colours from CSS once when built, so it is rebuilt when the theme changes.
+  const theme = useTheme();
   const chart = useRef<{
     api: IChartApi;
     bars: ISeriesApi<"Candlestick">;
@@ -285,7 +288,7 @@ function SessionChart({ data, symbol, waiting }: { data: JournalSession; symbol:
     };
     // Built once per day shown; data updates go through the effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasBars, data.date]);
+  }, [hasBars, data.date, theme]);
 
   function setSeries(d: JournalSession) {
     const c = chart.current;

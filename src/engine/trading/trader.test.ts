@@ -10,6 +10,7 @@ import { getParquetStore } from "../../lib/db/parquet-store.ts";
 import type { JournalSession, SessionInstrument } from "../../lib/engine/protocol.ts";
 import type { TradingConfig, TradingUpdate } from "../../lib/engine/trading.ts";
 import { paise, roundTripCharges } from "../../lib/trading/charges.ts";
+import { exitLevels } from "../../lib/trading/exits.ts";
 import { createSessionCalendar } from "../market/session-calendar.ts";
 import type { Logger } from "../telemetry/logger.ts";
 import { buildContractBook } from "./contracts.ts";
@@ -240,6 +241,37 @@ test("a signal buys the at-the-money call on the book, and a target sells it, wi
     assert.equal(history.trades.length, 1);
     assert.equal(history.trades[0].charges, paise(charges));
     assert.equal(history.trades[0].contract, "NIFTY 17 NOV 25900 CALL");
+  } finally {
+    await h.close();
+  }
+});
+
+test("scalping: rupee exits trigger on the bid and net the target after charges", async () => {
+  const h = await harness({ strategy: { exitIn: "rupees", targetNet: 250, stopNet: 200, scalpHoldMinutes: 3 }, risk: { scalpCooldownMinutes: 0 } });
+  try {
+    const at = await toSignal(h);
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), at + 400);
+    let status = h.trader.status();
+    const [position] = status.positions;
+    assert.equal(position.entryPrice, 100.15);
+    assert.equal(position.exitIn, "rupees");
+    const expected = exitLevels({ exitIn: "rupees", stopLossPct: 0, targetPct: 0, targetNet: 250, stopNet: 200 }, 100.15, LOT, 0.05, 0.05);
+    assert.deepEqual([position.stopPrice, position.targetPrice], [expected.stopPrice, expected.targetPrice]);
+    assert.ok(position.targetPrice! < 100.15 * 1.3, "far nearer than the 30% target");
+
+    // The last trade reaches the target but the bid doesn't: nothing is sold yet.
+    const target = position.targetPrice!;
+    h.feed(optionQuote(CALL_25900, target + 0.1, target - 0.2, target + 0.2), at + 20_000);
+    assert.equal(h.trader.status().positions[0].status, "open");
+
+    // The bid reaches it: sold at the bid less slippage, netting at least ₹250 after charges.
+    h.feed(optionQuote(CALL_25900, target + 0.1, target, target + 0.2), at + 30_000);
+    h.feed(optionQuote(CALL_25900, target + 0.1, target, target + 0.2), at + 30_400);
+    status = h.trader.status();
+    assert.equal(status.positions.length, 0);
+    const [trade] = status.trades;
+    assert.equal(trade.exitReason, "target");
+    assert.ok(trade.net >= 250 && trade.net < 250 + LOT * 0.05 + 1, `net ${trade.net}`);
   } finally {
     await h.close();
   }

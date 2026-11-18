@@ -13,7 +13,7 @@ import {
 import { getProfile } from "@/lib/dhan";
 import { indexInstrument } from "@/lib/live/instruments";
 import { TokenExpiry } from "./freshness";
-import { AccountMenu, BrokerStatus, MarketDataStatus } from "./header-controls";
+import { AccountMenu, BrokerStatus, MarketDataStatus, ThemeToggle } from "./header-controls";
 
 export function MarketHeader() {
   return (
@@ -63,6 +63,7 @@ async function HeaderStatus() {
       <MarketDataStatus quotes={quotes} />
       <div className="ml-auto flex shrink-0 items-center gap-2">
         {tokenExpiry && <TokenExpiry expiresAt={tokenExpiry} variant="alert" />}
+        <ThemeToggle />
         <AccountMenu clientId={clientId} />
       </div>
     </div>
