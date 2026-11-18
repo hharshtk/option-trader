@@ -9,6 +9,7 @@ import { controlTrading } from "@/app/(cockpit)/strategies/actions";
 import { buttonClass, DataTable, EmptyState, PageHeader, Panel, Pnl, StatRow, Tag, Td } from "@/components/ui";
 import {
   DECISION_PROVIDERS,
+  DEFAULT_TRADING_CONFIG,
   SIGNALS,
   type DecisionProviderId,
   type DecisionRecord,
@@ -77,7 +78,7 @@ export function TradingConsole() {
         )}
         {open.length > 0 && (
           <button type="button" className={buttonClass} disabled={pending} onClick={() => send({ action: "flatten" })}>
-            Sell open position
+            {open.length === 1 ? "Sell open position" : `Sell ${open.length} open positions`}
           </button>
         )}
         <button
@@ -110,7 +111,7 @@ export function TradingConsole() {
           <OpenPositions positions={trading.positions} />
         </div>
 
-        <Trades trades={trading.trades} decisions={trading.decisions} />
+        <Trades trades={trading.trades} decisions={trading.decisions} prices={trading.prices ?? {}} />
         <Decisions trading={trading} />
         <Settings key={JSON.stringify({ ...config, armed: null })} config={config} pending={pending} send={send} providers={trading.decisionProviders ?? { openrouter: trading.decisionReady, liquid: false }} />
         <History live={run?.id ?? null} />
@@ -238,8 +239,15 @@ function OpenPositions({ positions }: { positions: Position[] }) {
   );
 }
 
-function Trades({ trades, decisions }: { trades: Trade[]; decisions: DecisionRecord[] }) {
-  const [showShadow, setShowShadow] = useState(true);
+/** How far the option's price has moved since it was sold: green up, red down. */
+function ChangeSinceSale({ change }: { change: number }) {
+  const rounded = Math.round(change * 100) / 100;
+  const tone = rounded > 0 ? "text-up" : rounded < 0 ? "text-down" : "text-muted";
+  return <span className={`ml-1.5 tabular-nums ${tone}`}>({rounded > 0 ? "+" : ""}{rounded})</span>;
+}
+
+function Trades({ trades, decisions, prices }: { trades: Trade[]; decisions: DecisionRecord[]; prices: TradingStatus["prices"] }) {
+  const [showShadow, setShowShadow] = useState(false);
   const shadowCount = trades.filter((t) => t.book === "shadow").length;
   const shown = showShadow ? trades : trades.filter((t) => t.book === "paper");
   const byId = new Map(decisions.map((d) => [d.id, d]));
@@ -259,16 +267,17 @@ function Trades({ trades, decisions }: { trades: Trade[]; decisions: DecisionRec
     >
       {shown.length === 0 ? (
         <div className="p-3">
-          <EmptyState>No trades yet in this run.</EmptyState>
+          <EmptyState>{trades.length > 0 ? "No paper trades yet. Tick Show shadow trades to see the ones the decision API turned down." : "No trades yet in this run."}</EmptyState>
         </div>
       ) : (
         <DataTable
           caption="Closed trades, newest first"
-          minWidth="min-w-[58rem]"
-          columns={["Bought", { label: "Sold", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Exit", { label: "Closed by", align: "left" }, "Before charges", "Charges", "Net", "Decision"]}
+          minWidth="min-w-[62rem]"
+          columns={["Bought", { label: "Sold", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Exit", "Now", { label: "Closed by", align: "left" }, "Before charges", "Charges", "Net", "Decision"]}
         >
           {shown.map((trade) => {
             const decision = trade.decisionId ? byId.get(trade.decisionId) : undefined;
+            const now = prices[trade.contract.feedKey];
             return (
               <tr key={`${trade.book}-${trade.id}`} className={trade.book === "shadow" ? "text-muted" : undefined}>
                 <Td className="tabular-nums">{clock(trade.openedAt)}</Td>
@@ -282,6 +291,16 @@ function Trades({ trades, decisions }: { trades: Trade[]; decisions: DecisionRec
                 <Td numeric>{quantity.format(trade.quantity)}</Td>
                 <Td numeric>{price.format(trade.entryPrice)}</Td>
                 <Td numeric>{price.format(trade.exitPrice)}</Td>
+                <Td numeric>
+                  {now ? (
+                    <span title={`Last traded at ${clock(now.at)}; ${now.price >= trade.exitPrice ? "up" : "down"} ${inr.format(Math.abs(now.price - trade.exitPrice) * trade.quantity)} on this quantity since the sale`}>
+                      {price.format(now.price)}
+                      <ChangeSinceSale change={now.price - trade.exitPrice} />
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </Td>
                 <Td>{EXIT_REASON[trade.exitReason]}</Td>
                 <Td numeric>
                   <Pnl value={trade.gross} />
@@ -488,6 +507,19 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
+/** An engine older than this page leaves out the settings it doesn't know; the form shows their defaults. */
+function withDefaults(config: TradingConfig): TradingConfig {
+  const d = DEFAULT_TRADING_CONFIG;
+  return {
+    ...d,
+    ...config,
+    strategy: { ...d.strategy, ...config.strategy },
+    risk: { ...d.risk, ...config.risk },
+    fills: { ...d.fills, ...config.fills },
+    decision: { ...d.decision, ...config.decision },
+  };
+}
+
 /** Remounted (by its key) whenever the engine's settings change, so the form always starts from them. */
 function Settings({
   config,
@@ -501,9 +533,9 @@ function Settings({
   /** Which decision providers have a key in the engine's .env.local. */
   providers: Record<DecisionProviderId, boolean>;
 }) {
-  const [draft, setDraft] = useState(config);
+  const [draft, setDraft] = useState(() => withDefaults(config));
   // Starting and stopping entries is the header button's job, not this form's.
-  const dirty = JSON.stringify({ ...draft, armed: null }) !== JSON.stringify({ ...config, armed: null });
+  const dirty = JSON.stringify({ ...draft, armed: null }) !== JSON.stringify({ ...withDefaults(config), armed: null });
   const strategy = <K extends keyof TradingConfig["strategy"]>(key: K, value: TradingConfig["strategy"][K]) => setDraft((d) => ({ ...d, strategy: { ...d.strategy, [key]: value } }));
   const risk = <K extends keyof TradingConfig["risk"]>(key: K, value: TradingConfig["risk"][K]) => setDraft((d) => ({ ...d, risk: { ...d.risk, [key]: value } }));
   const fills = <K extends keyof TradingConfig["fills"]>(key: K, value: TradingConfig["fills"][K]) => setDraft((d) => ({ ...d, fills: { ...d.fills, [key]: value } }));
@@ -558,6 +590,7 @@ function Settings({
           <TimeField label="Entries until" value={draft.risk.entryUntil} onChange={(v) => risk("entryUntil", v)} />
           <TimeField label="Sell everything at" value={draft.risk.squareOffAt} onChange={(v) => risk("squareOffAt", v)} />
           <NumberField label="Trades a day" value={draft.risk.maxTradesPerDay} min={1} onChange={(v) => risk("maxTradesPerDay", v)} />
+          <NumberField label="Positions at once" value={draft.risk.maxOpenPositions} min={1} onChange={(v) => risk("maxOpenPositions", v)} />
           <NumberField label="Stop the day at a loss of" value={draft.risk.maxDailyLoss} step={100} suffix="₹" onChange={(v) => risk("maxDailyLoss", v)} />
           <NumberField label="Or after losses in a row" value={draft.risk.maxConsecutiveLosses} min={1} onChange={(v) => risk("maxConsecutiveLosses", v)} />
           <NumberField label="Most premium a trade" value={draft.risk.maxPremiumPerTrade} step={500} suffix="₹" onChange={(v) => risk("maxPremiumPerTrade", v)} />

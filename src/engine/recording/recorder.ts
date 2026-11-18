@@ -12,7 +12,9 @@
 //   - 20-level depth on Dhan's depth connection (one socket, 50 instruments, NIFTY first), in
 //     `YYYY-MM-DD.depth.bin`;
 //   - the option chain (IV, greeks, OI, best bid/ask for strikes within 10% of the index) for its
-//     nearest expiries once a minute while the market is open, in `YYYY-MM-DD.chain.bin`.
+//     nearest expiries once a minute while the market is open, in `YYYY-MM-DD.chain.bin`. On by
+//     default; `recordChain: false` (ENGINE_RECORD_OPTION_CHAIN=false) turns it off, so a second
+//     engine on the same Dhan account doesn't collide with the first on the option chain's rate limit.
 //
 // Every instrument it adds is described in the main journal (an `instruments` control record), so
 // a day can be read after its contracts have expired and left Dhan's instrument file.
@@ -113,6 +115,7 @@ export function createRecorder({
   depthFile,
   chainFile,
   indices = RECORDED,
+  recordChain = true,
 }: {
   log: Logger;
   health: Health;
@@ -130,6 +133,8 @@ export function createRecorder({
   depthFile: () => RecorderStatus["depth"]["file"];
   chainFile: () => RecorderStatus["chain"]["file"];
   indices?: readonly RecordedIndex[];
+  /** False: no option chain requests to Dhan and no chain file. Futures, windows and depth are unchanged. */
+  recordChain?: boolean;
 }): Recorder {
   let day: Day | null = null;
   const spots = new Map<string, number>();
@@ -359,7 +364,7 @@ export function createRecorder({
       const minute = Math.floor((time - CHAIN_OFFSET_MS) / MINUTE_MS);
       // Every minute the market is open, plus one at the close.
       const due = time >= day.open + CHAIN_OFFSET_MS && time <= day.close + MINUTE_MS + CHAIN_OFFSET_MS;
-      if (due && !chainBusy && day.legs.some((leg) => leg.book) && minute !== day.lastChainMinute) {
+      if (recordChain && due && !chainBusy && day.legs.some((leg) => leg.book) && minute !== day.lastChainMinute) {
         day.lastChainMinute = minute;
         void pollChain(day, minute * MINUTE_MS);
       }
@@ -416,7 +421,7 @@ export function createRecorder({
         }),
         instruments: day?.held.size ?? 0,
         depth: { state: d.state, instruments: d.instruments, frames: d.frames, packets: d.packets, lastFrameAt: d.lastFrameAt, dropped: d.dropped, file: depthFile() },
-        chain: { snapshots: chain.snapshots, lastAt: chain.lastAt, errors: chain.errors, lastError: chain.lastError, file: chainFile() },
+        chain: { enabled: recordChain, snapshots: chain.snapshots, lastAt: chain.lastAt, errors: chain.errors, lastError: chain.lastError, file: chainFile() },
       };
     },
 

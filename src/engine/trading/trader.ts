@@ -181,6 +181,8 @@ interface ActiveRun {
   /** Answers recorded for this market day, by proposal. */
   answers: Map<string, { answer: DecisionAnswer; latencyMs: number }>;
   lastExitAt: number | null;
+  /** When the last paper buy was placed. */
+  lastEntryAt: number | null;
   pendingSave: number;
   saveDueAt: number;
   savedAt: number | null;
@@ -471,6 +473,7 @@ export function createTrader(options: TraderOptions): Trader {
       candleFeeds: new Map(),
       answers: new Map(),
       lastExitAt: null,
+      lastEntryAt: null,
       pendingSave: 0,
       saveDueAt: wall + SAVE_EVERY_MS,
       savedAt: null,
@@ -485,6 +488,8 @@ export function createTrader(options: TraderOptions): Trader {
       if (order.status === "pending") upsert(active.orders, { ...order, status: "cancelled", note: "The engine restarted before it filled" });
     }
     active.lastExitAt = active.trades.filter((t) => t.book === "paper").at(-1)?.closedAt ?? null;
+    const entries = [...active.trades, ...active.positions].filter((p) => p.book === "paper").map((p) => p.openedAt);
+    active.lastEntryAt = entries.length > 0 ? Math.max(...entries) : null;
     for (const [key, value] of await readAnswers(date)) active.answers.set(key, value);
 
     run = active;
@@ -825,11 +830,17 @@ export function createTrader(options: TraderOptions): Trader {
     if (config.strategy.side === "puts" && direction > 0) return "Calls are switched off";
     if (at < timeOn(active, config.risk.entryFrom)) return `Entries start at ${config.risk.entryFrom}`;
     if (at >= timeOn(active, config.risk.entryUntil)) return `Entries ended at ${config.risk.entryUntil}`;
-    if (active.positions.some((p) => p.book === "paper")) return "A position is open";
+    const open = active.positions.filter((p) => p.book === "paper").length;
+    const most = config.risk.maxOpenPositions;
+    if (open >= most) return most === 1 ? "A position is open" : `${open} positions are open, the most allowed at once`;
     // A proposal the gate turned down isn't made again while its shadow trade is still running.
     if (active.positions.some((p) => p.book === "shadow" && p.direction === direction)) return "This signal was turned down and is being shadowed";
-    if (active.trades.filter((t) => t.book === "paper").length >= config.risk.maxTradesPerDay) return `The day's limit of ${config.risk.maxTradesPerDay} trades is reached`;
-    if (active.lastExitAt !== null && at < active.lastExitAt + config.risk.cooldownMinutes * MINUTE_MS) return "Cooling down after the last trade";
+    // Open positions count towards the day's trades, so holding several can't overshoot the limit.
+    if (active.trades.filter((t) => t.book === "paper").length + open >= config.risk.maxTradesPerDay) return `The day's limit of ${config.risk.maxTradesPerDay} trades is reached`;
+    // Measured from the last buy as well as the last sell: with several positions allowed, a signal that stays on
+    // for minutes would otherwise buy again every minute.
+    const last = Math.max(active.lastExitAt ?? -Infinity, active.lastEntryAt ?? -Infinity);
+    if (at < last + config.risk.cooldownMinutes * MINUTE_MS) return "Cooling down after the last trade";
     return null;
   }
 
@@ -939,7 +950,7 @@ export function createTrader(options: TraderOptions): Trader {
       // The answer took time: the checks that could have changed are made again.
       const blocked = quietBlock(active, direction, marketTime);
       if (blocked && book === "paper") return settle("rejected", blocked);
-      if (book === "shadow" && active.positions.some((p) => p.book === "shadow")) return settle("rejected", `Turned down (${decision.reason}); another shadow trade is still running`);
+      if (book === "shadow" && active.positions.filter((p) => p.book === "shadow").length >= config.risk.maxOpenPositions) return settle("rejected", `Turned down (${decision.reason}); ${config.risk.maxOpenPositions === 1 ? "another shadow trade is" : "as many shadow trades as positions allowed are"} still running`);
     }
 
     const latest = market.get(contract.feedKey) ?? quote;
@@ -993,6 +1004,7 @@ export function createTrader(options: TraderOptions): Trader {
     };
     active.positions.push(position);
     active.orders.push(order);
+    if (book === "paper") active.lastEntryAt = marketTime;
     intent.positionId = position.id;
     settle(book === "paper" ? "taken" : "shadowed", book === "paper" ? null : active.decisions.find((d) => d.id === intent.decisionId)?.reason ?? null);
     record(active, { kind: "order", order });
@@ -1095,8 +1107,12 @@ export function createTrader(options: TraderOptions): Trader {
     if (active.halt) return { state: "halted", note: `Stopped for the day: ${active.halt.reason}. Resume to trade again.` };
     if (!config.armed) return { state: "disarmed", note: "Watching the signals. Entries are off until you start trading." };
     if (active.contractsProblem && (!active.book || !active.expiry)) return { state: "waiting", note: active.contractsProblem };
-    const open = active.positions.find((p) => p.book === "paper");
-    if (open) return { state: "ready", note: `Holding ${open.quantity} ${open.contract.name}.` };
+    const open = active.positions.filter((p) => p.book === "paper");
+    if (open.length > 0) {
+      const holding = open.length === 1 ? `Holding ${open[0].quantity} ${open[0].contract.name}` : `Holding ${open.length} positions`;
+      const room = open.length < config.risk.maxOpenPositions ? `; room for ${config.risk.maxOpenPositions - open.length} more` : "";
+      return { state: "ready", note: `${holding}${room}.` };
+    }
     if (marketTime < active.session.open) return { state: "waiting", note: "Waiting for the market to open." };
     const block = quietBlock(active, 1, marketTime) ?? quietBlock(active, -1, marketTime);
     return { state: block ? "waiting" : "ready", note: block ? `${block}.` : "Waiting for the signal to fire." };
@@ -1115,6 +1131,11 @@ export function createTrader(options: TraderOptions): Trader {
       curve.push({ at: trade.closedAt, net });
     }
     const newest = <T,>(list: readonly T[]) => list.slice(-LIST_CAP).reverse();
+    const prices: TradingStatus["prices"] = {};
+    for (const trade of active?.trades ?? []) {
+      const quote = market.get(trade.contract.feedKey);
+      if (quote && quote.at > 0) prices[trade.contract.feedKey] = { price: quote.ltp, at: quote.at };
+    }
     return {
       revision,
       listsRevision,
@@ -1143,6 +1164,7 @@ export function createTrader(options: TraderOptions): Trader {
       },
       decisionReady: decisions[config.decision.provider].ready,
       decisionProviders: { openrouter: decisions.openrouter.ready, liquid: decisions.liquid.ready },
+      prices,
     };
   }
 

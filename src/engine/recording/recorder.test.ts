@@ -57,7 +57,7 @@ const BANK_FUTURES: IndexFuture[] = [
   { securityId: "54746", feedKey: "NSE_FNO:54746", name: "BANKNIFTY JAN FUT", expiry: "2027-01-25", lotSize: 30 },
 ];
 
-function setup(indices: readonly RecordedIndex[] = [NIFTY]) {
+function setup(indices: readonly RecordedIndex[] = [NIFTY], { recordChain }: { recordChain?: boolean } = {}) {
   let time = ist(`${DAY}T08:00:00`);
   const held = new Map<string, number>();
   const modes = new Map<string, FeedMode>();
@@ -109,6 +109,7 @@ function setup(indices: readonly RecordedIndex[] = [NIFTY]) {
     depthFile: () => null,
     chainFile: () => null,
     indices,
+    recordChain,
   });
   return {
     recorder,
@@ -212,6 +213,24 @@ test("option chains: three expiries once a minute while open, strikes within 10%
   for (let i = 0; i < 5; i++) await settle();
   assert.equal(r.fetched.length, 6);
   assert.equal(r.recorder.status().chain.snapshots, 6);
+  assert.equal(r.recorder.status().chain.enabled, true);
+});
+
+test("option chains switched off: no requests, everything else still recorded", async () => {
+  const r = setup([NIFTY], { recordChain: false });
+  r.at("09:15:06");
+  r.recorder.onFrame(niftyTicker(25_400));
+  r.recorder.tick();
+  for (let i = 0; i < 5; i++) await settle();
+  r.recorder.tick();
+  r.at("09:16:05");
+  r.recorder.tick();
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepEqual(r.fetched, []);
+  assert.equal(r.chains.length, 0);
+  assert.ok(heldKeys(r.held).length > 0, "futures and option windows still held");
+  assert.ok((r.depthSets.at(-1) ?? []).length > 0, "depth still set");
+  assert.equal(r.recorder.status().chain.enabled, false);
 });
 
 test("after the window, and during a replay, everything is released", async () => {

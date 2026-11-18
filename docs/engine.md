@@ -78,6 +78,7 @@ All settings come from `.env.local`, which both the engine and the web read.
 | `ENGINE_HOST` | `127.0.0.1` | Control API address. Keep it on localhost; the web proxies to it |
 | `ENGINE_DATA_DIR` | `data/engine` | Lock file, logs and journal. Git-ignored |
 | `ENGINE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `ENGINE_RECORD_OPTION_CHAIN` | on | `false` (or `0`, `off`, `no`) stops the recorder's [option chain snapshots](#research-recording). Set it on every engine but one that shares a Dhan account |
 | `DHAN_CLIENT_ID` | none | Dhan account |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | none | Where the access token saved on the Settings page lives |
 | `DHAN_ACCESS_TOKEN` | none | Fallback token when Redis has none |
@@ -384,7 +385,7 @@ Indices carry no volume, so Ticker is enough for them. An instrument listed twic
 | NIFTY options, three nearest (weekly) expiries | Main journal, Full mode | ±15, ±10 and ±5 strikes around the money (126 contracts). The window follows the index and only grows during the day, so no series is cut |
 | BANKNIFTY options, two nearest (monthly) expiries | Main journal, Full mode | ±15 and ±10 strikes (104 contracts) |
 | 20-level depth: NIFTY's two nearest futures and its nearest expiry's ±5 strikes, then BANKNIFTY's two nearest futures | `<date>.depth.bin` | Dhan's depth connection (`wss://depth-api-feed.dhan.co/twentydepth`), up to 50 instruments; price, quantity and order count per level. Starts with 26 and grows with NIFTY's window until 50 |
-| Option chain: NIFTY's three nearest expiries, BANKNIFTY's two | `<date>.chain.bin` | Once a minute while the market is open (5 seconds into the minute) and once at the close: IV, delta, gamma, theta, vega, OI and previous OI, volume, best bid and ask for strikes within 10% of the index. 75–90 KB per expiry per snapshot, so about 150 MB a day |
+| Option chain: NIFTY's three nearest expiries, BANKNIFTY's two | `<date>.chain.bin` | Once a minute while the market is open (5 seconds into the minute) and once at the close: IV, delta, gamma, theta, vega, OI and previous OI, volume, best bid and ask for strikes within 10% of the index. 75–90 KB per expiry per snapshot, so about 150 MB a day. Off with `ENGINE_RECORD_OPTION_CHAIN=false` |
 | What each recorded ID is | Main journal, `instruments` control records | Key, future or option, expiry, strike, CE/PE, lot size, name. A day stays readable after its contracts expire and leave Dhan's instrument file |
 
 **Side files.** `<date>.depth.bin` and `<date>.chain.bin` sit next to the day's journal in the same [format](../src/engine/journal/format.ts). The depth file holds the depth connection's raw frames (connection 1) plus its `state` and `subscribe` events; decode frames with `parseDepthFrame()` in [depth-packets.ts](../src/lib/live/feed/depth-packets.ts). The chain file holds `option-chain` control records: `{ underlying, expiry, minute, lastPrice, oc }` (underlying is `NIFTY` or `BANKNIFTY`), where `oc` is Dhan's per-strike object. Replays and the Pulse page read only the main journal; the side files are research data and nothing replays them yet.
@@ -394,6 +395,8 @@ Indices carry no volume, so Ticker is enough for them. An instrument listed twic
 **Futures.** Each download of Dhan's instrument file (Settings, or the engine's own download before a session) also writes the unexpired NSE and BSE index futures to `instruments/index-futures.parquet`. If that table is missing or older than the day, the recorder downloads the file again, at most every 10 minutes.
 
 **Sockets.** The depth connection is a second socket per engine. Dhan allows five per account: prod and a dev engine both running use four. A third engine against the live feed would go over and Dhan would cut the oldest socket, so test engines should replay rather than connect.
+
+**Option chain rate limit.** Dhan answers one option chain request every 3 seconds per account. Two engines recording chains on the same account both ask at 5 seconds into each minute, and the slower one is refused with "Too many requests. Further requests may result in the user being blocked" and then pauses all its Dhan requests for a minute. On 18 November 2026 this cost prod the chains from 09:15 to 09:53. So only one engine per account records chains: the dev engine sets `ENGINE_RECORD_OPTION_CHAIN=false`.
 
 **Size.** Full mode on the constituents and options, plus depth, makes the main journal several times larger than in Quote mode, and the depth file may well be bigger still. Measure the first full day on the Engine page; compression and upload to S3 are the next step, and the disk has about 85 GB free.
 

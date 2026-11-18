@@ -419,11 +419,15 @@ function RecorderPanel({ recorder, now }: { recorder: NonNullable<EngineStatus["
         <StatRow
           label="Option chain"
           value={
+            chain.enabled === false ? (
+              <span className="text-muted">Off (ENGINE_RECORD_OPTION_CHAIN)</span>
+            ) : (
             <span>
               {quantity.format(chain.snapshots)} snapshots this run
               {chain.lastAt && ` · last ${formatAge(Math.max(0, now - chain.lastAt))} ago`}
               {chain.errors > 0 && <span className="text-warn"> · {chain.errors} failed{chain.lastError ? ` (${chain.lastError})` : ""}</span>}
             </span>
+            )
           }
         />
         {chain.file?.date && <StatRow label={<span className="pl-3 font-mono">{chain.file.date}.chain.bin</span>} value={bytes(chain.file.bytes)} />}

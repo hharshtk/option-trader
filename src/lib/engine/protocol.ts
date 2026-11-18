@@ -252,6 +252,8 @@ export interface RecorderStatus {
     file: JournalStatus | null;
   };
   chain: {
+    /** False when ENGINE_RECORD_OPTION_CHAIN switches snapshots off. Engines before it don't send it: read missing as on. */
+    enabled: boolean;
     snapshots: number;
     lastAt: number | null;
     errors: number;

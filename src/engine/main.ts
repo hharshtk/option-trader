@@ -66,6 +66,8 @@ const config = {
   token: process.env.ENGINE_TOKEN?.trim() ?? "",
   dataDir: path.resolve(ROOT, process.env.ENGINE_DATA_DIR ?? "data/engine"),
   logLevel: (process.env.ENGINE_LOG_LEVEL ?? "info") as LogLevel,
+  // On unless switched off: a second engine on the same Dhan account should set it to false.
+  recordOptionChain: !/^(false|0|off|no)$/i.test(process.env.ENGINE_RECORD_OPTION_CHAIN?.trim() ?? ""),
 };
 
 const clock = createLiveClock();
@@ -223,7 +225,9 @@ const recorder = createRecorder({
   fetchChain: (underlying, expiry) => getOptionChain(INDEX[underlying as keyof typeof INDEX], expiry),
   depthFile: () => depthJournal.status(),
   chainFile: () => chainJournal.status(),
+  recordChain: config.recordOptionChain,
 });
+if (!config.recordOptionChain) recorderLog.info("option chain snapshots off (ENGINE_RECORD_OPTION_CHAIN)");
 
 const dhan = createDhanWatch({
   log: logs.logger("dhan"),

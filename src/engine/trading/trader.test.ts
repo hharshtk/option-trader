@@ -387,6 +387,34 @@ test("a position is sold when its hold time runs out and at the square-off time"
   }
 });
 
+test("with two positions allowed, a signal that stays on buys again after the cooldown, then waits for room", async () => {
+  const h = await harness({ strategy: { holdMinutes: 60, stopLossPct: 0, targetPct: 0, exitOnOpposite: false }, risk: { maxOpenPositions: 2, cooldownMinutes: 2 } });
+  try {
+    const at = await toSignal(h);
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), at + 400);
+    const minute = async (m: number) => {
+      h.state.session = session(m + 1);
+      const t = OPEN + m * MIN + 2_000;
+      h.feed(niftyTick(25_905), t - 500);
+      h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), t - 400);
+      h.feed(niftyTick(25_905), t);
+      await h.trader.idle();
+      h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), t + 400);
+    };
+    await minute(18); // inside the 2 minutes after the first buy
+    assert.equal(h.trader.status().positions.length, 1);
+    await minute(19);
+    assert.equal(h.trader.status().positions.length, 2, "a second position opens alongside the first");
+    await minute(22);
+    const status = h.trader.status();
+    assert.equal(status.positions.length, 2, "no third position");
+    assert.equal(status.intents.filter((i) => i.outcome === "taken").length, 2);
+    assert.match(status.note, /Holding 2 positions/);
+  } finally {
+    await h.close();
+  }
+});
+
 test("a replay of a day recorded without options trades against 1-minute candles", async () => {
   const h = await harness();
   try {

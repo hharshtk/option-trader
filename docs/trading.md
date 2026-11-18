@@ -39,7 +39,8 @@ The engine paper-trades NIFTY options. At the close of every minute it reads the
 | Runs stored as Parquet (S3 when configured), read back with DuckDB | Built |
 | Strategies and Activity pages | Built |
 | Live orders through Dhan | Not built. See [Before live orders](#before-live-orders) |
-| Futures, option selling, spreads, more than one position at a time | Not built |
+| Several positions at once (**Positions at once**, default 1) | Built |
+| Futures, option selling, spreads | Not built |
 
 Nothing here can reach Dhan's order API: there is no code that places an order.
 
@@ -55,7 +56,7 @@ To try it with the market closed, start a replay on the Engine page (or `npm run
 | Button | Does |
 |---|---|
 | Start paper trading / Turn entries off | Arms or disarms entries. Open positions keep their exits either way |
-| Sell open position | Sells what is open now |
+| Sell open position(s) | Sells everything that is open now |
 | Stop for the day | Sells what is open and takes no more entries until you press Resume or the next day starts |
 
 **What starts on its own.** With entries off the engine still reads the signals and, when "Record these options every session" is on (the default), keeps the option window subscribed so the journal records it. It never opens a position with entries off.
@@ -66,7 +67,7 @@ To try it with the market closed, start a replay on the Engine page (or `npm run
 feed frame ──► quotes ──► fill due orders ──► stops, targets, hold time, square-off
 minute close (+1.5 s) ──► Pulse signals ──► sell on an opposite signal
                                         └─► followed signal fired?
-                                              quiet checks (entries on, window, limits, flat)
+                                              quiet checks (entries on, window, limits, room for a position)
                                               contract: nearest expiry, strike by the offset
                                               fresh quote; premium and spread limits
                                               decision API ──► approved ──► buy on the paper book
@@ -74,7 +75,7 @@ minute close (+1.5 s) ──► Pulse signals ──► sell on an opposite sign
 ```
 
 - **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Two or more agree.
-- **One position at a time** on the paper book. A signal that fires while a position is open is ignored.
+- **Positions at once** (default 1) caps how many positions the paper book holds together. A signal that fires while that many are open is ignored. With more than one allowed, a signal that stays on buys again once **Wait after a trade** has passed since the last buy. The cooldown counts from buys as well as sells, so the engine doesn't buy every minute. Each position keeps its own stop, target and hold time. **Most premium a trade** applies to each position, so the most premium at risk is that limit times **Positions at once**. The daily loss limit counts every open position.
 - **Proposals** are recorded once they pass the quiet checks, with the reason when they aren't traded.
 - **Exits** are the engine's own and never wait for the decision API.
 
@@ -94,13 +95,14 @@ Set on the Strategies page; kept in `data/engine/trading/config.json`. They appl
 | Skip expiries nearer than | 0 days | 0 trades the nearest expiry, on expiry day too |
 | Entries from / until | 09:25 / 14:45 IST | |
 | Sell everything at | 15:10 IST | |
-| Trades a day | 12 | |
+| Trades a day | 12 | Open positions count towards it |
+| Positions at once | 1 | 1 to 10. The shadow book follows the same cap |
 | Stop the day at a loss of | ₹3,000 | After charges, open position included |
 | Or after losses in a row | 4 | |
 | Most premium a trade | ₹25,000 | Premium × quantity |
 | Least premium | ₹5 | |
 | Widest spread | 3% | Only checked when the order book is known |
-| Wait after a trade | 2 min | |
+| Wait after a trade | 2 min | Counted from the last buy or sell |
 | Oldest quote to trade on | 10 s | |
 | Decision role | Gate | Gate, Shadow or Off |
 | Take a trade at | 0.55 | The model's probability |
@@ -199,7 +201,7 @@ Dhan's STT line shows ₹2.00, rounded to the rupee; its total uses the unrounde
 | Check | When it fails |
 |---|---|
 | Entries on, not stopped for the day, inside the entry window | No proposal |
-| Flat on the paper book, cooldown over, trades a day not reached | No proposal |
+| Fewer than **Positions at once** open, cooldown over, trades a day not reached | No proposal |
 | NIFTY's price fresh | Proposal rejected: the feed may be down |
 | Contract exists; its quote is fresh | Rejected |
 | Premium within the least and most; spread within the limit | Rejected |

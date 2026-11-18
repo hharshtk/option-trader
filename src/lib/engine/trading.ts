@@ -56,6 +56,8 @@ export interface TradingConfig {
     entryUntil: string;
     squareOffAt: string;
     maxTradesPerDay: number;
+    /** Positions held at the same time on the paper book. 1 waits for each trade to close before the next. */
+    maxOpenPositions: number;
     /** Rupees after charges. At this loss the day's trading stops and open positions are sold. */
     maxDailyLoss: number;
     maxConsecutiveLosses: number;
@@ -65,7 +67,7 @@ export interface TradingConfig {
     minPremium: number;
     /** Skip when the bid-ask spread is wider than this share of the price, in percent. */
     maxSpreadPct: number;
-    /** Minutes to wait after closing a trade before the next entry. */
+    /** Minutes to wait after a buy or a sell before the next entry. */
     cooldownMinutes: number;
     /** No entry on a quote older than this, in seconds. */
     maxQuoteAgeSeconds: number;
@@ -114,6 +116,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     entryUntil: "14:45",
     squareOffAt: "15:10",
     maxTradesPerDay: 12,
+    maxOpenPositions: 1,
     maxDailyLoss: 3_000,
     maxConsecutiveLosses: 4,
     maxPremiumPerTrade: 25_000,
@@ -215,6 +218,7 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
     apply(next.risk, risk, "entryUntil", time, "Entries until");
     apply(next.risk, risk, "squareOffAt", time, "Square-off time");
     apply(next.risk, risk, "maxTradesPerDay", (v, n) => number(v, n, 1, 200, true), "Trades a day");
+    apply(next.risk, risk, "maxOpenPositions", (v, n) => number(v, n, 1, 10, true), "Positions at once");
     apply(next.risk, risk, "maxDailyLoss", (v, n) => number(v, n, 100, 1_000_000), "Daily loss limit");
     apply(next.risk, risk, "maxConsecutiveLosses", (v, n) => number(v, n, 1, 50, true), "Losses in a row");
     apply(next.risk, risk, "maxPremiumPerTrade", (v, n) => number(v, n, 500, 10_000_000), "Premium per trade");
@@ -517,6 +521,11 @@ export interface TradingStatus {
   decisionReady: boolean;
   /** Which providers have a key configured. */
   decisionProviders: Record<DecisionProviderId, boolean>;
+  /**
+   * The last traded price of every contract traded in this run, by feed key, so closed trades can
+   * show where the option went after it was sold. Contracts stay subscribed for the whole run.
+   */
+  prices: Record<string, { price: number; at: number }>;
 }
 
 export type TradingList = "trades" | "orders" | "intents" | "decisions" | "events";
