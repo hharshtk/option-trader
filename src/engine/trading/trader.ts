@@ -21,11 +21,13 @@ import path from "node:path";
 import { INDEX } from "../../lib/dhan/instruments.ts";
 import type { JournalSession } from "../../lib/engine/protocol.ts";
 import {
+  DECISION_PROVIDERS,
   DEFAULT_TRADING_CONFIG,
   mergeTradingConfig,
   type Book,
   type BookTotals,
   type ContractsStatus,
+  type DecisionProviderId,
   type DecisionRecord,
   type DecisionRequest,
   type DecisionScore,
@@ -45,6 +47,7 @@ import {
   type TradingUpdate,
 } from "../../lib/engine/trading.ts";
 import { computePulse, type Pulse } from "../../lib/insight/pulse.ts";
+import { sessionInputs } from "../../lib/strategies/signals.ts";
 import type { FeedHub } from "../../lib/live/feed/feed-hub.ts";
 import { parseFrame, parseInstrumentKey, type Instrument } from "../../lib/live/feed/packets.ts";
 import { addCharges, NO_CHARGES, orderCharges, roundTripCharges } from "../../lib/trading/charges.ts";
@@ -119,7 +122,8 @@ export interface TraderOptions {
   hold: () => () => void;
   /** The day so far, decoded from the journal: what the Pulse page reads. */
   session: (date: string) => Promise<JournalSession | null>;
-  decisions: DecisionProvider;
+  /** One client per provider; the settings choose which answers. */
+  decisions: Record<DecisionProviderId, DecisionProvider>;
   loadContracts: (marketDate: string, live: boolean) => Promise<{ book: ContractBook | null; problem: string | null }>;
   /** 1-minute candles for a contract on a day, for replays of days recorded without options. */
   loadCandles: (contract: OptionRef, date: string) => Promise<Candle[]>;
@@ -128,6 +132,8 @@ export interface TraderOptions {
 }
 
 export interface Trader {
+  /** The settings in force, without building the whole status. Don't change the object. */
+  config(): Readonly<TradingConfig>;
   /** Loads the saved settings. */
   start(): Promise<void>;
   /** Every frame the feed delivers, with its time on the market's clock. Never throws. */
@@ -136,6 +142,11 @@ export interface Trader {
   tick(): void;
   status(): TradingStatus;
   command(body: unknown): Promise<TradingCommandResult>;
+  /**
+   * Trades a strategy store version from the next entry: its signal and numbers, trade rules and AI
+   * check. Only the engine's strategy store calls this; settings patches can't change a strategy.
+   */
+  useStrategy(ref: NonNullable<TradingConfig["strategyRef"]>, strategy: TradingConfig["strategy"], decision: TradingConfig["decision"]): Promise<TradingCommandResult>;
   history(run: string | null): Promise<TradingHistory>;
   /** What was sent to the decision API for one of the current run's decisions, or null when there is no such decision. */
   decisionRequest(id: string): DecisionRequest | null;
@@ -800,7 +811,9 @@ export function createTrader(options: TraderOptions): Trader {
     const session = await options.session(active.info.date);
     if (run !== active) return;
     const pulse = session ? computePulse(session, NIFTY_CONSTITUENTS) : null;
-    const reading = pulse ? readSignal(pulse, minute, config.strategy.signal) : null;
+    const inputs = session ? sessionInputs(session, NIFTY_CONSTITUENTS) : null;
+    // The traded strategy's own signal numbers, from the strategy store.
+    const reading = pulse && inputs ? readSignal(pulse, inputs, minute, config.strategy.signal, config.strategy.params) : null;
     if (!pulse || !reading) return;
     active.signal = reading;
     touch();
@@ -1028,7 +1041,7 @@ export function createTrader(options: TraderOptions): Trader {
     } else {
       const started = performance.now();
       try {
-        answer = await decisions.ask({ model: config.decision.model, state, timeoutMs: config.decision.timeoutMs });
+        answer = await decisions[config.decision.provider].ask({ model: config.decision.model, state, timeoutMs: config.decision.timeoutMs });
         decision.latencyMs = Math.round(performance.now() - started);
         active.answers.set(key, { answer, latencyMs: decision.latencyMs });
         void rememberAnswer(active.info.date, key, answer, decision.latencyMs);
@@ -1138,7 +1151,8 @@ export function createTrader(options: TraderOptions): Trader {
         error: active?.saveError ?? lastStorage.error,
         pending: active?.pendingSave ?? 0,
       },
-      decisionReady: decisions.ready,
+      decisionReady: decisions[config.decision.provider].ready,
+      decisionProviders: { openrouter: decisions.openrouter.ready, liquid: decisions.liquid.ready },
     };
   }
 
@@ -1147,7 +1161,9 @@ export function createTrader(options: TraderOptions): Trader {
     if (active?.saveError) health.set("trading", "degraded", `Tables not saved: ${active.saveError}`);
     else if (active?.halt) health.set("trading", "degraded", `Stopped for the day: ${active.halt.reason}`);
     else if (active && config.armed && active.ready && (!active.book || !active.expiry)) health.set("trading", "degraded", active.contractsProblem ?? "No option contracts");
-    else if (config.armed && config.decision.mode !== "off" && !decisions.ready) health.set("trading", "degraded", "The decision API has no key (OPENROUTER_API_KEY)");
+    else if (config.armed && config.decision.mode !== "off" && !decisions[config.decision.provider].ready) {
+      health.set("trading", "degraded", `The decision API has no key (${DECISION_PROVIDERS.find((p) => p.id === config.decision.provider)!.keyName})`);
+    }
     else health.set("trading", "ok");
   }
 
@@ -1275,22 +1291,32 @@ export function createTrader(options: TraderOptions): Trader {
       case "config": {
         const { armed: _armed, ...patch } = (request.patch && typeof request.patch === "object" ? request.patch : {}) as Record<string, unknown>;
         void _armed;
-        const merged = mergeTradingConfig(config, patch);
-        if (!merged.ok) return { ok: false, message: merged.message };
-        const expiryRule = config.strategy.minDaysToExpiry;
-        config = merged.config;
-        await saveConfig();
-        if (active) {
-          if (active.book && config.strategy.minDaysToExpiry !== expiryRule) active.expiry = pickExpiry(active.book, active.info.date, config.strategy.minDaysToExpiry);
-          event(active, "config", "Settings changed");
-          subscribe(active);
+        // What is traded comes from the strategy store (useStrategy), never from a settings patch.
+        if (patch.strategy !== undefined || patch.decision !== undefined || patch.strategyRef !== undefined) {
+          return { ok: false, message: "The strategy and its AI check are set in the strategy store: change them on the Strategies page." };
         }
-        touch();
-        return { ok: true, message: "Settings saved. Open positions keep the stop and target they were opened with." };
+        return applyConfig(patch, "Settings changed", "Settings saved. Open positions keep the stop and target they were opened with.");
       }
       default:
         return { ok: false, message: "Unknown trading command." };
     }
+  }
+
+  /** Merges a settings patch, saves it and applies it from the next entry. */
+  async function applyConfig(patch: Record<string, unknown>, note: string, message: string): Promise<TradingCommandResult> {
+    const merged = mergeTradingConfig(config, patch);
+    if (!merged.ok) return { ok: false, message: merged.message };
+    const expiryRule = config.strategy.minDaysToExpiry;
+    config = merged.config;
+    await saveConfig();
+    const active = run;
+    if (active) {
+      if (active.book && config.strategy.minDaysToExpiry !== expiryRule) active.expiry = pickExpiry(active.book, active.info.date, config.strategy.minDaysToExpiry);
+      event(active, "config", note);
+      subscribe(active);
+    }
+    touch();
+    return { ok: true, message };
   }
 
   async function settle() {
@@ -1301,6 +1327,8 @@ export function createTrader(options: TraderOptions): Trader {
   }
 
   return {
+    /** The settings in force, without building the whole status. Don't change the object. */
+    config: (): Readonly<TradingConfig> => config,
     async start() {
       try {
         const saved = JSON.parse(await readFile(configFile, "utf8")) as unknown;
@@ -1316,6 +1344,8 @@ export function createTrader(options: TraderOptions): Trader {
     tick,
     status,
     command,
+    useStrategy: (ref, strategy, decision) =>
+      applyConfig({ strategyRef: ref, strategy, decision }, `Now trading ${ref.name}, version ${ref.version}`, `Paper trading now follows ${ref.name}, version ${ref.version}.`),
     history: (id) => store.history(id),
     decisionRequest(id) {
       const decision = run?.decisions.find((d) => d.id === id);

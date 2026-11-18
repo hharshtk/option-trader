@@ -221,6 +221,7 @@ Plain HTTP on `127.0.0.1:3100`. Every request needs `Authorization: Bearer <ENGI
 | `POST /v1/feed/unpin` | `{ key }` |
 | `POST /v1/feed/connections/:id/close` | Close a socket other than Main |
 | `GET /v1/trading`, `POST /v1/trading`, `GET /v1/trading/history?run=` | Paper trading: its status, its commands and its stored runs. See [trading.md](trading.md#control-api) |
+| `GET /v1/research`, `POST /v1/research`, `GET /v1/research/studies`, `GET /v1/research/study?id=` | Research studies: the job queue, its commands, the stored studies and one study. Each job runs in a child process. See [research-center.md](research-center.md#how-it-fits-together) |
 | `POST /v1/replay` | Switch the feed to a recorded day and back, and steer it: `{ action: "start", date?, from?, speed? }`, `"stop"` (back to live), `"play"`, `"pause"`, `{ action: "speed", speed }`, `{ action: "seek", to: "HH:MM[:SS]" }`. Answers `{ ok, message }`. See [Replay](#replay) |
 
 Feed routes answer 503 for the second or so after start-up, before the feed exists.

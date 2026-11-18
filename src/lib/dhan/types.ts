@@ -163,7 +163,18 @@ export interface IntradayCandleRequest {
   toDate: string;
 }
 
-/** Parallel arrays; `timestamp` is epoch seconds. */
+/** Daily bars, `/charts/historical`. `toDate` is exclusive. */
+export interface DailyCandleRequest {
+  securityId: string;
+  exchangeSegment: ExchangeSegment;
+  instrument: ChartInstrument;
+  /** "YYYY-MM-DD" */
+  fromDate: string;
+  /** "YYYY-MM-DD", not included */
+  toDate: string;
+}
+
+/** Parallel arrays; `timestamp` is epoch seconds (for daily bars, midnight IST of the day). */
 export interface IntradayCandles {
   open: number[];
   high: number[];

@@ -1,5 +1,6 @@
 import { dhanRequest } from "./client.ts";
 import type {
+  DailyCandleRequest,
   DhanFundLimit,
   DhanHolding,
   DhanOrder,
@@ -66,6 +67,15 @@ export function getIntradayCandles(request: IntradayCandleRequest) {
     body: { ...request, oi: false },
     cacheTtlMs: 60_000,
   });
+}
+
+/**
+ * Daily bars since the instrument's listing, one request for any range. The close is the
+ * exchange's official close (the auction price since NSE's closing auction), which is the
+ * previous close the feed measures changes from.
+ */
+export function getDailyCandles(request: DailyCandleRequest) {
+  return dhanRequest<IntradayCandles>("POST", "/charts/historical", { body: { ...request, oi: false } });
 }
 
 /** `expiry` is "YYYY-MM-DD", taken from getOptionExpiries. */

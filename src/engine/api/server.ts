@@ -14,6 +14,8 @@ import {
   type TelemetryTopic,
 } from "../../lib/engine/protocol.ts";
 import type { DecisionRequest, TradingCommandResult, TradingHistory, TradingStatus } from "../../lib/engine/trading.ts";
+import type { ResearchCommandResult, ResearchStatus, StudyDetail, StudyRow } from "../../lib/research/types.ts";
+import type { StrategiesStatus, StrategyCommandResult, StrategyDetail } from "../../lib/strategies/types.ts";
 import type { LogHub } from "../telemetry/logger.ts";
 import type { Logger } from "../telemetry/logger.ts";
 import type { TelemetryHub } from "../telemetry/hub.ts";
@@ -22,7 +24,7 @@ import { clientAddress, createAuthThrottle, type AuthThrottle } from "./auth-thr
 import { handleFeedRoute, readJson } from "./feed-routes.ts";
 import { openSse, type SseClient } from "./sse.ts";
 
-const TOPICS: readonly TelemetryTopic[] = ["status", "log", "metrics", "feed", "trading", "bars", "gaps"];
+const TOPICS: readonly TelemetryTopic[] = ["status", "log", "metrics", "feed", "trading", "research", "strategies", "bars", "gaps"];
 const LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 
 export interface ControlServerOptions {
@@ -46,6 +48,19 @@ export interface ControlServerOptions {
     command(body: unknown): Promise<TradingCommandResult>;
     history(run: string | null): Promise<TradingHistory>;
     decisionRequest(id: string): DecisionRequest | null;
+  };
+  /** Research: the job queue (`POST /v1/research`), the stored studies and one study. */
+  research?: {
+    status(): ResearchStatus;
+    command(body: unknown): Promise<ResearchCommandResult>;
+    studies(): Promise<StudyRow[]>;
+    study(id: string): Promise<StudyDetail | null>;
+  };
+  /** The strategy store: every strategy, one strategy's history, and its commands (`POST /v1/strategies`). */
+  strategies?: {
+    status(): StrategiesStatus;
+    detail(id: string): StrategyDetail | null;
+    command(body: unknown): Promise<StrategyCommandResult>;
   };
 }
 
@@ -124,6 +139,12 @@ export function createControlServer(options: ControlServerOptions): ControlServe
       if (url.pathname === "/v1/trading" && request.method === "POST" && options.trading) {
         return json(response, 200, await options.trading.command(await readJson(request)));
       }
+      if (url.pathname === "/v1/research" && request.method === "POST" && options.research) {
+        return json(response, 200, await options.research.command(await readJson(request)));
+      }
+      if (url.pathname === "/v1/strategies" && request.method === "POST" && options.strategies) {
+        return json(response, 200, await options.strategies.command(await readJson(request)));
+      }
       if (request.method !== "GET") return json(response, 404, { error: `No route ${request.method} ${url.pathname}` });
       switch (url.pathname) {
         case "/v1/trading":
@@ -143,6 +164,33 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
             log.warn("could not read trading history", { error: message });
             return json(response, 502, { error: `Could not read the stored runs: ${message}` });
+          }
+        }
+        case "/v1/research":
+          if (!options.research) return json(response, 404, { error: "No research" });
+          return json(response, 200, options.research.status());
+        case "/v1/strategies":
+          if (!options.strategies) return json(response, 404, { error: "No strategy store" });
+          return json(response, 200, options.strategies.status());
+        case "/v1/strategies/one": {
+          if (!options.strategies) return json(response, 404, { error: "No strategy store" });
+          const detail = options.strategies.detail(url.searchParams.get("id") ?? "");
+          return detail ? json(response, 200, detail) : json(response, 404, { error: "No such strategy" });
+        }
+        case "/v1/research/studies":
+        case "/v1/research/study": {
+          if (!options.research) return json(response, 404, { error: "No research" });
+          try {
+            if (url.pathname === "/v1/research/studies") return json(response, 200, { studies: await options.research.studies() });
+            const id = url.searchParams.get("id") ?? "";
+            if (!/^[a-z0-9-]{8,80}$/.test(id)) return json(response, 400, { error: "id must be a study id" });
+            const study = await options.research.study(id);
+            return study ? json(response, 200, study) : json(response, 404, { error: `No study ${id}` });
+          } catch (error) {
+            // Studies are read from the file store, which can be unreachable.
+            const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+            log.warn("could not read studies", { error: message });
+            return json(response, 502, { error: `Could not read the stored studies: ${message}` });
           }
         }
         case "/v1/status":

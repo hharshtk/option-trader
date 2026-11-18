@@ -16,4 +16,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - What the Pulse page computes (verdict, attribution, Signal lab, option replay): [docs/pulse.md](docs/pulse.md).
 - How the engine trades (paper trading, the decision API gate, charges, Parquet tables on S3): [docs/trading.md](docs/trading.md). Live orders are not built; nothing may place an order with Dhan until that document's go-live steps are met.
 - What data there is for research (minute history, recordings) and what to watch out for: [docs/research.md](docs/research.md).
+- The Research tab (signal studies run in the engine, stored on S3, reproducible): [docs/research-center.md](docs/research-center.md).
+- The strategy store (every strategy and its versions on S3; the one source Pulse, paper trading and research read): [docs/strategies.md](docs/strategies.md).
 - Storage rule: anything that needs a database is a Parquet file in the file store (S3), read and written with DuckDB through [src/lib/db/parquet-store.ts](src/lib/db/parquet-store.ts). No SQLite, no DuckDB database file.

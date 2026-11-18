@@ -29,7 +29,15 @@ import { INDEX } from "../lib/dhan/instruments.ts";
 import { createDepthFeed } from "./recording/depth-feed.ts";
 import { createFuturesSource } from "./recording/futures.ts";
 import { createRecorder } from "./recording/recorder.ts";
-import { createOpenRouterDecisions } from "./trading/decision.ts";
+import { createStudyStore } from "../lib/research/study-store.ts";
+import { getFileStore } from "../lib/storage.ts";
+import { CATALOG } from "../lib/strategies/catalog.ts";
+import { createStrategyStore } from "../lib/strategies/store.ts";
+import { createResearchRunner } from "./research/runner.ts";
+import { createStrategyService, type StrategyService } from "./strategies/service.ts";
+import { createDecisionProviders } from "./trading/decision.ts";
+
+const decisionProviders = createDecisionProviders(process.env);
 import { createCandleSource, createContractSource } from "./trading/sources.ts";
 import { createTradingStore } from "./trading/store.ts";
 import { createTrader } from "./trading/trader.ts";
@@ -171,7 +179,7 @@ const trader = createTrader({
   hold: () => feeds.holdReplay(),
   // The same day the Pulse page reads: as far as the replay has reached, or today's journal.
   session: (date) => feeds.replaySession(date) ?? journalSessions.read(date),
-  decisions: createOpenRouterDecisions(process.env.OPENROUTER_API_KEY),
+  decisions: decisionProviders,
   loadContracts,
   loadCandles: createCandleSource({
     directory: path.join(tradingDirectory, "candles"),
@@ -182,6 +190,40 @@ const trader = createTrader({
     },
   }),
   publish: (status) => telemetry.publish("trading", status, status.marketTime),
+});
+
+// Research studies, each run in a child process at low priority. Stored under the same namespace
+// as trading, so a development engine never mixes its studies with the main engine's.
+const research = createResearchRunner({
+  namespace: tradingNamespace,
+  version,
+  log: logs.logger("research"),
+  health,
+  now: clock.now,
+  parquet,
+  store: createStudyStore(parquet, getFileStore(), tradingNamespace),
+  trading: () => {
+    const { strategy, decision } = trader.config();
+    return { signal: strategy.signal, holdMinutes: strategy.holdMinutes, decision };
+  },
+  openRouterKey: process.env.OPENROUTER_API_KEY,
+  providersReady: { openrouter: decisionProviders.openrouter.ready, liquid: decisionProviders.liquid.ready },
+  publish: (state) => telemetry.publish("research", state),
+  // A finished test of a stored strategy is recorded on that strategy.
+  onStudy: (studyId) => strategies.onStudy(studyId),
+});
+
+// The strategy store: every strategy and its versions on S3, the one paper trading follows, and
+// tests through research. Same namespace as trading, so development and production keep apart.
+const strategies: StrategyService = createStrategyService({
+  namespace: tradingNamespace,
+  store: createStrategyStore(parquet, tradingNamespace),
+  log: logs.logger("strategies"),
+  now: clock.now,
+  trader,
+  research,
+  publish: (state) => telemetry.publish("strategies", state),
+  catalog: CATALOG,
 });
 
 // The research recorder: futures, a wide option window, 20-level depth and option chain snapshots
@@ -300,6 +342,8 @@ const server = createControlServer({
     return feeds.replaySession(day) ?? journalSessions.read(day);
   },
   trading: trader,
+  research,
+  strategies,
 });
 
 health.set("engine", "ok");
@@ -329,6 +373,9 @@ async function start() {
 
   await dhan.ready();
   await trader.start();
+  void research.start();
+  // After the trader has loaded its settings: the store may carry them over, or set them.
+  await strategies.start();
   // After the token is loaded, so the first connection doesn't start out "missing a token".
   journal.control("engine-start", { version, pid: process.pid, universe: universe.name }, clock.now());
   if (args.replay) {
@@ -390,6 +437,7 @@ async function stop(reason: string, code = 0) {
   sampler.stop();
   // Before the feed goes: the run's tables are saved and its log closed.
   await trader.stop().catch((error: unknown) => log.error("trading did not stop cleanly", { error: String(error) }));
+  research.stop();
   recorder.shutdown();
   feeds.shutdown();
   journal.control("engine-stop", { reason }, clock.now());

@@ -2,19 +2,21 @@
 // its trading (`GET /v1/trading`, the `trading` telemetry topic) and the commands the web sends
 // (`POST /v1/trading`). Plain TypeScript, so both sides can load it.
 
+import { DEFAULT_SIGNAL_PARAMS, SIGNAL_PARAM_LIMITS, SIGNALS, withDefaults, type SignalId, type SignalParams } from "../strategies/signals.ts";
 import type { Charges } from "../trading/charges.ts";
 
-/** Which signal from the Pulse signal lab the strategy follows. */
-export type SignalId = "breadth" | "lead" | "momentum" | "agree";
-export const SIGNALS: readonly { id: SignalId; name: string }[] = [
-  { id: "breadth", name: "Breadth thrust" },
-  { id: "lead", name: "Basket leads index" },
-  { id: "momentum", name: "15-minute momentum" },
-  { id: "agree", name: "Two or more agree" },
-];
+// The signals are defined once, in the strategy store (src/lib/strategies/signals.ts).
+export { SIGNALS, type SignalId, type SignalParams };
 
 /** How the decision API takes part. */
 export type DecisionMode = "off" | "shadow" | "gate";
+
+/** Who answers the decision API's questions. Both take the same typed questions and give the same answers. */
+export type DecisionProviderId = "openrouter" | "liquid";
+export const DECISION_PROVIDERS: readonly { id: DecisionProviderId; name: string; defaultModel: string; keyName: string; price: string }[] = [
+  { id: "openrouter", name: "OpenRouter", defaultModel: "perplexity/pplx-decider-v1.3:free", keyName: "OPENROUTER_API_KEY", price: "free models: 50 answers a day, 1,000 with $10 of credit" },
+  { id: "liquid", name: "Liquid", defaultModel: "d1.2-ultra", keyName: "LIQUID_API_KEY", price: "$0.042 per million input tokens, about $0.00006 an answer" },
+];
 
 export interface TradingConfig {
   /** New entries are taken only while armed. Exits always run. */
@@ -25,8 +27,15 @@ export interface TradingConfig {
   recordOptions: boolean;
   /** Strikes kept subscribed on each side of the money. */
   windowStrikes: number;
+  /**
+   * The strategy store's version these settings came from. `strategy` and `decision` below are
+   * that version's, set by the engine's strategy store; the web can't change them directly.
+   */
+  strategyRef: { id: string; version: number; name: string } | null;
   strategy: {
     signal: SignalId;
+    /** The signals' numbers (thresholds and windows). */
+    params: SignalParams;
     /** Both: calls on a long signal, puts on a short one. */
     side: "both" | "calls" | "puts";
     /** 0 is at the money; +1 is one strike out of the money, −1 one strike in. */
@@ -73,6 +82,8 @@ export interface TradingConfig {
   };
   decision: {
     mode: DecisionMode;
+    provider: DecisionProviderId;
+    /** The provider's model id. */
     model: string;
     /** Take a trade only when the model's probability that it should be taken is at least this. */
     minProbability: number;
@@ -89,8 +100,10 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   mode: "paper",
   recordOptions: true,
   windowStrikes: 6,
+  strategyRef: null,
   strategy: {
     signal: "agree",
+    params: DEFAULT_SIGNAL_PARAMS,
     side: "both",
     strikeOffset: 0,
     lots: 1,
@@ -116,6 +129,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   fills: { slippage: 0.05, looseSlippage: 0.5, latencyMs: 300 },
   decision: {
     mode: "gate",
+    provider: "openrouter",
     model: "perplexity/pplx-decider-v1.3:free",
     minProbability: 0.55,
     vetoAgainstRegime: true,
@@ -134,6 +148,8 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: true; config: TradingConfig } | { ok: false; message: string } {
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) return { ok: false, message: "Settings must be an object." };
   const next = structuredClone(base);
+  // Settings saved before a signal existed get its default numbers.
+  next.strategy.params = withDefaults(next.strategy.params);
   const problems: string[] = [];
 
   const number = (value: unknown, name: string, min: number, max: number, integer = false) => {
@@ -197,6 +213,32 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
     apply(next.strategy, strategy, "targetPct", (v, n) => number(v, n, 0, 500), "Target");
     apply(next.strategy, strategy, "exitOnOpposite", bool, "Exit on opposite signal");
     apply(next.strategy, strategy, "minDaysToExpiry", (v, n) => number(v, n, 0, 30, true), "Minimum days to expiry");
+    const params = strategy.params;
+    if (params !== undefined) {
+      if (!params || typeof params !== "object" || Array.isArray(params)) problems.push("Signal settings must be an object");
+      else {
+        // Each signal's numbers, checked against SIGNAL_PARAM_LIMITS; missing ones keep their value.
+        const given = params as Record<string, Record<string, unknown> | undefined>;
+        for (const [signal, fields] of Object.entries(SIGNAL_PARAM_LIMITS) as [keyof SignalParams, Record<string, readonly [number, number, boolean]>][]) {
+          const source = given[signal];
+          if (source === undefined) continue;
+          if (!source || typeof source !== "object") {
+            problems.push(`Signal settings for ${signal} must be an object`);
+            continue;
+          }
+          for (const [field, [min, max, integer]] of Object.entries(fields)) {
+            apply(next.strategy.params[signal] as unknown as Record<string, number>, source, field, (v, n) => number(v, n, min, max, integer), `${signal} ${field}`);
+          }
+        }
+      }
+    }
+  }
+  if (top.strategyRef !== undefined) {
+    const ref = top.strategyRef as { id?: unknown; version?: unknown; name?: unknown } | null;
+    if (ref === null) next.strategyRef = null;
+    else if (ref && typeof ref.id === "string" && /^[a-z0-9-]{3,80}$/.test(ref.id) && typeof ref.version === "number" && Number.isInteger(ref.version) && ref.version > 0 && typeof ref.name === "string") {
+      next.strategyRef = { id: ref.id, version: ref.version, name: ref.name.slice(0, 120) };
+    } else problems.push("Strategy reference must name a stored strategy and version");
   }
 
   const risk = section("risk");
@@ -228,12 +270,22 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
     apply(next.decision, decision, "vetoAgainstRegime", bool, "Veto against the regime");
     apply(next.decision, decision, "timeoutMs", (v, n) => number(v, n, 500, 30_000, true), "Decision timeout");
     apply(next.decision, decision, "onError", (v, n) => oneOf(v, n, ["skip", "allow"] as const), "On a missing answer");
+    const provider = next.decision.provider;
+    apply(next.decision, decision, "provider", (v, n) => oneOf(v, n, ["openrouter", "liquid"] as const), "Decision provider");
+    // A new provider without a model named alongside it gets that provider's default model.
+    if (next.decision.provider !== provider && decision.model === undefined) {
+      next.decision.model = DECISION_PROVIDERS.find((p) => p.id === next.decision.provider)!.defaultModel;
+    }
     if (decision.model !== undefined) {
       if (typeof decision.model === "string" && /^[\w.:/-]{3,120}$/.test(decision.model)) next.decision.model = decision.model;
       else problems.push("Decision model must be a model id such as perplexity/pplx-decider-v1.3:free");
     }
   }
 
+  const sp = next.strategy.params;
+  if (sp["ema-cross"].fast >= sp["ema-cross"].slow) problems.push("The fast average must be shorter than the slow one");
+  if (sp["rsi-reversal"].low >= sp["rsi-reversal"].high) problems.push("RSI's low line must be below its high line");
+  if (sp["gap-fade"].minPct >= sp["gap-fade"].maxPct) problems.push("The smallest gap to fade must be below the largest");
   if (next.risk.entryFrom >= next.risk.entryUntil) problems.push("Entries must start before they end");
   if (next.risk.entryUntil > next.risk.squareOffAt) problems.push("Entries must end by the square-off time");
   return problems.length > 0 ? { ok: false, message: `${problems.join(". ")}.` } : { ok: true, config: next };
@@ -497,8 +549,10 @@ export interface TradingStatus {
     /** Records written since the last save. */
     pending: number;
   };
-  /** Whether the decision API has a key configured. */
+  /** Whether the chosen decision provider has a key configured. */
   decisionReady: boolean;
+  /** Which providers have a key configured. */
+  decisionProviders: Record<DecisionProviderId, boolean>;
 }
 
 export type TradingList = "trades" | "orders" | "intents" | "decisions" | "events";

@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { GetObjectCommand, NoSuchKey, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, NoSuchKey, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 // Where the app keeps files it creates (downloaded instruments now; other data later).
 // With S3_BUCKET set, files go to S3, which works on serverless hosts. Otherwise they go to
@@ -14,6 +15,17 @@ export interface FileStore {
   /** The file's bytes, or null if there's no such file. */
   get(key: string): Promise<Uint8Array | null>;
   put(key: string, body: Uint8Array | string, contentType: string): Promise<void>;
+  /**
+   * The files whose keys start with `prefix`, sorted by key. `etag` changes whenever a file's
+   * content does: S3's ETag, or an MD5 of the content on disk.
+   */
+  list(prefix: string): Promise<StoredFile[]>;
+}
+
+export interface StoredFile {
+  key: string;
+  bytes: number;
+  etag: string;
 }
 
 // turbopackIgnore: this folder holds runtime data, not code, so the build mustn't trace into it.
@@ -61,6 +73,19 @@ function s3Store(bucket: string): FileStore {
       checkKey(key);
       await client.send(new PutObjectCommand({ Bucket: bucket, Key: prefix + key, Body: body, ContentType: contentType }));
     },
+    async list(start) {
+      const out: StoredFile[] = [];
+      let token: string | undefined;
+      do {
+        const page = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix + start, ContinuationToken: token }));
+        for (const object of page.Contents ?? []) {
+          if (!object.Key) continue;
+          out.push({ key: object.Key.slice(prefix.length), bytes: object.Size ?? 0, etag: (object.ETag ?? "").replaceAll('"', "") });
+        }
+        token = page.IsTruncated ? page.NextContinuationToken : undefined;
+      } while (token);
+      return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    },
   };
 }
 
@@ -87,6 +112,30 @@ function diskStore(root: string): FileStore {
       await writeFile(`${file}.tmp`, body);
       await rename(`${file}.tmp`, file);
     },
+    async list(start) {
+      // The folder part of the prefix is read recursively; the rest filters by key.
+      const folder = start.includes("/") ? start.slice(0, start.lastIndexOf("/")) : "";
+      let names: string[];
+      try {
+        names = (await readdir(path.join(root, ...folder.split("/").filter(Boolean)), { recursive: true })) as string[];
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
+      }
+      const out: StoredFile[] = [];
+      for (const name of names) {
+        const key = [folder, name.split(path.sep).join("/")].filter(Boolean).join("/");
+        if (!key.startsWith(start) || key.endsWith(".tmp")) continue;
+        try {
+          const body = await readFile(path.join(root, ...key.split("/")));
+          out.push({ key, bytes: body.length, etag: createHash("md5").update(body).digest("hex") });
+        } catch (error) {
+          // A folder, or a file removed meanwhile.
+          if (!["EISDIR", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        }
+      }
+      return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    },
   };
 }
 
@@ -109,7 +158,9 @@ async function ensureDir(dir: string) {
 // Rebuilt when S3_BUCKET changes, e.g. after editing .env.local while `next dev` runs.
 let cached: { bucket: string | undefined; store: FileStore } | undefined;
 
-export function getFileStore(): FileStore {
+/** The configured file store; pass `root` to force a local folder (tests). */
+export function getFileStore(root?: string): FileStore {
+  if (root) return diskStore(root);
   const bucket = process.env.S3_BUCKET?.trim() || undefined;
   if (cached?.bucket !== bucket || !cached) {
     cached = { bucket, store: bucket ? s3Store(bucket) : diskStore(DATA_DIR) };

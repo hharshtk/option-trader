@@ -4,10 +4,12 @@
 // day's trades after charges, what the decision API said about each entry, the settings, and the
 // runs stored as Parquet. The engine does the trading; this page shows it and sends commands.
 
+import Link from "next/link";
 import { Fragment, useEffect, useState, useTransition, type FormEvent, type ReactNode } from "react";
-import { controlTrading } from "@/app/(cockpit)/strategies/actions";
+import { controlTrading } from "@/app/(cockpit)/(strategies)/strategies/actions";
 import { buttonClass, DataTable, EmptyState, PageHeader, Panel, Pnl, StatRow, Tag, Td } from "@/components/ui";
 import {
+  DECISION_PROVIDERS,
   SIGNALS,
   type DecisionRecord,
   type DecisionRequest,
@@ -94,7 +96,9 @@ export function TradingConsole() {
           {result && <p className={`mt-1 text-label ${result.ok ? "text-muted" : "text-down"}`}>{result.message}</p>}
           {trading.contracts.problem && <p className="mt-1 text-label text-warn">{trading.contracts.problem}</p>}
           {config.decision.mode !== "off" && !trading.decisionReady && (
-            <p className="mt-1 text-label text-warn">The decision API has no key: set OPENROUTER_API_KEY in the engine&apos;s .env.local and restart it.</p>
+            <p className="mt-1 text-label text-warn">
+              The decision API has no key: set {DECISION_PROVIDERS.find((p) => p.id === config.decision.provider)?.keyName ?? "its key"} in the engine&apos;s .env.local and restart it, or choose the other provider in Settings.
+            </p>
           )}
           {trading.storage.error && <p className="mt-1 text-label text-warn">Tables not saved: {trading.storage.error}. The engine keeps a local log and retries.</p>}
         </div>
@@ -451,21 +455,6 @@ function NumberField({ label, value, onChange, step = 1, min = 0, suffix }: { la
   );
 }
 
-function SelectField<T extends string>({ label, value, onChange, options }: { label: string; value: T; onChange: (value: T) => void; options: readonly { value: T; label: string }[] }) {
-  return (
-    <label className="flex flex-col gap-1 text-label text-muted">
-      {label}
-      <select value={value} onChange={(e) => onChange(e.target.value as T)} className={fieldClass}>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 function TimeField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="flex flex-col gap-1 text-label text-muted">
@@ -489,54 +478,33 @@ function Settings({ config, pending, send }: { config: TradingConfig; pending: b
   const [draft, setDraft] = useState(config);
   // Starting and stopping entries is the header button's job, not this form's.
   const dirty = JSON.stringify({ ...draft, armed: null }) !== JSON.stringify({ ...config, armed: null });
-  const strategy = <K extends keyof TradingConfig["strategy"]>(key: K, value: TradingConfig["strategy"][K]) => setDraft((d) => ({ ...d, strategy: { ...d.strategy, [key]: value } }));
   const risk = <K extends keyof TradingConfig["risk"]>(key: K, value: TradingConfig["risk"][K]) => setDraft((d) => ({ ...d, risk: { ...d.risk, [key]: value } }));
   const fills = <K extends keyof TradingConfig["fills"]>(key: K, value: TradingConfig["fills"][K]) => setDraft((d) => ({ ...d, fills: { ...d.fills, [key]: value } }));
-  const decision = <K extends keyof TradingConfig["decision"]>(key: K, value: TradingConfig["decision"][K]) => setDraft((d) => ({ ...d, decision: { ...d.decision, [key]: value } }));
 
+  // The strategy and its AI check come from the strategy store; these are the account's own settings.
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const { strategy: s, risk: r, fills: f, decision: d, recordOptions, windowStrikes } = draft;
-    send({ action: "config", patch: { strategy: s, risk: r, fills: f, decision: d, recordOptions, windowStrikes } });
+    const { risk: r, fills: f, recordOptions, windowStrikes } = draft;
+    send({ action: "config", patch: { risk: r, fills: f, recordOptions, windowStrikes } });
   };
 
   return (
     <Panel title="Settings" meta="Saved in the engine; they apply from the next entry">
       <form onSubmit={submit} className="space-y-4">
-        <Group title="Strategy">
-          <SelectField label="Follow signal" value={draft.strategy.signal} onChange={(v) => strategy("signal", v)} options={SIGNALS.map((s) => ({ value: s.id, label: s.name }))} />
-          <SelectField
-            label="Trade"
-            value={draft.strategy.side}
-            onChange={(v) => strategy("side", v)}
-            options={[
-              { value: "both", label: "Calls on long, puts on short" },
-              { value: "calls", label: "Calls only" },
-              { value: "puts", label: "Puts only" },
-            ]}
-          />
-          <SelectField
-            label="Strike"
-            value={String(draft.strategy.strikeOffset)}
-            onChange={(v) => strategy("strikeOffset", Number(v))}
-            options={[
-              { value: "-2", label: "2 strikes in the money" },
-              { value: "-1", label: "1 strike in the money" },
-              { value: "0", label: "At the money" },
-              { value: "1", label: "1 strike out of the money" },
-              { value: "2", label: "2 strikes out of the money" },
-            ]}
-          />
-          <NumberField label="Lots" value={draft.strategy.lots} min={1} onChange={(v) => strategy("lots", v)} />
-          <NumberField label="Hold" value={draft.strategy.holdMinutes} min={1} suffix="min" onChange={(v) => strategy("holdMinutes", v)} />
-          <NumberField label="Stop loss (0 is off)" value={draft.strategy.stopLossPct} suffix="% of premium" onChange={(v) => strategy("stopLossPct", v)} />
-          <NumberField label="Target (0 is off)" value={draft.strategy.targetPct} suffix="% of premium" onChange={(v) => strategy("targetPct", v)} />
-          <NumberField label="Skip expiries nearer than" value={draft.strategy.minDaysToExpiry} suffix="days" onChange={(v) => strategy("minDaysToExpiry", v)} />
-          <label className="inline-flex h-7 items-center gap-1.5 text-label text-muted">
-            <input type="checkbox" checked={draft.strategy.exitOnOpposite} onChange={(e) => strategy("exitOnOpposite", e.target.checked)} />
-            Sell on an opposite signal
-          </label>
-        </Group>
+        <div className="rounded-sm border border-line px-3 py-2 text-body">
+          <span className="text-muted">Strategy: </span>
+          {config.strategyRef ? (
+            <>
+              {config.strategyRef.name}, version {config.strategyRef.version}.{" "}
+            </>
+          ) : (
+            "none chosen yet. "
+          )}
+          <span className="text-label text-muted">What it trades and its AI check are set in </span>
+          <Link href={config.strategyRef ? `/strategies?id=${encodeURIComponent(config.strategyRef.id)}` : "/strategies"} className="text-label text-accent hover:underline">
+            Strategies →
+          </Link>
+        </div>
 
         <Group title="Limits">
           <TimeField label="Entries from" value={draft.risk.entryFrom} onChange={(v) => risk("entryFrom", v)} />
@@ -550,38 +518,6 @@ function Settings({ config, pending, send }: { config: TradingConfig; pending: b
           <NumberField label="Widest spread" value={draft.risk.maxSpreadPct} step={0.5} suffix="%" onChange={(v) => risk("maxSpreadPct", v)} />
           <NumberField label="Wait after a trade" value={draft.risk.cooldownMinutes} suffix="min" onChange={(v) => risk("cooldownMinutes", v)} />
           <NumberField label="Oldest quote to trade on" value={draft.risk.maxQuoteAgeSeconds} min={1} suffix="s" onChange={(v) => risk("maxQuoteAgeSeconds", v)} />
-        </Group>
-
-        <Group title="Decision API">
-          <SelectField
-            label="Role"
-            value={draft.decision.mode}
-            onChange={(v) => decision("mode", v)}
-            options={[
-              { value: "gate", label: "Gate: can turn a trade down" },
-              { value: "shadow", label: "Shadow: asked and recorded only" },
-              { value: "off", label: "Off" },
-            ]}
-          />
-          <NumberField label="Take a trade at" value={draft.decision.minProbability} step={0.05} suffix="probability or more" onChange={(v) => decision("minProbability", v)} />
-          <SelectField
-            label="No answer in time"
-            value={draft.decision.onError}
-            onChange={(v) => decision("onError", v)}
-            options={[
-              { value: "skip", label: "Skip the entry" },
-              { value: "allow", label: "Take the entry" },
-            ]}
-          />
-          <NumberField label="Wait at most" value={draft.decision.timeoutMs} step={500} min={500} suffix="ms" onChange={(v) => decision("timeoutMs", v)} />
-          <label className="flex flex-col gap-1 text-label text-muted">
-            Model
-            <input type="text" value={draft.decision.model} onChange={(e) => decision("model", e.target.value)} className={`${fieldClass} w-72 font-mono`} spellCheck={false} />
-          </label>
-          <label className="inline-flex h-7 items-center gap-1.5 text-label text-muted">
-            <input type="checkbox" checked={draft.decision.vetoAgainstRegime} onChange={(e) => decision("vetoAgainstRegime", e.target.checked)} />
-            Turn down trades against the regime
-          </label>
         </Group>
 
         <Group title="Paper fills and recording">

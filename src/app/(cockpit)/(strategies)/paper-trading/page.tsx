@@ -4,17 +4,17 @@ import { TradingConsole } from "@/components/trading/trading-console";
 import { WorkspaceSkeleton } from "@/components/ui";
 import { requireSession } from "@/lib/cockpit";
 
-export const metadata: Metadata = { title: "Strategies" };
+export const metadata: Metadata = { title: "Paper trading" };
 
-export default function StrategiesPage() {
+export default function PaperTradingPage() {
   return (
-    <Suspense fallback={<WorkspaceSkeleton title="Strategies" panels={4} />}>
-      <Strategies />
+    <Suspense fallback={<WorkspaceSkeleton title="Paper trading" panels={4} />}>
+      <PaperTrading />
     </Suspense>
   );
 }
 
-async function Strategies() {
+async function PaperTrading() {
   await requireSession();
   return <TradingConsole />;
 }

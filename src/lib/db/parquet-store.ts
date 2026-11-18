@@ -33,6 +33,11 @@ export interface ParquetStore {
    * `read_parquet(...)` expression for those files. Answers [] when no file matches.
    */
   query<T>(sql: (table: (keyOrGlob: string) => string) => string, values?: Record<string, string | number | boolean | null>): Promise<T[]>;
+  /**
+   * The same, answered column by column: `{ name: values[] }`. Far lighter than one object per
+   * row for large reads (a month of candles is half a million rows).
+   */
+  queryColumns(sql: (table: (keyOrGlob: string) => string) => string, values?: Record<string, string | number | boolean | null>): Promise<Record<string, unknown[]>>;
 }
 
 const KEY = /^[\w.*=-]+(\/[\w.*=-]+)*$/;
@@ -129,6 +134,15 @@ async function runQuery<T>(sql: string, values: Record<string, string | number |
   }
 }
 
+async function runColumns(sql: string, values: Record<string, string | number | boolean | null> | undefined): Promise<Record<string, unknown[]>> {
+  try {
+    return await withDb(async (db) => (await db.runAndReadAll(sql, values)).getColumnsObjectJS() as Record<string, unknown[]>);
+  } catch (error) {
+    if (isMissing(error)) return {};
+    throw error;
+  }
+}
+
 function remoteStore(s3: S3Settings): ParquetStore {
   const url = (key: string) => {
     checkKey(key);
@@ -145,6 +159,10 @@ function remoteStore(s3: S3Settings): ParquetStore {
     async query(sql, values) {
       await ensureRemote(s3);
       return runQuery(sql((key) => `read_parquet(${quote(url(key))}, union_by_name = true)`), values);
+    },
+    async queryColumns(sql, values) {
+      await ensureRemote(s3);
+      return runColumns(sql((key) => `read_parquet(${quote(url(key))}, union_by_name = true)`), values);
     },
   };
 }
@@ -167,6 +185,9 @@ function localStore(root: string): ParquetStore {
     },
     query(sql, values) {
       return runQuery(sql((key) => `read_parquet(${quote(url(key))}, union_by_name = true)`), values);
+    },
+    queryColumns(sql, values) {
+      return runColumns(sql((key) => `read_parquet(${quote(url(key))}, union_by_name = true)`), values);
     },
   };
 }

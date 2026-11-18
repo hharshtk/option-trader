@@ -7,6 +7,7 @@
 // each minute's signal uses only closes up to that minute; outcomes are scored afterwards.
 
 import type { JournalSession, SessionInstrument } from "../engine/protocol.ts";
+import { AGREE, agreeOf, DEFAULT_SIGNAL_PARAMS, sessionInputs, SINGLE_SIGNALS, voteOf } from "../strategies/signals.ts";
 
 export interface PulseConstituent {
   key: string;
@@ -252,67 +253,21 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
   const book = bookWeight > 0 ? bookKnown.reduce((a, c) => a + c.weight * c.book!, 0) / bookWeight : null;
 
   // --- Signals ------------------------------------------------------------------------------------
-  const breadthAt = (t: number) => session.minutes[t].advancers - session.minutes[t].decliners;
-  const ewMove = (t: number, h: number) => {
-    let sum = 0;
-    let n = 0;
-    for (const { s } of stocks) {
-      const a = s.closes[t];
-      const b = s.closes[t - h];
-      if (a != null && b != null) {
-        sum += a / b - 1;
-        n += 1;
-      }
-    }
-    return n ? sum / n : null;
-  };
-  const idxMove = (t: number, h: number) => (idx[t] != null && idx[t - h] != null ? idx[t]! / idx[t - h]! - 1 : null);
+  // Defined once in the strategy store's signals (src/lib/strategies/signals.ts), read here with
+  // their default numbers: the trader and research read the same definitions.
+  const inputs = sessionInputs(session, constituents, benchmark)!;
+  const P = DEFAULT_SIGNAL_PARAMS;
+  const definitions = SINGLE_SIGNALS.map((s) => ({
+    id: s.id,
+    name: s.name,
+    rule: s.rule(P),
+    read: (t: number) => s.read(inputs, t, P),
+    threshold: s.threshold(P),
+    format: (v: number) => s.format(v, P),
+  }));
 
-  const definitions: {
-    id: string;
-    name: string;
-    rule: string;
-    read: (t: number) => number | null;
-    threshold: number;
-    format: (v: number) => string;
-  }[] = [
-    {
-      id: "breadth",
-      name: "Breadth thrust",
-      rule: "Stocks up minus down changed by 6 or more over 5 minutes: follow it",
-      read: (t) => (t >= 5 ? breadthAt(t) - breadthAt(t - 5) : null),
-      threshold: 6,
-      format: (v) => `${v > 0 ? "+" : ""}${v} stocks in 5 min`,
-    },
-    {
-      id: "lead",
-      name: "Basket leads index",
-      rule: "The average stock beat NIFTY by 4 bps or more over 5 minutes: NIFTY follows the average stock",
-      read: (t) => {
-        if (t < 5) return null;
-        const a = ewMove(t, 5);
-        const b = idxMove(t, 5);
-        return a === null || b === null ? null : (a - b) * 10_000;
-      },
-      threshold: 4,
-      format: (v) => `${v > 0 ? "+" : ""}${v.toFixed(1)} bps vs NIFTY`,
-    },
-    {
-      id: "momentum",
-      name: "15-minute momentum",
-      rule: "NIFTY moved 0.12% or more over 15 minutes: follow it",
-      read: (t) => (t >= 15 ? idxMove(t, 15) : null),
-      threshold: 0.0012,
-      format: (v) => `${v > 0 ? "+" : ""}${(v * 100).toFixed(2)}% in 15 min`,
-    },
-  ];
-
-  const voteOf = (v: number | null, threshold: number): -1 | 0 | 1 => (v === null || Math.abs(v) < threshold ? 0 : v > 0 ? 1 : -1);
   const singleVote = (t: number) => definitions.map((d) => voteOf(d.read(t), d.threshold));
-  const agreeVote = (t: number): -1 | 0 | 1 => {
-    const sum = singleVote(t).reduce<number>((a, v) => a + v, 0);
-    return sum >= 2 ? 1 : sum <= -2 ? -1 : 0;
-  };
+  const agreeVote = (t: number): -1 | 0 | 1 => agreeOf(singleVote(t), P);
   const score = (vote: (t: number) => -1 | 0 | 1) => HORIZONS.map((h) => scoreSignal(vote, h));
 
   // Only minutes whose outcome is complete count, and after each firing the next horizon is
@@ -357,9 +312,9 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
   });
   const agreeNow = agreeVote(now);
   signals.push({
-    id: "agree",
-    name: "Two or more agree",
-    rule: "At least two of the signals above point the same way and none the other: follow them",
+    id: AGREE.id,
+    name: AGREE.name,
+    rule: AGREE.rule(P),
     kind: "combined",
     value: singleVote(now).reduce<number>((a, v) => a + v, 0),
     display: agreeNow === 0 ? "no agreement" : `${agreeNow > 0 ? "long" : "short"}: ${signals.filter((x) => x.vote === agreeNow).map((x) => x.name).join(", ")}`,

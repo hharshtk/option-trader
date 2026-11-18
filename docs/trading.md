@@ -46,9 +46,9 @@ Nothing here can reach Dhan's order API: there is no code that places an order.
 ## Using it
 
 1. Restart the engine so it runs this code (`npm run engine`, or the systemd service).
-2. Open **Strategies**. It shows the state, the signals at the last minute close and the settings.
-3. Press **Start paper trading**. Entries are off until you do; the choice is kept across restarts.
-4. Watch **Strategies** for positions and P&L, and **Activity** for the log, the proposals and the orders.
+2. Open **Strategies** and pick what to trade: **Paper trade version N** on a strategy's card ([strategies.md](strategies.md)). That also turns entries on.
+3. The **Paper trading** tab shows the state, the signals at the last minute close, positions, P&L and the account's settings. **Start paper trading** there turns entries on and off; the choice is kept across restarts.
+4. Watch **Paper trading** for positions and P&L, and **Activity** for the log, the proposals and the orders.
 
 To try it with the market closed, start a replay on the Engine page (or `npm run engine:replay -- --date 2026-11-16 --speed 60`). Trading starts a new run on the replayed day and trades it as it plays.
 
@@ -80,7 +80,7 @@ minute close (+1.5 s) ──► Pulse signals ──► sell on an opposite sign
 
 ## Settings
 
-Set on the Strategies page; kept in `data/engine/trading/config.json`. They apply from the next entry; an open position keeps the stop and target it was opened with.
+Since 17 November 2026 what is traded comes from the **strategy store** ([strategies.md](strategies.md)): the signal and its numbers, the trade rules and the decision API settings below are a strategy version's, set by the store (`trader.useStrategy()`); a settings change that tries to set them is refused. The account's own settings (entry window, limits, fills, recording) are on the **Paper trading** tab. All are kept in `data/engine/trading/config.json`, with `strategyRef` naming the version traded. They apply from the next entry; an open position keeps the stop and target it was opened with.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -116,7 +116,16 @@ The defaults are starting points, not fitted values.
 
 ## Decision API
 
-OpenRouter's Decisions API, the one in [scripts/decision-demo.ts](../scripts/decision-demo.ts), with `OPENROUTER_API_KEY` from `.env.local`. For each proposal the engine sends the market context as JSON and three typed questions:
+Two providers answer the same questions in the same way; **Provider** in the Strategies page's settings picks one, and choosing it also sets that provider's default model:
+
+| Provider | Key in `.env.local` | Default model | Price | Tried in |
+|---|---|---|---|---|
+| OpenRouter's Decisions API | `OPENROUTER_API_KEY` | `perplexity/pplx-decider-v1.3:free` | Free models: 50 answers a day, 1,000 once the account has bought $10 of credit; 20 a minute | [scripts/decision-demo.ts](../scripts/decision-demo.ts) |
+| Liquid's decisions API | `LIQUID_API_KEY` | `d1.2-ultra` | $0.042 per million input tokens, nothing for output: about $0.00006 an answer | [scripts/liquid-decision-test.ts](../scripts/liquid-decision-test.ts) |
+
+The clients are in [decision.ts](../src/engine/trading/decision.ts) (`createOpenRouterDecisions`, `createLiquidDecisions`); the engine builds one per key at start, so a new key needs a restart. Measured 17 November 2026 with the trader's questions and a full context: Liquid about 0.5 s and 1,330 input tokens an answer. Answers recorded for replays are keyed by model, so switching provider never reuses the other's answers.
+
+For each proposal the engine sends the market context as JSON and three typed questions:
 
 | Question | Type | Answer |
 |---|---|---|

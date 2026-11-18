@@ -12,6 +12,8 @@ import type {
   TelemetryTopic,
 } from "@/lib/engine/protocol";
 import type { TradingStatus, TradingUpdate } from "@/lib/engine/trading";
+import type { ResearchStatus } from "@/lib/research/types";
+import type { StrategiesStatus } from "@/lib/strategies/types";
 
 const BASE = "/api/engine/v1";
 const MAX_LOGS = 2_000;
@@ -32,6 +34,10 @@ export interface EngineTelemetry {
   feed: FeedHealth | null;
   /** Paper trading: run, positions, trades, decisions. */
   trading: TradingStatus | null;
+  /** Research: queued and running jobs, the history held, the one-click study. */
+  research: ResearchStatus | null;
+  /** The strategy store: every strategy, and the one paper trading follows. */
+  strategies: StrategiesStatus | null;
   logs: LogEntry[];
   /** Messages the engine dropped because this tab fell behind. */
   dropped: number;
@@ -43,6 +49,8 @@ type Action =
   | { type: "metrics"; metrics: MetricsSnapshot }
   | { type: "feed"; feed: FeedHealth }
   | { type: "trading"; update: TradingUpdate }
+  | { type: "research"; research: ResearchStatus }
+  | { type: "strategies"; strategies: StrategiesStatus }
   | { type: "logs"; entries: LogEntry[] }
   | { type: "gap"; dropped: number };
 
@@ -54,6 +62,8 @@ const INITIAL: EngineTelemetry = {
   metrics: null,
   feed: null,
   trading: null,
+  research: null,
+  strategies: null,
   logs: [],
   dropped: 0,
 };
@@ -75,6 +85,8 @@ function reduce(state: EngineTelemetry, action: Action): EngineTelemetry {
         metrics: restarted ? null : state.metrics,
         feed: restarted ? null : state.feed,
         trading: restarted ? null : state.trading,
+        research: restarted ? null : state.research,
+        strategies: restarted ? null : state.strategies,
       };
     }
     case "metrics":
@@ -90,6 +102,10 @@ function reduce(state: EngineTelemetry, action: Action): EngineTelemetry {
       if (!state.trading) return state;
       return { ...state, trading: { ...state.trading, ...update, listsRevision: state.trading.listsRevision } };
     }
+    case "research":
+      return { ...state, research: action.research };
+    case "strategies":
+      return { ...state, strategies: action.strategies };
     case "logs": {
       const logs = state.logs.concat(action.entries);
       return { ...state, logs: logs.length > MAX_LOGS ? logs.slice(-MAX_LOGS) : logs };
@@ -182,6 +198,8 @@ export function useEngineTelemetry(topics: readonly TelemetryTopic[]): EngineTel
         if (update.trades) heldLists = update.listsRevision;
         else if (update.listsRevision !== heldLists) void loadTrading();
       });
+      source.addEventListener("research", (event) => dispatch({ type: "research", research: read<ResearchStatus>(event) }));
+      source.addEventListener("strategies", (event) => dispatch({ type: "strategies", strategies: read<StrategiesStatus>(event) }));
       source.addEventListener("log", (event) => {
         pendingLogs.push(read<LogEntry>(event));
         if (!flushScheduled) {

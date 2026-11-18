@@ -13,6 +13,7 @@ import {
   OverviewIcon,
   PositionsIcon,
   PulseIcon,
+  ResearchIcon,
   SettingsIcon,
   SidebarIcon,
   StrategiesIcon,
@@ -37,7 +38,8 @@ const NAV: NavItem[][] = [
     { href: "/market-watch", label: "Market Watch", icon: MarketWatchIcon, built: true },
     { href: "/options-chain", label: "Options Chain", icon: OptionsChainIcon, built: true },
     { href: "/pulse", label: "Pulse", icon: PulseIcon, built: true },
-    { href: "/strategies", label: "Strategies", icon: StrategiesIcon, built: true },
+    { href: "/strategies", label: "Strategies", icon: StrategiesIcon, built: true, also: ["/paper-trading"] },
+    { href: "/research", label: "Research", icon: ResearchIcon, built: true },
   ],
   [
     { href: "/orders", label: "Orders", icon: OrdersIcon, built: true },

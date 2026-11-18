@@ -2,6 +2,8 @@
 // internals. Plain TypeScript with type-only imports, so both sides can load it.
 
 import type { FeedHealth } from "../live/feed/monitor.ts";
+import type { ResearchStatus } from "../research/types.ts";
+import type { StrategiesStatus } from "../strategies/types.ts";
 import type { TradingUpdate } from "./trading.ts";
 
 export const PROTOCOL_VERSION = 1;
@@ -358,7 +360,7 @@ export const REPLAY_SPEEDS = [1, 2, 5, 10, 30, 60, 300] as const;
 export const REPLAY_MIN_SPEED = 0.1;
 export const REPLAY_MAX_SPEED = 1000;
 
-export type TelemetryTopic = "status" | "log" | "metrics" | "feed" | "trading" | "bars" | "gaps";
+export type TelemetryTopic = "status" | "log" | "metrics" | "feed" | "trading" | "research" | "strategies" | "bars" | "gaps";
 
 export interface TelemetryData {
   status: EngineStatus;
@@ -366,6 +368,8 @@ export interface TelemetryData {
   metrics: MetricsSnapshot;
   feed: EngineFeedHealth;
   trading: TradingUpdate;
+  research: ResearchStatus;
+  strategies: StrategiesStatus;
   bars: unknown;
   gaps: unknown;
 }

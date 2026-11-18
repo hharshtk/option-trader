@@ -191,7 +191,8 @@ Futures caught the move, but their charges took it all. Options cost about ₹59
 ## Code layout
 
 ```
-src/lib/insight/pulse.ts                 computePulse(): weights, attribution, evidence, verdict, signals, scoring, chart series
+src/lib/insight/pulse.ts                 computePulse(): weights, attribution, evidence, verdict, scoring, chart series
+src/lib/strategies/signals.ts            the signals themselves, shared with the trader and research
 src/lib/insight/option-trades.ts         planTrades(), simulateTrades(), charges, futures comparison
 src/lib/insight/*.test.ts                node --test
 src/components/insight/pulse-view.tsx    the page: verdict, chart, attribution, Signal lab, method panel
@@ -207,7 +208,7 @@ src/app/api/insight/option-candles/route.ts  1-minute option candles from Dhan, 
 
 | To | Change |
 |---|---|
-| Add a signal | Add an entry to `definitions` in `computePulse()` (id, name, rule, `read(t)` using only data up to minute `t`, threshold, format). It is scored at every hold, appears in the lab, the chart and the verdict with no UI changes |
+| Add a signal | Add it to `SINGLE_SIGNALS` in [src/lib/strategies/signals.ts](../src/lib/strategies/signals.ts) (id, name, rule, `read(inputs, t, params)` using only data up to minute `t`, threshold, format), with its numbers in `SignalParams`. Pulse, the trader and research all read the signals from there ([strategies.md](strategies.md)) |
 | Change a verdict threshold | The `evidence.push` calls and `decide()` in `pulse.ts` |
 | Change the Signal lab's costs or holds | `COSTS`, `DEFAULT_COST` in `pulse-view.tsx`; `HORIZONS` in `pulse.ts` |
 | Change charge rates | `OPTION_RATES`, `FUTURES_RATES` in [charges.ts](../src/lib/trading/charges.ts) |

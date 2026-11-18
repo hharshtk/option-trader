@@ -8,7 +8,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { getParquetStore } from "../../lib/db/parquet-store.ts";
 import type { JournalSession, SessionInstrument } from "../../lib/engine/protocol.ts";
-import type { TradingConfig, TradingUpdate } from "../../lib/engine/trading.ts";
+import { DEFAULT_TRADING_CONFIG, type TradingConfig, type TradingUpdate } from "../../lib/engine/trading.ts";
 import { paise, roundTripCharges } from "../../lib/trading/charges.ts";
 import { createSessionCalendar } from "../market/session-calendar.ts";
 import type { Logger } from "../telemetry/logger.ts";
@@ -128,7 +128,7 @@ async function harness(config: { strategy?: object; decision?: object; risk?: ob
     const acquired: string[] = [];
     const asked: unknown[] = [];
     const published: TradingUpdate[] = [];
-    const decisions: DecisionProvider = {
+    const fake: DecisionProvider = {
       ready: true,
       async ask({ state: context }) {
         asked.push(context);
@@ -136,6 +136,7 @@ async function harness(config: { strategy?: object; decision?: object; risk?: ob
         return state.answer;
       },
     };
+    const decisions = { openrouter: fake, liquid: fake };
     const trader = createTrader({
       namespace: "test",
       directory: path.join(root, "trading"),
@@ -177,9 +178,15 @@ async function harness(config: { strategy?: object; decision?: object; risk?: ob
 
   const first = build();
   await first.trader.start();
-  const patch = { ...config, strategy: { signal: "momentum", ...config.strategy }, decision: { mode: "off", ...config.decision } };
-  const merged = await first.trader.command({ action: "config", patch });
-  assert.ok(merged.ok, merged.message);
+  // The strategy comes from the strategy store; the account's limits from the settings.
+  const strategy = { ...DEFAULT_TRADING_CONFIG.strategy, signal: "momentum", ...config.strategy } as TradingConfig["strategy"];
+  const decision = { ...DEFAULT_TRADING_CONFIG.decision, mode: "off", ...config.decision } as TradingConfig["decision"];
+  const used = await first.trader.useStrategy({ id: "test-strategy", version: 1, name: "Test" }, strategy, decision);
+  assert.ok(used.ok, used.message);
+  if (config.risk) {
+    const merged = await first.trader.command({ action: "config", patch: { risk: config.risk } });
+    assert.ok(merged.ok, merged.message);
+  }
   await first.trader.command({ action: "arm" });
   return first;
 }

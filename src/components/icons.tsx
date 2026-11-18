@@ -74,6 +74,16 @@ export function StrategiesIcon(props: IconProps) {
   );
 }
 
+export function ResearchIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M9.5 3.5h5" />
+      <path d="M10.5 3.5v5.2L5.3 17.6a2 2 0 0 0 1.7 2.9h10a2 2 0 0 0 1.7-2.9l-5.2-8.9V3.5" />
+      <path d="M7.6 14h8.8" />
+    </Icon>
+  );
+}
+
 export function OrdersIcon(props: IconProps) {
   return (
     <Icon {...props}>
