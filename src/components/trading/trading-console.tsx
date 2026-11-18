@@ -32,13 +32,15 @@ import { inr, istDateTime, price, quantity } from "@/lib/format";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/tabs";
 import { breakevenSellPrice } from "@/lib/trading/charges";
 import { exitLevels } from "@/lib/trading/exits";
-import { BookTag, clock, EXIT_REASON, fieldClass, NoTrading, useTrading, Vote } from "./shared";
+import { clock, EXIT_REASON, fieldClass, NoTrading, useTrading, Vote } from "./shared";
+import { ScalpLabPanel } from "./scalp-lab-panel";
 import { Arrow, Closeness, GUIDE, InfoButton, Outcome, SignalGuide } from "./signal-guide";
 
 export function TradingConsole() {
   const telemetry = useTrading();
   const trading = telemetry.trading;
   const [result, setResult] = useState<TradingCommandResult | null>(null);
+  const [shadowShown, setShowShadow] = useState(false);
   const [pending, startTransition] = useTransition();
   // Stable, so the notice's fade timer isn't restarted by every telemetry update.
   const dismiss = useCallback(() => setResult(null), []);
@@ -61,6 +63,8 @@ export function TradingConsole() {
 
   const { config, run } = trading;
   const open = trading.positions.filter((p) => p.book === "paper");
+  // Shadow trades get their own panel, never rows among the real ones.
+  const showShadow = shadowShown && (trading.trades.some((t) => t.book === "shadow") || trading.positions.some((p) => p.book === "shadow"));
   return (
     <>
       <PageHeader
@@ -105,8 +109,10 @@ export function TradingConsole() {
         <Notices trading={trading} result={result} onDismiss={dismiss} />
         <Totals trading={trading} />
         <Now trading={trading} />
-        {trading.positions.length > 0 && <OpenPositions positions={trading.positions} decisions={trading.decisions} />}
-        <Trades trades={trading.trades} decisions={trading.decisions} prices={trading.prices ?? {}} />
+        {open.length > 0 && <OpenPositions positions={open} decisions={trading.decisions} />}
+        <Trades trades={trading.trades} decisions={trading.decisions} prices={trading.prices ?? {}} showShadow={showShadow} onShowShadow={setShowShadow} />
+        {showShadow && <ShadowBook trading={trading} />}
+        <ScalpLabPanel lab={trading.scalpLab} />
         <Decisions trading={trading} />
         <Settings key={JSON.stringify({ ...config, armed: null })} config={config} pending={pending} send={send} providers={trading.decisionProviders ?? { openrouter: trading.decisionReady, liquid: false }} />
         <History live={run?.id ?? null} />
@@ -304,60 +310,59 @@ function Now({ trading }: { trading: TradingStatus }) {
 
 /** Open positions in the same columns as closed trades, marked to the latest price; shown only while something is open. */
 function OpenPositions({ positions, decisions }: { positions: Position[]; decisions: DecisionRecord[] }) {
-  const byId = new Map(decisions.map((d) => [d.id, d]));
-  const paper = positions.filter((p) => p.book === "paper").length;
-  const shadow = positions.length - paper;
   return (
-    <Panel title="Open positions" meta={`${paper} on paper${shadow > 0 ? `, ${shadow} shadow` : ""} · P&L if sold now, after charges on both orders`} flush>
-      <DataTable
-        caption="Open positions"
-        minWidth="min-w-[62rem]"
-        columns={["Bought", { label: "Sell by", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Now", "Stop", "Target", "Before charges", "Charges", "Net", "Decision"]}
-      >
-        {positions.map((position) => {
-          const decision = position.decisionId ? byId.get(position.decisionId) : undefined;
-          const move = position.mark - position.entryPrice;
-          return (
-            <tr key={`${position.book}-${position.id}`} className={position.book === "shadow" ? "text-muted" : undefined}>
-              <Td className="tabular-nums">{clock(position.openedAt)}</Td>
-              <Td className="tabular-nums">
-                {clock(position.exitBy)}
-                {position.status === "closing" && <span className="ml-1.5 text-label text-warn">selling</span>}
-                {position.status === "opening" && <span className="ml-1.5 text-label text-muted">buying</span>}
-              </Td>
-              <Td>
-                <span className="inline-flex items-center gap-1.5">
-                  <BookTag book={position.book} />
-                  {position.contract.name}
-                </span>
-              </Td>
-              <Td numeric>{quantity.format(position.quantity)}</Td>
-              <Td numeric>
-                <span title={position.entrySource === "book" ? "Bought at the ask" : position.entrySource === "candle" ? "Bought at a candle close" : "Bought at the last price"}>{position.entryPrice > 0 ? price.format(position.entryPrice) : "—"}</span>
-              </Td>
-              <Td numeric>
-                <span title={`Last price at ${clock(position.markAt)}`}>
-                  {price.format(position.mark)}
-                  {position.entryPrice > 0 && <ChangeSinceSale change={move} />}
-                </span>
-              </Td>
-              <Td numeric>{position.stopPrice ? price.format(position.stopPrice) : "off"}</Td>
-              <Td numeric>{position.targetPrice ? price.format(position.targetPrice) : "off"}</Td>
-              <Td numeric>
-                <Pnl value={position.unrealisedGross} />
-              </Td>
-              <Td numeric>
-                <span title="Charges paid on the buy plus those the sell would pay">{inr.format(position.unrealisedGross - position.unrealisedNet)}</span>
-              </Td>
-              <Td numeric>
-                <Pnl value={position.unrealisedNet} />
-              </Td>
-              <Td numeric>{decision?.probability != null ? decision.probability.toFixed(2) : "—"}</Td>
-            </tr>
-          );
-        })}
-      </DataTable>
+    <Panel title="Open positions" meta={`${positions.length} on paper · P&L if sold now, after charges on both orders`} flush>
+      <PositionsTable positions={positions} decisions={decisions} caption="Open positions" />
     </Panel>
+  );
+}
+
+function PositionsTable({ positions, decisions, caption }: { positions: Position[]; decisions: DecisionRecord[]; caption: string }) {
+  const byId = new Map(decisions.map((d) => [d.id, d]));
+  return (
+    <DataTable
+      caption={caption}
+      minWidth="min-w-[62rem]"
+      columns={["Bought", { label: "Sell by", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Now", "Stop", "Target", "Before charges", "Charges", "Net", "Decision"]}
+    >
+      {positions.map((position) => {
+        const decision = position.decisionId ? byId.get(position.decisionId) : undefined;
+        const move = position.mark - position.entryPrice;
+        return (
+          <tr key={`${position.book}-${position.id}`}>
+            <Td className="tabular-nums">{clock(position.openedAt)}</Td>
+            <Td className="tabular-nums">
+              {clock(position.exitBy)}
+              {position.status === "closing" && <span className="ml-1.5 text-label text-warn">selling</span>}
+              {position.status === "opening" && <span className="ml-1.5 text-label text-muted">buying</span>}
+            </Td>
+            <Td>{position.contract.name}</Td>
+            <Td numeric>{quantity.format(position.quantity)}</Td>
+            <Td numeric>
+              <span title={position.entrySource === "book" ? "Bought at the ask" : position.entrySource === "candle" ? "Bought at a candle close" : "Bought at the last price"}>{position.entryPrice > 0 ? price.format(position.entryPrice) : "—"}</span>
+            </Td>
+            <Td numeric>
+              <span title={`Last price at ${clock(position.markAt)}`}>
+                {price.format(position.mark)}
+                {position.entryPrice > 0 && <ChangeSinceSale change={move} />}
+              </span>
+            </Td>
+            <Td numeric>{position.stopPrice ? price.format(position.stopPrice) : "off"}</Td>
+            <Td numeric>{position.targetPrice ? price.format(position.targetPrice) : "off"}</Td>
+            <Td numeric>
+              <Pnl value={position.unrealisedGross} />
+            </Td>
+            <Td numeric>
+              <span title="Charges paid on the buy plus those the sell would pay">{inr.format(position.unrealisedGross - position.unrealisedNet)}</span>
+            </Td>
+            <Td numeric>
+              <Pnl value={position.unrealisedNet} />
+            </Td>
+            <Td numeric>{decision?.probability != null ? decision.probability.toFixed(2) : "—"}</Td>
+          </tr>
+        );
+      })}
+    </DataTable>
   );
 }
 
@@ -368,78 +373,130 @@ function ChangeSinceSale({ change }: { change: number }) {
   return <span className={`ml-1.5 tabular-nums ${tone}`}>({rounded > 0 ? "+" : ""}{rounded})</span>;
 }
 
-function Trades({ trades, decisions, prices }: { trades: Trade[]; decisions: DecisionRecord[]; prices: TradingStatus["prices"] }) {
-  const [showShadow, setShowShadow] = useState(false);
-  const shadowCount = trades.filter((t) => t.book === "shadow").length;
-  const shown = showShadow ? trades : trades.filter((t) => t.book === "paper");
-  const byId = new Map(decisions.map((d) => [d.id, d]));
+function Trades({
+  trades,
+  decisions,
+  prices,
+  showShadow,
+  onShowShadow,
+}: {
+  trades: Trade[];
+  decisions: DecisionRecord[];
+  prices: TradingStatus["prices"];
+  showShadow: boolean;
+  onShowShadow: (show: boolean) => void;
+}) {
+  const paper = trades.filter((t) => t.book === "paper");
+  const shadowCount = trades.length - paper.length;
   return (
     <Panel
       title="Trades"
-      meta={`${trades.length - shadowCount} on paper${shadowCount > 0 ? `, ${shadowCount} shadow` : ""}`}
+      meta={`${paper.length} on paper`}
       action={
         shadowCount > 0 && (
-          <label className="inline-flex items-center gap-1.5 text-label text-muted">
-            <input type="checkbox" checked={showShadow} onChange={(e) => setShowShadow(e.target.checked)} />
-            Show shadow trades
+          <label className="inline-flex items-center gap-1.5 text-label text-muted" title="Opens a separate panel below with the trades the AI turned down">
+            <input type="checkbox" checked={showShadow} onChange={(e) => onShowShadow(e.target.checked)} />
+            Show {shadowCount} shadow trade{shadowCount === 1 ? "" : "s"}
           </label>
         )
       }
       flush
     >
-      {shown.length === 0 ? (
+      {paper.length === 0 ? (
         <div className="p-3">
-          <EmptyState>{trades.length > 0 ? "No paper trades yet. Tick Show shadow trades to see the ones the decision API turned down." : "No trades yet in this run."}</EmptyState>
+          <EmptyState>{shadowCount > 0 ? "No paper trades yet. Tick Show shadow trades to see the ones the AI turned down." : "No trades yet in this run."}</EmptyState>
         </div>
       ) : (
-        <DataTable
-          caption="Closed trades, newest first"
-          minWidth="min-w-[62rem]"
-          columns={["Bought", { label: "Sold", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Exit", "Now", { label: "Closed by", align: "left" }, "Before charges", "Charges", "Net", "Decision"]}
-        >
-          {shown.map((trade) => {
-            const decision = trade.decisionId ? byId.get(trade.decisionId) : undefined;
-            const now = prices[trade.contract.feedKey];
-            return (
-              <tr key={`${trade.book}-${trade.id}`} className={trade.book === "shadow" ? "text-muted" : undefined}>
-                <Td className="tabular-nums">{clock(trade.openedAt)}</Td>
-                <Td className="tabular-nums">{clock(trade.closedAt)}</Td>
-                <Td>
-                  <span className="inline-flex items-center gap-1.5">
-                    <BookTag book={trade.book} />
-                    {trade.contract.name}
-                  </span>
-                </Td>
-                <Td numeric>{quantity.format(trade.quantity)}</Td>
-                <Td numeric>{price.format(trade.entryPrice)}</Td>
-                <Td numeric>{price.format(trade.exitPrice)}</Td>
-                <Td numeric>
-                  {now ? (
-                    <span title={`Last traded at ${clock(now.at)}; ${now.price >= trade.exitPrice ? "up" : "down"} ${inr.format(Math.abs(now.price - trade.exitPrice) * trade.quantity)} on this quantity since the sale`}>
-                      {price.format(now.price)}
-                      <ChangeSinceSale change={now.price - trade.exitPrice} />
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </Td>
-                <Td>{EXIT_REASON[trade.exitReason]}</Td>
-                <Td numeric>
-                  <Pnl value={trade.gross} />
-                </Td>
-                <Td numeric>
-                  <span title={chargeLines(trade)}>{inr.format(trade.charges.total)}</span>
-                </Td>
-                <Td numeric>
-                  <Pnl value={trade.net} />
-                </Td>
-                <Td numeric>{decision?.probability != null ? decision.probability.toFixed(2) : "—"}</Td>
-              </tr>
-            );
-          })}
-        </DataTable>
+        <TradesTable trades={paper} decisions={decisions} prices={prices} caption="Closed trades, newest first" />
       )}
     </Panel>
+  );
+}
+
+/** Closed trades of one book. */
+function TradesTable({ trades, decisions, prices, caption }: { trades: Trade[]; decisions: DecisionRecord[]; prices: TradingStatus["prices"]; caption: string }) {
+  const byId = new Map(decisions.map((d) => [d.id, d]));
+  return (
+    <DataTable
+      caption={caption}
+      minWidth="min-w-[62rem]"
+      columns={["Bought", { label: "Sold", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Exit", "Now", { label: "Closed by", align: "left" }, "Before charges", "Charges", "Net", "Decision"]}
+    >
+      {trades.map((trade) => {
+        const decision = trade.decisionId ? byId.get(trade.decisionId) : undefined;
+        const now = prices[trade.contract.feedKey];
+        return (
+          <tr key={`${trade.book}-${trade.id}`}>
+            <Td className="tabular-nums">{clock(trade.openedAt)}</Td>
+            <Td className="tabular-nums">{clock(trade.closedAt)}</Td>
+            <Td>{trade.contract.name}</Td>
+            <Td numeric>{quantity.format(trade.quantity)}</Td>
+            <Td numeric>{price.format(trade.entryPrice)}</Td>
+            <Td numeric>{price.format(trade.exitPrice)}</Td>
+            <Td numeric>
+              {now ? (
+                <span title={`Last traded at ${clock(now.at)}; ${now.price >= trade.exitPrice ? "up" : "down"} ${inr.format(Math.abs(now.price - trade.exitPrice) * trade.quantity)} on this quantity since the sale`}>
+                  {price.format(now.price)}
+                  <ChangeSinceSale change={now.price - trade.exitPrice} />
+                </span>
+              ) : (
+                "—"
+              )}
+            </Td>
+            <Td>{EXIT_REASON[trade.exitReason]}</Td>
+            <Td numeric>
+              <Pnl value={trade.gross} />
+            </Td>
+            <Td numeric>
+              <span title={chargeLines(trade)}>{inr.format(trade.charges.total)}</span>
+            </Td>
+            <Td numeric>
+              <Pnl value={trade.net} />
+            </Td>
+            <Td numeric>{decision?.probability != null ? decision.probability.toFixed(2) : "—"}</Td>
+          </tr>
+        );
+      })}
+    </DataTable>
+  );
+}
+
+/**
+ * The shadow book on its own: trades the AI turned down, followed as if taken. Not real money and
+ * never counted in the paper totals; kept apart so nobody mistakes them for trades.
+ */
+function ShadowBook({ trading }: { trading: TradingStatus }) {
+  const trades = trading.trades.filter((t) => t.book === "shadow");
+  const open = trading.positions.filter((p) => p.book === "shadow");
+  const { shadow } = trading.totals;
+  return (
+    <section className="rounded-sm border border-dashed border-line-strong">
+      <Panel
+        title="Shadow trades: turned down by the AI, not real"
+        meta={
+          <span>
+            {shadow.trades} closed, {shadow.wins} would have won · would have made <Pnl value={shadow.net} /> after charges
+          </span>
+        }
+        flush
+      >
+        <p className="px-3 py-2 text-label text-muted">
+          The AI turned these down, so nothing was bought. They are followed as if taken, to show whether turning them down helped. They don&apos;t count in your totals.
+        </p>
+        {open.length > 0 && (
+          <>
+            <p className="px-3 pt-1 text-label font-medium tracking-wider text-muted uppercase">Still open</p>
+            <PositionsTable positions={open} decisions={trading.decisions} caption="Open shadow positions" />
+          </>
+        )}
+        {trades.length > 0 && (
+          <>
+            {open.length > 0 && <p className="px-3 pt-3 text-label font-medium tracking-wider text-muted uppercase">Closed</p>}
+            <TradesTable trades={trades} decisions={trading.decisions} prices={trading.prices ?? {}} caption="Closed shadow trades, newest first" />
+          </>
+        )}
+      </Panel>
+    </section>
   );
 }
 
@@ -981,6 +1038,37 @@ function Settings({
   );
 }
 
+/** Closed trades of one book, as stored in Parquet. */
+function StoredTrades({ trades, caption }: { trades: TradeRow[]; caption: string }) {
+  return (
+    <DataTable
+      caption={caption}
+      minWidth="min-w-[56rem]"
+      columns={["Bought", { label: "Sold", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Exit", { label: "Closed by", align: "left" }, "Before charges", "Charges", "Net", "Decision"]}
+    >
+      {trades.map((trade: TradeRow) => (
+        <tr key={`${trade.book}-${trade.id}`}>
+          <Td className="tabular-nums">{clock(trade.opened_at)}</Td>
+          <Td className="tabular-nums">{clock(trade.closed_at)}</Td>
+          <Td>{trade.contract}</Td>
+          <Td numeric>{quantity.format(trade.quantity)}</Td>
+          <Td numeric>{price.format(trade.entry_price)}</Td>
+          <Td numeric>{price.format(trade.exit_price)}</Td>
+          <Td>{EXIT_REASON[trade.exit_reason as keyof typeof EXIT_REASON] ?? trade.exit_reason}</Td>
+          <Td numeric>
+            <Pnl value={trade.gross} />
+          </Td>
+          <Td numeric>{inr.format(trade.charges)}</Td>
+          <Td numeric>
+            <Pnl value={trade.net} />
+          </Td>
+          <Td numeric>{trade.decision_probability === null ? "—" : trade.decision_probability.toFixed(2)}</Td>
+        </tr>
+      ))}
+    </DataTable>
+  );
+}
+
 // --- Stored runs -------------------------------------------------------------------------------
 
 type HistoryLoad = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; data: TradingHistory };
@@ -1055,40 +1143,24 @@ function History({ live }: { live: string | null }) {
           <p className="px-3 py-1.5 text-label text-muted">
             Trades of <span className="font-mono">{data.run}</span>, read from Parquet
           </p>
-          {data.trades.length === 0 ? (
-            <p className="px-3 pb-3 text-muted">This run closed no trades.</p>
-          ) : (
-            <DataTable
-              caption={`Trades of ${data.run}`}
-              minWidth="min-w-[56rem]"
-              columns={["Bought", { label: "Sold", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Exit", { label: "Closed by", align: "left" }, "Before charges", "Charges", "Net", "Decision"]}
-            >
-              {data.trades.map((trade: TradeRow) => (
-                <tr key={`${trade.book}-${trade.id}`} className={trade.book === "shadow" ? "text-muted" : undefined}>
-                  <Td className="tabular-nums">{clock(trade.opened_at)}</Td>
-                  <Td className="tabular-nums">{clock(trade.closed_at)}</Td>
-                  <Td>
-                    <span className="inline-flex items-center gap-1.5">
-                      <BookTag book={trade.book === "shadow" ? "shadow" : "paper"} />
-                      {trade.contract}
-                    </span>
-                  </Td>
-                  <Td numeric>{quantity.format(trade.quantity)}</Td>
-                  <Td numeric>{price.format(trade.entry_price)}</Td>
-                  <Td numeric>{price.format(trade.exit_price)}</Td>
-                  <Td>{EXIT_REASON[trade.exit_reason as keyof typeof EXIT_REASON] ?? trade.exit_reason}</Td>
-                  <Td numeric>
-                    <Pnl value={trade.gross} />
-                  </Td>
-                  <Td numeric>{inr.format(trade.charges)}</Td>
-                  <Td numeric>
-                    <Pnl value={trade.net} />
-                  </Td>
-                  <Td numeric>{trade.decision_probability === null ? "—" : trade.decision_probability.toFixed(2)}</Td>
-                </tr>
-              ))}
-            </DataTable>
-          )}
+          {(() => {
+            const paper = data.trades.filter((t) => t.book !== "shadow");
+            const shadow = data.trades.filter((t) => t.book === "shadow");
+            return (
+              <>
+                {paper.length === 0 ? <p className="px-3 pb-3 text-muted">This run closed no paper trades.</p> : <StoredTrades trades={paper} caption={`Trades of ${data.run}`} />}
+                {shadow.length > 0 && (
+                  <details className="m-2 rounded-sm border border-dashed border-line-strong">
+                    <summary className="cursor-pointer px-3 py-1.5 text-label text-muted">
+                      {shadow.length} shadow trade{shadow.length === 1 ? "" : "s"}: turned down by the AI, not real · would have made{" "}
+                      <Pnl value={shadow.reduce((sum, t) => sum + t.net, 0)} />
+                    </summary>
+                    <StoredTrades trades={shadow} caption={`Shadow trades of ${data.run}`} />
+                  </details>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </Panel>

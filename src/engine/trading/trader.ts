@@ -62,7 +62,9 @@ import { createMarketView, type MarketQuote } from "./market.ts";
 import { fillOrder } from "./paper-broker.ts";
 import { openRunLog, readRunLog, type RunLog, type RunRecord } from "./run-log.ts";
 import type { TradingStore } from "./store.ts";
+import { createScalpLab } from "./scalp-lab.ts";
 import { NIFTY_CONSTITUENTS, readSignal } from "./strategy.ts";
+import type { IndexFuture } from "../recording/futures.ts";
 
 const NIFTY_KEY = `IDX_I:${INDEX.NIFTY.securityId}`;
 const SEGMENT = "NSE_FNO";
@@ -127,6 +129,8 @@ export interface TraderOptions {
   /** One client per provider; the settings choose which answers. */
   decisions: Record<DecisionProviderId, DecisionProvider>;
   loadContracts: (marketDate: string, live: boolean) => Promise<{ book: ContractBook | null; problem: string | null }>;
+  /** NIFTY's unexpired futures on a day, nearest first, for the scalp lab. */
+  loadFutures?: (marketDate: string, underlying: string) => Promise<{ futures: IndexFuture[]; problem: string | null }>;
   /** 1-minute candles for a contract on a day, for replays of days recorded without options. */
   loadCandles: (contract: OptionRef, date: string) => Promise<Candle[]>;
   /** Sends the status to the web: the lists only when they changed since the last call. */
@@ -191,6 +195,8 @@ interface ActiveRun {
   savedAt: number | null;
   saveError: string | null;
   staleWarned: Set<string>;
+  /** NIFTY's near-month future, for the scalp lab; null until looked up. */
+  future: { key: string; name: string } | null;
 }
 
 const rupees = (value: number) => `${value < 0 ? "−" : ""}₹${Math.abs(value).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -205,6 +211,8 @@ function emptyTotals(): BookTotals {
 export function createTrader(options: TraderOptions): Trader {
   const { namespace, directory, version, calendar, log, health, now, store, decisions } = options;
   const market = createMarketView();
+  // Fast triggers scored after charges, never traded: research for scalping.
+  const lab = createScalpLab();
   const configFile = path.join(directory, "config.json");
 
   let config: TradingConfig = structuredClone(DEFAULT_TRADING_CONFIG);
@@ -482,6 +490,7 @@ export function createTrader(options: TraderOptions): Trader {
       savedAt: null,
       saveError: null,
       staleWarned: new Set(),
+      future: null,
     };
     // Ids continue after the highest one in the log.
     for (const item of [...active.intents, ...active.decisions, ...active.orders, ...active.positions, ...active.trades]) {
@@ -505,7 +514,29 @@ export function createTrader(options: TraderOptions): Trader {
         ? `Continuing ${id}: ${active.trades.length} trades so far, ${active.positions.length} open`
         : `Started ${id}: paper trading ${source === "live" ? "the live market" : `a replay of ${date}`}`,
     );
+    lab.reset({
+      session,
+      future: () => active.future,
+      chain: () => (active.book && active.expiry ? active.book.chain(active.expiry) : null),
+      spotKey: NIFTY_KEY,
+      quote: (key) => market.get(key),
+    });
+    void loadFuture(active);
     await loadContracts(active);
+  }
+
+  /** Finds NIFTY's near-month future for the scalp lab. The recorder keeps it on the live feed; a replay has it in the journal. */
+  async function loadFuture(active: ActiveRun) {
+    if (!options.loadFutures) return;
+    try {
+      const { futures, problem } = await options.loadFutures(active.info.date, "NIFTY");
+      if (run !== active) return;
+      const near = futures[0];
+      active.future = near ? { key: near.feedKey, name: near.name } : null;
+      if (!near) event(active, "contracts", `Scalp lab: no NIFTY future for ${active.info.date}${problem ? ` (${problem})` : ""}`, "warn");
+    } catch (error) {
+      if (run === active) event(active, "contracts", `Scalp lab: couldn't look up NIFTY's future: ${error instanceof Error ? error.message : String(error)}`, "warn");
+    }
   }
 
   /** Sells what is open at the last known prices and closes the run. */
@@ -782,6 +813,7 @@ export function createTrader(options: TraderOptions): Trader {
 
   function advance(active: ActiveRun, at: number) {
     if (at > marketTime) marketTime = at;
+    lab.advance(at);
     if (!active.ready) return;
     if (active.candleFeeds.size > 0) playCandles(active, at);
 
@@ -1190,6 +1222,7 @@ export function createTrader(options: TraderOptions): Trader {
       decisionReady: decisions[config.decision.provider].ready,
       decisionProviders: { openrouter: decisions.openrouter.ready, liquid: decisions.liquid.ready },
       prices,
+      scalpLab: lab.status(),
     };
   }
 
@@ -1275,6 +1308,7 @@ export function createTrader(options: TraderOptions): Trader {
     try {
       const active = changing ? null : run;
       for (const packet of parseFrame(frame)) {
+        if (active) lab.onPacket(packet, at);
         const quote = market.apply(packet, at);
         if (!quote || !active) continue;
         // The feed has this contract after all: its ticks replace the candles.

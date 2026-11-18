@@ -159,6 +159,8 @@ const tradingDirectory = path.join(config.dataDir, "trading");
 const parquet = getParquetStore();
 // One source for both trading and the recorder, so a stale instrument file is downloaded once.
 const loadContracts = createContractSource({ store: parquet, log: logs.logger("trading.contracts"), now: clock.now });
+// Shared too: the recorder streams the futures, and trading's scalp lab reads the nearest one.
+const loadFutures = createFuturesSource({ store: parquet, log: logs.logger("futures"), now: clock.now });
 const trader = createTrader({
   namespace: tradingNamespace,
   directory: tradingDirectory,
@@ -176,6 +178,7 @@ const trader = createTrader({
   // A client per Decision API provider whose key is set; the trading settings choose one.
   decisions: createDecisionProviders(process.env),
   loadContracts,
+  loadFutures,
   loadCandles: createCandleSource({
     directory: path.join(tradingDirectory, "candles"),
     istDate: calendar.istDate,
@@ -221,7 +224,7 @@ const recorder = createRecorder({
   depth: depthFeed,
   chainJournal,
   loadContracts,
-  loadFutures: createFuturesSource({ store: parquet, log: recorderLog, now: clock.now }),
+  loadFutures,
   fetchChain: (underlying, expiry) => getOptionChain(INDEX[underlying as keyof typeof INDEX], expiry),
   depthFile: () => depthJournal.status(),
   chainFile: () => chainJournal.status(),

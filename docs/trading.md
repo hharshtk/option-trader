@@ -9,17 +9,18 @@ How the engine trades: what is built, how to run it, and how each number is comp
 3. [Using it](#using-it)
 4. [How a trade happens](#how-a-trade-happens)
 5. [Settings](#settings) ([Scalping](#scalping))
-6. [Decision API](#decision-api)
-7. [Paper fills](#paper-fills)
-8. [Charges](#charges)
-9. [Limits](#limits)
-10. [Option contracts and recording](#option-contracts-and-recording)
-11. [Runs and storage](#runs-and-storage)
-12. [Replays](#replays)
-13. [Control API](#control-api)
-14. [Before live orders](#before-live-orders)
-15. [Code layout](#code-layout)
-16. [Testing and changing it](#testing-and-changing-it)
+6. [Scalp lab](#scalp-lab)
+7. [Decision API](#decision-api)
+8. [Paper fills](#paper-fills)
+9. [Charges](#charges)
+10. [Limits](#limits)
+11. [Option contracts and recording](#option-contracts-and-recording)
+12. [Runs and storage](#runs-and-storage)
+13. [Replays](#replays)
+14. [Control API](#control-api)
+15. [Before live orders](#before-live-orders)
+16. [Code layout](#code-layout)
+17. [Testing and changing it](#testing-and-changing-it)
 
 ## In one paragraph
 
@@ -41,6 +42,7 @@ The engine paper-trades NIFTY options. At the close of every minute it reads the
 | Live orders through Dhan | Not built. See [Before live orders](#before-live-orders) |
 | Several positions at once (**Positions at once**, default 1) | Built |
 | Futures, option selling, spreads | Not built |
+| Scalp lab: second-by-second triggers on NIFTY's future, scored after charges, never traded | Built. See [Scalp lab](#scalp-lab) |
 
 Nothing here can reach Dhan's order API: there is no code that places an order.
 
@@ -126,6 +128,34 @@ The Settings panel has a tab for each style, **Scalping** and **Standard**, each
 With the stop and target in rupees, each entry fill works out the sell prices from [exits.ts](../src/lib/trading/exits.ts): the price at which the trade nets the amount after Dhan's charges on both orders (`sellPriceForNet` in charges.ts, solved exactly), plus the sale's slippage, rounded up to the tick. So the sale, not the trigger, nets the amount; a stop loses at most its amount unless the price jumps past it. Rupee levels trigger on the bid when the order book is known (what the position can be sold for), not on the last trade as percent levels do. The Activity log shows each position's target, stop and breakeven price.
 
 What the charges mean for a scalp: one lot of 65 bought (filled) at ₹100 pays about ₹63 a round trip in charges, and the sale loses ₹0.05 a unit to slippage, so the option must rise about ₹1.00 just to break even. A ₹250 target sells at ₹104.90; a ₹250 stop at ₹97.20. The Strategies page shows these figures for your lots as you type. A stop smaller than the charges can't be met (selling at the entry already loses more); it is put one tick below the entry and the log warns. Entries are still decided at each minute's close; exits are checked on every quote.
+
+## Scalp lab
+
+Scalping mode changes how trades exit; the entries still come from the Pulse signals, read once a minute. The scalp lab is research towards a faster trigger. In [scalp-lab.ts](../src/engine/trading/scalp-lab.ts), it watches NIFTY's near-month future second by second and scores three triggers as pretend trades. **It never places a trade, paper or real.**
+
+| Trigger | Fires when | Buys |
+|---|---|---|
+| Burst with buyers | The future moves 4.3+ points in 10 s and 75%+ of the volume traded on that side (at the ask going up, at the bid going down) | With the move |
+| Fade a spike | The future moves 10+ points in 30 s | Against it |
+| Fade the order book | Waiting buy versus sell orders (Dhan's total buy and sell quantity) lean 5%+ further to one side than their 15-minute average | The other way |
+| No signal | Every 2 minutes, a call then a put | The baseline: what trading costs with no edge |
+
+Each firing buys one lot of the at-the-money option of the trader's expiry at the ask + ₹0.05, 300 ms later, and sells at the bid − ₹0.05 after 30 s, 1, 2 and 3 minutes, paying Dhan's charges on both orders. A trigger waits a minute before firing again. Nothing fires in the first minute or in the last 5 minutes of the session. The levels were set from 18 November 2026 (the top or bottom 5–10% of each reading that day) and are fixed, so later days test them honestly.
+
+**Where to see it.** The **Scalp lab** panel on Strategies shows each trigger's average net a trade at each hold, how many it won, and the latest firings. It runs on the live feed and on replays, and starts over with each run (an engine restart loses the day's lab; score the day again from the journal). The future comes from the index futures table the recorder uses; the recorder keeps it on the live feed.
+
+**Scoring a recorded day:** `npm run scalp:lab -- 2026-11-18` runs the same code over the day's journal (about 12 s for a full day). Days before 18 November have no futures or order books recorded.
+
+**18 November 2026, the first day with order books:** nothing beat the costs. A trade at a random moment lost about ₹100 a lot after charges, spread and slippage at any hold from 30 s to 3 minutes; that is the bar. Per trade, net:
+
+| | 30 s | 1 min | 2 min | 3 min |
+|---|---|---|---|---|
+| Burst with buyers (152) | −₹101 | −₹100 | −₹139 | −₹152 |
+| Fade a spike (129) | −₹106 | −₹83 | −₹57 | −₹94 |
+| Fade the order book (63) | −₹68 | −₹55 | −₹34 | −₹89 |
+| No signal (168) | −₹87 | −₹102 | −₹137 | −₹142 |
+
+The future moves about 5 points in 30 s and 13 points in 3 minutes, while a round trip in an at-the-money option costs about ₹1.50 a unit, or 3 NIFTY points at a delta of 0.5. Momentum and trade flow shifted the next minute by about a point. An earlier version of the order-book trigger, against a fixed level, made money in the morning and lost it in the afternoon: it was following the day's drift. One day proves nothing; the lab is there to collect the days. A trigger would need to stay clearly above zero, and above No signal, over weeks before anything trades on it.
 
 ## Decision API
 
@@ -336,6 +366,7 @@ Live orders are a separate step (E8 in the [engine plan](engine-plan.md#e8-live-
 
 ```
 src/lib/trading/charges.ts            Dhan's charges, shared by engine and web
+src/lib/trading/exits.ts              stop and target prices, in % or in rupees after charges (scalping)
 src/lib/engine/trading.ts             types and settings shared by engine and web
 src/lib/db/parquet-store.ts           Parquet tables in the file store, through DuckDB
 src/engine/trading/
@@ -348,6 +379,8 @@ src/engine/trading/
   sources.ts                          instrument file download and Dhan candles
   run-log.ts                          the run's local log and reading it back
   store.ts                            the Parquet tables
+  scalp-lab.ts                        fast triggers on the future, scored after charges, never traded
+  scalp-lab-cli.ts                    npm run scalp:lab: scores a recorded day
 src/components/trading/               Strategies and Activity pages; signal-guide.tsx explains each signal
 src/app/(cockpit)/strategies/         route and the command Server Function
 src/app/(cockpit)/activity/           route

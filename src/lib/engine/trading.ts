@@ -600,6 +600,46 @@ export interface TradingStatus {
    * show where the option went after it was sold. Contracts stay subscribed for the whole run.
    */
   prices: Record<string, { price: number; at: number }>;
+  /** The scalp lab: fast triggers scored after charges, never traded. Absent from an older engine. */
+  scalpLab?: ScalpLabStatus;
+}
+
+export type ScalpTriggerId = "burst" | "fade" | "lean" | "baseline";
+
+/** One trigger's record at one hold: pretend trades in one lot of the at-the-money option. */
+export interface ScalpCell {
+  holdSeconds: number;
+  trades: number;
+  wins: number;
+  /** Rupees after charges and slippage, summed. */
+  net: number;
+}
+
+export interface ScalpFiring {
+  id: string;
+  trigger: ScalpTriggerId;
+  at: number;
+  direction: 1 | -1;
+  /** What the trigger saw, in words. */
+  reading: string;
+  contract: string | null;
+  /** Ask plus slippage; null until the entry is priced, or when it couldn't be. */
+  entry: number | null;
+  /** Net rupees at each hold, in `holds` order; null while running or when there was no price. */
+  results: (number | null)[];
+  /** Why it wasn't scored, when it wasn't. */
+  note: string | null;
+}
+
+export interface ScalpLabStatus {
+  state: "off" | "waiting" | "running";
+  /** What it is waiting for, in words. */
+  note: string | null;
+  future: string | null;
+  holds: number[];
+  triggers: { id: ScalpTriggerId; name: string; about: string; cells: ScalpCell[] }[];
+  /** Newest first. */
+  recent: ScalpFiring[];
 }
 
 export type TradingList = "trades" | "orders" | "intents" | "decisions" | "events";
