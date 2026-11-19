@@ -34,6 +34,46 @@ export const SIGNALS: readonly { id: SignalId; name: string; kind: "single" | "c
   { id: "confirmed", name: "Confirmed by futures and options", kind: "combined", pastYear: null },
 ];
 
+/**
+ * The decision lab's candidate rules the trader can follow instead of a signal (lib/decide/rules.ts
+ * defines them; listed here so settings can be checked without loading the rules).
+ */
+export const FOLLOWABLE_RULES = [
+  { id: "trend", name: "Trend day" },
+  { id: "cheap-momentum", name: "Momentum when options are cheap" },
+  { id: "wall-fade", name: "Fade at the walls" },
+] as const;
+export type FollowableRuleId = (typeof FOLLOWABLE_RULES)[number]["id"];
+
+/**
+ * Market data beyond prices, the future's trades and NIFTY's stocks that a signal, a rule or the
+ * AI check reads: the near-month future's 20-level book (depth feed), the option chain snapshot
+ * (every strike within 10% of NIFTY), or the near-the-money option open interest the journal records.
+ */
+export type DecisionData = "depth" | "chain" | "options";
+
+export const DECISION_DATA: Record<DecisionData, { label: string; title: string }> = {
+  depth: { label: "Depth", title: "Reads the future's 20-level order book (the depth feed)" },
+  chain: { label: "Chain", title: "Reads the option chain snapshot: every strike within 10% of NIFTY, once a minute" },
+  options: { label: "Option OI", title: "Reads open interest on the option strikes near the money that the engine records" },
+};
+
+/** What each signal reads of DECISION_DATA (lib/insight/pulse.ts); a signal not listed reads none of it. */
+export const SIGNAL_DATA: Partial<Record<SignalId, readonly DecisionData[]>> = {
+  writers: ["options"],
+  book20: ["depth"],
+  // Needs a futures or options signal to agree, Option writers among them.
+  confirmed: ["options"],
+};
+
+/** The same for the followable rules (lib/decide/rules.ts). Fade at the walls falls back to the recorded strikes without a chain. */
+export const RULE_DATA: Partial<Record<FollowableRuleId, readonly DecisionData[]>> = {
+  "wall-fade": ["chain"],
+};
+
+/** The AI check's request carries both the 20-level book and the option chain (engine/trading/decision.ts). */
+export const AI_CHECK_DATA: readonly DecisionData[] = ["depth", "chain"];
+
 /** How the decision API takes part. */
 export type DecisionMode = "off" | "shadow" | "gate";
 
@@ -55,6 +95,13 @@ export interface TradingConfig {
   windowStrikes: number;
   strategy: {
     signal: SignalId;
+    /**
+     * A decision lab rule to follow instead of `signal`: entries come from the same function the
+     * lab scores. Null follows the signal.
+     */
+    rule: FollowableRuleId | null;
+    /** Every entry must pass the cost check (lib/decide/cost.ts), as the lab scores it. */
+    costCheck: boolean;
     /** Both: calls on a long signal, puts on a short one. */
     side: "both" | "calls" | "puts";
     /** 0 is at the money; +1 is one strike out of the money, −1 one strike in. */
@@ -71,6 +118,15 @@ export interface TradingConfig {
      * rupees made or lost after charges on both orders (`stopNet`, `targetNet`), the scalping way.
      */
     exitIn: "percent" | "rupees";
+    /**
+     * Where a percent stop and target come from: each trade's own, worked out from how much NIFTY
+     * is moving (`volatility`, lib/trading/exits.ts), or the fixed `stopLossPct` and `targetPct`.
+     * The fixed ones also stand in when the market's movement isn't known yet.
+     */
+    exitsFrom: "volatility" | "fixed";
+    /** With volatility exits: the stop and target as multiples of NIFTY's typical move over the hold. */
+    stopMoves: number;
+    targetMoves: number;
     /** Sell when the trade would lose this many rupees after charges. 0 turns it off. */
     stopNet: number;
     /** Sell when the trade would make this many rupees after charges. 0 turns it off. */
@@ -136,6 +192,8 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   windowStrikes: 6,
   strategy: {
     signal: "agree",
+    rule: null,
+    costCheck: false,
     side: "both",
     strikeOffset: 0,
     lots: 1,
@@ -143,6 +201,9 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     stopLossPct: 20,
     targetPct: 30,
     exitIn: "percent",
+    exitsFrom: "volatility",
+    stopMoves: 1,
+    targetMoves: 2,
     stopNet: 250,
     targetNet: 250,
     scalpHoldMinutes: 3,
@@ -256,6 +317,9 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
   const strategy = section("strategy");
   if (strategy) {
     apply(next.strategy, strategy, "signal", (v, n) => oneOf(v, n, SIGNALS.map((s) => s.id)), "Signal");
+    if (strategy.rule === null) next.strategy.rule = null;
+    else apply(next.strategy, strategy, "rule", (v, n) => oneOf(v, n, FOLLOWABLE_RULES.map((r) => r.id)), "Rule");
+    apply(next.strategy, strategy, "costCheck", bool, "Cost check");
     apply(next.strategy, strategy, "side", (v, n) => oneOf(v, n, ["both", "calls", "puts"] as const), "Side");
     apply(next.strategy, strategy, "strikeOffset", (v, n) => number(v, n, -5, 5, true), "Strike offset");
     apply(next.strategy, strategy, "lots", (v, n) => number(v, n, 1, 50, true), "Lots");
@@ -263,6 +327,9 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
     apply(next.strategy, strategy, "stopLossPct", (v, n) => number(v, n, 0, 90), "Stop loss");
     apply(next.strategy, strategy, "targetPct", (v, n) => number(v, n, 0, 500), "Target");
     apply(next.strategy, strategy, "exitIn", (v, n) => oneOf(v, n, ["percent", "rupees"] as const), "Stop and target in");
+    apply(next.strategy, strategy, "exitsFrom", (v, n) => oneOf(v, n, ["volatility", "fixed"] as const), "Stop and target from");
+    apply(next.strategy, strategy, "stopMoves", (v, n) => number(v, n, 0.25, 10), "Stop in typical moves");
+    apply(next.strategy, strategy, "targetMoves", (v, n) => number(v, n, 0.25, 20), "Target in typical moves");
     apply(next.strategy, strategy, "stopNet", (v, n) => number(v, n, 0, 1_000_000), "Stop loss in rupees");
     apply(next.strategy, strategy, "targetNet", (v, n) => number(v, n, 0, 1_000_000), "Target in rupees");
     apply(next.strategy, strategy, "scalpHoldMinutes", (v, n) => number(v, n, 1, 240, true), "Scalping hold");
@@ -390,6 +457,20 @@ export interface Position {
   targetPrice: number | null;
   /** What the stop and target trigger on: the last traded price (percent), or the bid when known (rupees). */
   exitIn?: "percent" | "rupees";
+  /** With volatility exits: the levels worked out for this trade when it was proposed, and from what. */
+  plannedExits?: {
+    stopPct: number;
+    targetPct: number;
+    /** NIFTY's typical move over the hold the levels came from, in points. */
+    move: number;
+    holdMinutes: number;
+    /** Measured from recent days at this time of day, or from today's 1-minute move. */
+    source?: "history" | "today";
+    /** With history: the recent days' typical move, today's busyness scale, and how many days. */
+    history?: number;
+    scale?: number;
+    days?: number;
+  } | null;
   /** Market time the hold runs out. */
   exitBy: number;
   /** Latest price and when, for the running P&L. */
@@ -528,6 +609,8 @@ export interface SignalReading {
   vote: -1 | 0 | 1;
   stance: string;
   score: number;
+  /** Whether the 20-level book had a reading, and how old the option chain snapshot was, in minutes (null without one). Absent from older engines. */
+  inputs?: { depth: boolean; chainAgeMinutes: number | null };
 }
 
 export interface SignalReadingLine {
@@ -567,6 +650,8 @@ export interface TradingStatus {
   state: "starting" | "waiting" | "ready" | "disarmed" | "halted" | "closed";
   note: string;
   halt: { reason: string; at: number } | null;
+  /** The recent days volatility exits measure NIFTY's typical move from; null while today's formula stands in. */
+  moveHistory?: { days: number; from: string; to: string } | null;
   source: "live" | "replay";
   /** The market's clock: the wall clock live, recorded time in a replay. */
   marketTime: number;
@@ -596,6 +681,8 @@ export interface TradingStatus {
   decisionReady: boolean;
   /** Which providers have a key configured. */
   decisionProviders: Record<DecisionProviderId, boolean>;
+  /** The depth and option data this engine's AI check request carries. Absent from older engines, whose request carries neither. */
+  aiCheckData?: readonly DecisionData[];
   /**
    * The last traded price of every contract traded in this run, by feed key, so closed trades can
    * show where the option went after it was sold. Contracts stay subscribed for the whole run.

@@ -10,17 +10,18 @@ How the engine trades: what is built, how to run it, and how each number is comp
 4. [How a trade happens](#how-a-trade-happens)
 5. [Settings](#settings) ([Scalping](#scalping))
 6. [Scalp lab](#scalp-lab)
-7. [Decision API](#decision-api)
-8. [Paper fills](#paper-fills)
-9. [Charges](#charges)
-10. [Limits](#limits)
-11. [Option contracts and recording](#option-contracts-and-recording)
-12. [Runs and storage](#runs-and-storage)
-13. [Replays](#replays)
-14. [Control API](#control-api)
-15. [Before live orders](#before-live-orders)
-16. [Code layout](#code-layout)
-17. [Testing and changing it](#testing-and-changing-it)
+7. [Decision lab](#decision-lab)
+8. [Decision API](#decision-api)
+9. [Paper fills](#paper-fills)
+10. [Charges](#charges)
+11. [Limits](#limits)
+12. [Option contracts and recording](#option-contracts-and-recording)
+13. [Runs and storage](#runs-and-storage)
+14. [Replays](#replays)
+15. [Control API](#control-api)
+16. [Before live orders](#before-live-orders)
+17. [Code layout](#code-layout)
+18. [Testing and changing it](#testing-and-changing-it)
 
 ## In one paragraph
 
@@ -43,10 +44,13 @@ The engine paper-trades NIFTY options. At the close of every minute it reads the
 | Several positions at once (**Positions at once**, default 1) | Built |
 | Futures, option selling, spreads | Not built |
 | Scalp lab: second-by-second triggers on NIFTY's future, scored after charges, never traded | Built. See [Scalp lab](#scalp-lab) |
+| Decision lab: every decision rule scored over every recorded day, after costs, never traded | Built. See [Decision lab](#decision-lab) |
 
 Nothing here can reach Dhan's order API: there is no code that places an order.
 
 ## Using it
+
+**At the top of Strategies:** hover over the settings icon (or tab to it) for every setting in force as short label and value pairs, grouped as entries, exits, limits, AI check and fills. While trading is stopped for the day (the daily loss limit, losses in a row, or Stop for the day), a red bar across the top of every page says so, when and why, until you resume or the next session starts.
 
 1. Restart the engine so it runs this code (`npm run engine`, or the systemd service).
 2. Open **Strategies**. Beside the buttons a small indicator says what trading is doing ("Looking for a signal" with a live dot while it waits for the followed one). The **Signals** table shows each signal's reading at the last minute close, the line it must cross and how close it is, how it has done today at your hold time, and when it last fired and what NIFTY did next. The ⓘ beside a signal opens a guide with a tab per signal: what it watches, when it votes, why it stays silent, a right and a wrong example from 18 November 2026, its live record today and its past year. **Open positions** appear above **Trades**, in the same columns, only while something is open.
@@ -79,7 +83,7 @@ minute close (+1.5 s) ──► Pulse signals ──► sell on an opposite sign
 - **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Futures order flow, Futures OI build-up, Option writers, Order book lean, Two or more agree, Confirmed by futures and options ([pulse.md](pulse.md#signal-lab)). None has shown an edge after costs: the price signals were coin flips over a year, and the futures and options ones have days, not years, of data.
 - **Positions at once** (default 1) caps how many positions the paper book holds together. A signal that fires while that many are open is ignored. With more than one allowed, a signal that stays on buys again once **Wait after a trade** has passed since the last buy. The cooldown counts from buys as well as sells, so the engine doesn't buy every minute. Each position keeps its own stop, target and hold time. **Most premium a trade** applies to each position, so the most premium at risk is that limit times **Positions at once**. The daily loss limit counts every open position.
 - **Proposals** are recorded once they pass the quiet checks, with the reason when they aren't traded.
-- **Exits** are the engine's own and never wait for the decision API.
+- **Exits** are the engine's own and never wait for the decision API. In the Standard style each trade's stop and target are, by default, worked out when it is proposed from how much NIFTY is moving (see [Volatility exits](#volatility-exits)); the decision API is told them.
 
 ## Settings
 
@@ -88,11 +92,15 @@ Set on the Strategies page; kept in `data/engine/trading/config.json`. They appl
 | Setting | Default | Meaning |
 |---|---|---|
 | Follow signal | Two or more agree | Which Pulse signal fires entries |
+| Or lab rule | None | A candidate from the [decision lab](#decision-lab) decides entries instead of the signal |
+| Cost check | Off | Every entry must pass the lab's cost check |
 | Trade | Calls on long, puts on short | Or calls only, or puts only |
 | Strike | At the money | Up to 2 strikes in or out of the money |
 | Lots | 1 | Quantity is lots × the contract's lot size |
 | Hold | 10 min | Sold this long after the buy filled |
-| Stop loss / Target | 20% / 30% of premium | 0 turns either off |
+| Stop and target | From NIFTY's moves | Or fixed percents. See [Volatility exits](#volatility-exits) |
+| Stop / target, with volatility exits | 1× / 2× NIFTY's typical move over the hold | In option rupees, as a share of the premium |
+| Stop loss / Target | 20% / 30% of premium | Fixed exits; with volatility exits, used only while NIFTY's movement isn't known. 0 turns either off |
 | Style | Standard | Or **Scalping** (see [Scalping](#scalping)). Hold, stop, target and wait above are Standard's |
 | Scalping: take profit / cut loss | ₹250 / ₹250 after charges | 0 turns either off |
 | Scalping: sell anyway after / wait between trades | 3 min / 0 min | Scalping's own hold and wait |
@@ -121,9 +129,21 @@ Set on the Strategies page; kept in `data/engine/trading/config.json`. They appl
 
 The defaults are starting points, not fitted values.
 
+### Volatility exits
+
+A fixed percent ignores the market: on 18 November 2026 a 20% stop on a ₹170 option was about 68 NIFTY points away while NIFTY typically moved 20 in 10 minutes, so in the decision lab 14 trades of 642 reached it at a 10-minute hold and none reached the 30% target; trades simply ran out of time. Volatility exits ([exits.ts](../src/lib/trading/exits.ts) `volatilityExits`) set each trade's own levels from the market when it is proposed:
+
+- NIFTY's **typical move over the hold** is measured from what it actually did ([moves.ts](../src/lib/trading/moves.ts)): the average size of its move over the hold, starting within 5 minutes of the same time of day, over the last 20 trading days. Then it is scaled by how busy today is against those days at the same time (each day's average 1-minute move over the last 30 minutes), counted half (the square root of the ratio) and kept between 0.67× and 1.5×: a wild or quiet morning only partly carries on. The days come from the 1-minute candle history and from the decision lab's per-minute tables, which every engine builds from its own journal after each session, so the history keeps itself current with no download ([move-history.ts](../src/engine/trading/move-history.ts)). With fewer than 5 days stored, today's average 1-minute move times the square root of the hold stands in, and the log says so.
+- Why measured and not scaled: at 09:31 on 18 November 2026 the scaled 1-minute move said NIFTY would move 111 points over 55 minutes (the opening's swings, and minute moves that partly cancel out); the last 20 days at that time said 77 (85 with that morning's busyness); NIFTY moved 40. Over the day the measured estimate missed by 27 points on average for a 55-minute hold against 32 for the scaled one, and by 12.0 against 12.9 for 10 minutes. Single hours vary a lot (16 to 70 points that day): no estimate is exact, but this one is what NIFTY really does at that time.
+- Times the option's **delta** (from its price, on the forward) it is how far the premium typically moves: about ₹9.50 on an at-the-money option.
+- The **stop** sits 1 of those below the entry and the **target** 2 above (**Stop / target, with volatility exits**), kept between 2% and 60% (stop) and 300% (target) of the premium. A followed decision lab rule keeps its own target-to-stop ratio (Trend day: 3).
+- When NIFTY's movement isn't known yet (the first minutes, a feed gap), the fixed percents apply and the log says so. The Activity log shows each trade's levels and the move they came from (the recent days' figure and today's scale), and the settings summary says which days are in use.
+
+What it does, from the decision lab on 18 November at a 10-minute hold, trading at random moments: 379 trades of 642 ended on their stop or target instead of 14, the worst trade lost ₹1,335 instead of ₹2,571 and the average loss was ₹648 instead of ₹723. The average result is about the same (−₹111 a trade against −₹105): exits can't make a coin-flip entry pay; they size its losses and let a rule with an edge keep its winners.
+
 ### Scalping
 
-The Settings panel has a tab for each style, **Scalping** and **Standard**, each with its own take-profit, cut-loss, hold and wait. A dot on the tab marks the style in use; **Use scalping** (or **Use standard**) on the other tab switches, and Save keeps it. The other tabs (What to buy, Safety limits, AI check, Paper fills) apply to both styles. In config.json the style is `strategy.exitIn` (`"rupees"` is Scalping), with `strategy.targetNet`, `strategy.stopNet`, `strategy.scalpHoldMinutes` and `risk.scalpCooldownMinutes`.
+The Settings panel shows every setting at once, with no tabs: a **Standard / Scalping** switch in its header, then five sections (Buy, Exits, Limits, AI check, Fills and recording). The Exits section shows the style in use: Scalping's take-profit, cut-loss, hold and wait, or Standard's. Save keeps it. In config.json the style is `strategy.exitIn` (`"rupees"` is Scalping), with `strategy.targetNet`, `strategy.stopNet`, `strategy.scalpHoldMinutes` and `risk.scalpCooldownMinutes`.
 
 With the stop and target in rupees, each entry fill works out the sell prices from [exits.ts](../src/lib/trading/exits.ts): the price at which the trade nets the amount after Dhan's charges on both orders (`sellPriceForNet` in charges.ts, solved exactly), plus the sale's slippage, rounded up to the tick. So the sale, not the trigger, nets the amount; a stop loses at most its amount unless the price jumps past it. Rupee levels trigger on the bid when the order book is known (what the position can be sold for), not on the last trade as percent levels do. The Activity log shows each position's target, stop and breakeven price.
 
@@ -156,6 +176,42 @@ Each firing buys one lot of the at-the-money option of the trader's expiry at th
 | No signal (168) | −₹87 | −₹102 | −₹137 | −₹142 |
 
 The future moves about 5 points in 30 s and 13 points in 3 minutes, while a round trip in an at-the-money option costs about ₹1.50 a unit, or 3 NIFTY points at a delta of 0.5. Momentum and trade flow shifted the next minute by about a point. An earlier version of the order-book trigger, against a fixed level, made money in the morning and lost it in the afternoon: it was following the day's drift. One day proves nothing; the lab is there to collect the days. A trigger would need to stay clearly above zero, and above No signal, over weeks before anything trades on it.
+
+## Decision lab
+
+The quick, honest test of a decision rule across days. Paper trading tests one setting on one day as it plays; the lab plays every rule over every recorded day in seconds. **It never places a trade.**
+
+**What a rule sees.** At the close of each minute, one record of everything the engine knows then: NIFTY, India VIX and how far NIFTY has been moving, breadth, the near-month future (premium, VWAP, open interest, who is trading, the 5- and 20-level book, the spread), the options in the journal's window (put/call ratio, straddle, walls, max pain), the option chain (volatility from bid-ask middles, skew, the next expiry, open interest across every strike) and every Pulse signal's vote and reading. The fields and their meanings are in [state.ts](../src/lib/decide/state.ts) and under **What a rule sees** on the Strategies page. The record is built from the day as it stood at that minute (read 1.5 seconds after its close, as the trader reads its signals), never from the day's end, so nothing from later leaks in.
+
+**A rule** is a plain function of that record (and the minutes before it): buy a call, buy a put or do nothing ([rules.ts](../src/lib/decide/rules.ts)). The bars are **No signal** (a call, then a put 15 minutes later, and so on; averaged over all 30 starting minutes and sides, since one fixed schedule can line up with a day's swings by chance) and one rule per Pulse signal, following it as the trader does. Then the **candidates**, written on 18 November 2026 with that day already seen, so only days from 19 November test them, and not to be tuned on the days that score them. Each trades rarely, with a target bigger than its stop, so it can be right less than half the time and still pay:
+
+| Candidate | Buys when | Exits |
+|---|---|---|
+| Trend day | From 10:00 to 14:00: NIFTY 0.25% or more from its open, 10 more of its stocks on that side than the other, and the future's buyers (or sellers) taking most of what traded over 15 minutes. With the trend | Stop 15%, target 45%, no exit on an opposite vote; at most 2 trades a day |
+| Momentum when options are cheap | 15-minute momentum fires and NIFTY has lately moved at least as much as the at-the-money straddle prices | Stop 20%, target 40%; at most 3 a day |
+| Fade at the walls | NIFTY climbed 0.15% or more in 15 minutes to within 0.15% of the strike with the most call open interest (whole chain, else the journal's window): a put. The mirror at the biggest put strike: a call | Stop 15%, target 45%, no exit on an opposite vote; at most 2 a day |
+
+**The cost check** ([cost.ts](../src/lib/decide/cost.ts)), a gate on any rule with no AI in it: Dhan's charges, the spread, slippage both ways and the time value lost over the hold, divided by the option's delta, is the NIFTY move a trade needs to break even. A trade is let through only when NIFTY's typical move over the hold (its recent 1-minute move scaled to the hold) is at least 3 times that. The scorecard shows every rule with it off and on. On 18 November a trade needed about 4 points and NIFTY typically moved 17 to 45 over 10 minutes, so it almost never stood in the way: costs, about ₹100 to ₹130 a trade, were small next to the moves, and the difficulty was the direction. It matters on quiet days and close to expiry.
+
+**Options priced against NIFTY delivered.** Each day the lab averages, over every minute, the move over 10 minutes that the at-the-money straddle priced and the move NIFTY then made. Delivered above priced, buying options paid that day; below, it was dear. 18 November: options priced 30 points, NIFTY moved 20.4. Part of the gap is the overnight and weekend risk options also price, which an intraday move never shows, so the priced figure reads a little high.
+
+**How a rule is played** ([simulate.ts](../src/lib/decide/simulate.ts)): the trader's own rules. A firing from 09:25 to 14:45 buys one lot of the nearest expiry's at-the-money option at the ask + ₹0.05; it is sold when the hold is up, at its stop or target (on the last price), on an opposite vote or at 15:10; one position at a time, 2 minutes between trades; Dhan's charges on both orders. Every rule is scored with fixed exits (20% stop, 30% target, or a candidate's own) and with [volatility exits](#volatility-exits) worked out at entry exactly as the trader does. Quotes are those at each minute's close, with each option's lowest and highest last price within the minute: a stop or target crossed inside a minute is sold at its level less half the spread and ₹0.05, as paper trading's tick-by-tick check would (both crossed in one minute: the stop is taken first); other exits sell at the bid − ₹0.05 at the minute's close. Each rule is scored at holds of 5, 10, 15 and 30 minutes.
+
+**Where to see it.** The **Decision lab** panel on Strategies: per rule at the chosen hold, with exits following NIFTY's moves or fixed, the cost check off or on, trades, how many made money, the net after costs, per trade, against No signal, and the worst day; each day's priced against delivered move. The engine rebuilds it 10 minutes after each session's close, in a child process. By hand:
+
+```bash
+npm run decide                       # build days not built yet, score every rule, print the scorecard
+npm run decide -- --date 2026-11-18  # build that day again, then score
+npm run decide -- --score            # score only (after changing a rule)
+```
+
+**Following a rule with paper trading.** In Settings, Buy section, **Or lab rule** makes the trader take its entries from a candidate's function on the minute's record, the one the lab scores, with its window and daily cap; choosing one also sets its stop, target and opposite-vote exit. **Cost check** puts every entry through the same check. The signal still shows on the page; a turned-down entry's reason is in the proposals. The decision API is told the rule's name as the followed signal, with no past-year record.
+
+**Tables** (Parquet in the file store, [lab.ts](../src/engine/decide/lab.ts)): `decide/minutes/<date>` (one row a minute: the record), `decide/quotes/<date>` (the nearest expiry's options at each minute's close, with the minute's price range), `decide/days/<date>` (with the day's priced and delivered move), `decide/trades/<date>` (every rule's trades at every hold, cost check off and on, fixed and volatility exits, with each trade's stop and target).
+
+**Which days count.** A day needs NIFTY's options recorded with the `instruments` records that describe them: from 18 November 2026. 16 and 17 November are built but have no option quotes, so they aren't scored.
+
+**18 November 2026, the first day:** a trade at a random moment lost about ₹107 a lot at a 5- or 10-minute hold (₹146 at 15 and 30 minutes). Most signals did worse than that. Basket leads index and Two or more agree did better on 5 trades or fewer, which is nothing to go on. The candidates traded 2 or 3 times each (Fade at the walls not at all: the walls stayed far from NIFTY); they were written that day, so it doesn't count for them. One day is one day: a rule must beat No signal, after costs, over weeks of days it wasn't tuned on.
 
 ## Decision API
 
@@ -382,6 +438,17 @@ src/engine/trading/
   store.ts                            the Parquet tables
   scalp-lab.ts                        fast triggers on the future, scored after charges, never traded
   scalp-lab-cli.ts                    npm run scalp:lab: scores a recorded day
+src/lib/decide/
+  state.ts                            what a rule sees at each minute, from Pulse
+  rules.ts                            the decision rules
+  simulate.ts                         plays a rule over a day with the trader's prices, exits and charges
+  score.ts                            the scorecard, and what options priced against what NIFTY delivered
+  cost.ts                             the cost check, shared with the trader
+src/engine/decide/
+  day-table.ts                        a recorded day, minute by minute as it stood then
+  lab.ts                              the tables, building and scoring
+  job.ts                              runs the lab after each session; serves GET /v1/decide
+  cli.ts                              npm run decide
 src/components/trading/               Strategies and Activity pages; signal-guide.tsx explains each signal
 src/app/(cockpit)/strategies/         route and the command Server Function
 src/app/(cockpit)/activity/           route

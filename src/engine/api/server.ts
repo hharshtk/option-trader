@@ -15,6 +15,7 @@ import {
   type TelemetryHello,
   type TelemetryTopic,
 } from "../../lib/engine/protocol.ts";
+import type { DecideView } from "../../lib/decide/score.ts";
 import type { DecisionRequest, TradingCommandResult, TradingHistory, TradingStatus } from "../../lib/engine/trading.ts";
 import type { LogHub } from "../telemetry/logger.ts";
 import type { Logger } from "../telemetry/logger.ts";
@@ -44,6 +45,8 @@ export interface ControlServerOptions {
   depth?: (key: string | null) => DepthView;
   /** The latest option chain snapshot of an underlying's expiry (null: the nearest). Live or at the replay's position. */
   chain?: (underlying: string, expiry: string | null) => ChainView;
+  /** The decision lab's scorecard: every rule over every recorded day, after costs. */
+  decide?: () => Promise<DecideView>;
   /** Handles a `POST /v1/replay` body: switch the feed to a recorded day and back, and steer it. */
   replay?: (body: unknown) => Promise<ReplayCommandResult>;
   /** Paper trading: its state, its commands (`POST /v1/trading`) and its stored runs. */
@@ -153,6 +156,16 @@ export function createControlServer(options: ControlServerOptions): ControlServe
         }
         case "/v1/status":
           return json(response, 200, status());
+        case "/v1/decide": {
+          if (!options.decide) return json(response, 404, { error: "No decision lab" });
+          try {
+            return json(response, 200, await options.decide());
+          } catch (error) {
+            const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+            log.warn("could not read the decision lab", { error: message });
+            return json(response, 502, { error: `Could not read the decision lab's tables: ${message}` });
+          }
+        }
         case "/v1/depth": {
           if (!options.depth) return json(response, 404, { error: "No depth" });
           const key = url.searchParams.get("key");

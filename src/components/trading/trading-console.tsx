@@ -8,11 +8,15 @@ import { Fragment, useCallback, useEffect, useState, useTransition, type FormEve
 import { controlTrading } from "@/app/(cockpit)/strategies/actions";
 import { buttonClass, DataTable, EmptyState, Field, PageHeader, Panel, Pnl, StatRow, Tag, Td } from "@/components/ui";
 import {
+  DECISION_DATA,
   DECISION_PROVIDERS,
   DEFAULT_TRADING_CONFIG,
-  holdMinutesFor,
   isScalping,
+  FOLLOWABLE_RULES,
+  RULE_DATA,
+  SIGNAL_DATA,
   SIGNALS,
+  type DecisionData,
   type DecisionProviderId,
   type DecisionRecord,
   type DecisionRequest,
@@ -28,12 +32,15 @@ import {
   type TradingHistory,
   type TradingStatus,
 } from "@/lib/engine/trading";
+import { COST_CHECK_FACTOR } from "@/lib/decide/cost";
+import { ruleById } from "@/lib/decide/rules";
 import { inr, istDateTime, price, quantity } from "@/lib/format";
-import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/tabs";
 import { breakevenSellPrice } from "@/lib/trading/charges";
 import { exitLevels } from "@/lib/trading/exits";
 import { clock, EXIT_REASON, fieldClass, NoTrading, useTrading, Vote } from "./shared";
+import { DecisionLabPanel } from "./decision-lab-panel";
 import { ScalpLabPanel } from "./scalp-lab-panel";
+import { SettingsSummary } from "./settings-summary";
 import { Arrow, Closeness, GUIDE, InfoButton, Outcome, SignalGuide } from "./signal-guide";
 
 export function TradingConsole() {
@@ -78,6 +85,7 @@ export function TradingConsole() {
           </span>
         }
       >
+        <SettingsSummary trading={trading} />
         <Watching trading={trading} />
         {trading.halt ? (
           <button type="button" className={buttonClass} disabled={pending} onClick={() => send({ action: "resume" })}>
@@ -112,6 +120,7 @@ export function TradingConsole() {
         {open.length > 0 && <OpenPositions positions={open} decisions={trading.decisions} />}
         <Trades trades={trading.trades} decisions={trading.decisions} prices={trading.prices ?? {}} showShadow={showShadow} onShowShadow={setShowShadow} />
         {showShadow && <ShadowBook trading={trading} />}
+        <DecisionLabPanel />
         <ScalpLabPanel lab={trading.scalpLab} />
         <Decisions trading={trading} />
         <Settings key={JSON.stringify({ ...config, armed: null })} config={config} pending={pending} send={send} providers={trading.decisionProviders ?? { openrouter: trading.decisionReady, liquid: false }} />
@@ -253,6 +262,7 @@ function Now({ trading }: { trading: TradingStatus }) {
                   <span className="inline-flex items-center gap-1.5">
                     <InfoButton label={`What ${reading.name} means`} onClick={() => setGuide(reading.id)} />
                     {reading.name}
+                    <DataTags uses={SIGNAL_DATA[reading.id]} />
                     {reading.id === follow && <span className="text-label text-accent">followed</span>}
                   </span>
                 </Td>
@@ -303,8 +313,73 @@ function Now({ trading }: { trading: TradingStatus }) {
           value={contracts.fileDate ? <span className={contracts.stale ? "text-warn" : undefined}>{contracts.fileDate}{contracts.stale ? " (older than the market day)" : ""}</span> : "—"}
         />
       </dl>
+      <DecisionInputs trading={trading} />
       <SignalGuide open={guide !== null} onClose={() => setGuide(null)} initial={guide ?? "overview"} signal={signal} follow={follow} />
     </Panel>
+  );
+}
+
+/** Small tags for the depth and option data a signal or rule reads; nothing when it reads none. */
+function DataTags({ uses }: { uses?: readonly DecisionData[] }) {
+  if (!uses?.length) return null;
+  return (
+    <>
+      {uses.map((d) => (
+        <span key={d} title={DECISION_DATA[d].title}>
+          <Tag>{DECISION_DATA[d].label}</Tag>
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** A chain snapshot older than this many minutes is shown as stale: they come once a minute. */
+const CHAIN_STALE_MINUTES = 3;
+
+/**
+ * Whether the 20-level book and the option chain are arriving, and which of them the saved setup
+ * decides on: the followed signal or rule, and the AI check when it is on.
+ */
+function DecisionInputs({ trading }: { trading: TradingStatus }) {
+  const { signal, config } = trading;
+  const inputs = signal?.inputs;
+  const rule = config.strategy.rule ? FOLLOWABLE_RULES.find((r) => r.id === config.strategy.rule) : undefined;
+  const followed = rule ? { name: rule.name, uses: RULE_DATA[rule.id] } : { name: SIGNALS.find((s) => s.id === config.strategy.signal)?.name ?? config.strategy.signal, uses: SIGNAL_DATA[config.strategy.signal] };
+  const aiOn = config.decision.mode !== "off";
+  const named = (uses?: readonly DecisionData[]) => (uses?.length ? uses.map((d) => DECISION_DATA[d].label.toLowerCase()).join(" and ") : null);
+
+  const status = (ok: boolean | null, text: string) => (
+    <span className={`inline-flex items-center gap-1.5 ${ok === null ? "text-muted" : ok ? "" : "text-warn"}`}>
+      <span className={`inline-flex size-1.5 rounded-full ${ok === null ? "bg-muted" : ok ? "bg-up" : "bg-warn"}`} />
+      {text}
+    </span>
+  );
+  const age = inputs?.chainAgeMinutes ?? null;
+  const depth = !signal ? status(null, "read once the session is open") : !inputs ? status(null, "engine too old to say") : inputs.depth ? status(true, "arriving") : status(false, "not arriving");
+  const chain =
+    !signal ? status(null, "read once the session is open")
+    : !inputs ? status(null, "engine too old to say")
+    : age === null ? status(false, "no snapshot yet")
+    : status(age <= CHAIN_STALE_MINUTES, age === 0 ? "snapshot this minute" : `snapshot ${age} min old`);
+
+  const followedUses = named(followed.uses);
+  return (
+    <dl className="grid gap-x-6 gap-y-1 border-t border-line px-3 py-2 sm:grid-cols-2 xl:grid-cols-4">
+      <Field label="20-level depth" value={depth} />
+      <Field label="Option chain" value={chain} />
+      <Field
+        label="Followed strategy reads"
+        value={<span title={followedUses ? undefined : "It decides on prices, the future's trades and NIFTY's stocks only"}>{followed.name}: {followedUses ?? <span className="text-muted">neither</span>}</span>}
+      />
+      <Field
+        label="AI check sees"
+        value={
+          !aiOn ? <span className="text-muted">off, so neither</span>
+          : named(trading.aiCheckData) ? `${named(trading.aiCheckData)} on every trade`
+          : <span className="text-warn" title="This engine is older than the one that sends the 20-level book and option chain to the AI check">neither (engine needs updating)</span>
+        }
+      />
+    </dl>
   );
 }
 
@@ -703,7 +778,7 @@ function ScalpExample({ strategy, fills }: { strategy: TradingConfig["strategy"]
     ["Cuts the loss at", stopPrice === null ? "off" : `₹${stopPrice.toFixed(2)}`],
   ];
   return (
-    <div className="basis-full rounded-sm border border-line bg-raised/40 p-2.5 text-label">
+    <div className="col-span-full rounded-sm border border-line bg-raised/40 p-2.5 text-label">
       <p className="text-muted">
         Example: {strategy.lots} lot{strategy.lots === 1 ? "" : "s"} ({units} units) bought at ₹{EXAMPLE_PREMIUM}
       </p>
@@ -720,60 +795,38 @@ function ScalpExample({ strategy, fills }: { strategy: TradingConfig["strategy"]
   );
 }
 
-/** One trading style's tab: what it is, a warning when it is switched off, and its own settings. */
-function StylePanel({ name, blurb, active, onUse, children }: { name: string; blurb: string; active: boolean; onUse: () => void; children: ReactNode }) {
+/** Standard or Scalping: which style the engine trades with. */
+function ModeSwitch({ scalping, onChange }: { scalping: boolean; onChange: (scalping: boolean) => void }) {
+  const option = (on: boolean, label: string, hint: string) => (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={scalping === on}
+      title={hint}
+      onClick={() => onChange(on)}
+      className={`h-7 px-2.5 text-label font-medium ${scalping === on ? "bg-accent/15 text-accent" : "text-muted hover:bg-raised hover:text-fg"}`}
+    >
+      {label}
+    </button>
+  );
   return (
-    <div className="space-y-3">
-      <p className="text-body text-muted">{blurb}</p>
-      {!active && (
-        <div className="flex flex-wrap items-center gap-2 rounded-sm border border-warn/60 bg-warn/10 px-2.5 py-1.5 text-body">
-          <span>{name} is off. These settings do nothing until you turn it on.</span>
-          <button type="button" className={buttonClass} onClick={onUse}>
-            Turn {name.toLowerCase()} on
-          </button>
-        </div>
-      )}
-      <div className="flex flex-wrap items-end gap-x-3 gap-y-2">{children}</div>
+    <div role="radiogroup" aria-label="Trading style" className="flex overflow-hidden rounded-sm border border-line-strong">
+      {option(false, "Standard", "Stop and target in % of premium")}
+      {option(true, "Scalping", "Quick trades, ₹ after charges")}
     </div>
   );
 }
 
-/** The trading mode, always in view above the tabs: which style the engine trades with. */
-function ModeSwitch({ scalping, onChange }: { scalping: boolean; onChange: (scalping: boolean) => void }) {
-  const option = (on: boolean, label: string, hint: string) => {
-    const selected = scalping === on;
-    return (
-      <button
-        type="button"
-        role="radio"
-        aria-checked={selected}
-        onClick={() => onChange(on)}
-        className={`flex flex-col items-start rounded-sm border px-3 py-1.5 text-left ${selected ? "border-accent bg-accent/10" : "border-line-strong hover:bg-raised"}`}
-      >
-        <span className={`text-body font-medium ${selected ? "text-accent" : ""}`}>
-          {selected ? "● " : "○ "}
-          {label}
-        </span>
-        <span className="text-label text-muted">{hint}</span>
-      </button>
-    );
-  };
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-label font-medium tracking-wider text-muted uppercase">Mode</span>
-      <div role="radiogroup" aria-label="Trading mode" className="flex flex-wrap gap-2">
-        {option(false, "Standard", "Target and stop in % of premium")}
-        {option(true, "Scalping", "Quick trades, ₹ after charges")}
-      </div>
-    </div>
-  );
+/** A picker label with the depth and option data it reads, as "Order book lean · depth". */
+function withData(name: string, uses?: readonly DecisionData[]): string {
+  return uses?.length ? `${name} · ${uses.map((d) => DECISION_DATA[d].label.toLowerCase()).join(", ")}` : name;
 }
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <fieldset className="min-w-0">
-      <legend className="text-label font-medium tracking-wider text-muted uppercase">{title}</legend>
-      <div className="mt-2 flex flex-wrap items-end gap-x-3 gap-y-2">{children}</div>
+    <fieldset className="min-w-0 rounded-sm border border-line p-2.5">
+      <legend className="px-1 text-label font-medium tracking-wider text-muted uppercase">{title}</legend>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] items-end gap-x-3 gap-y-2">{children}</div>
     </fieldset>
   );
 }
@@ -791,19 +844,6 @@ function withDefaults(config: TradingConfig): TradingConfig {
   };
 }
 
-/** Remounted (by its key) whenever the engine's settings change, so the form always starts from them. */
-const SETTINGS_TABS = [
-  { value: "scalping", label: "Scalping" },
-  { value: "standard", label: "Standard" },
-  { value: "buy", label: "What to buy" },
-  { value: "limits", label: "Safety limits" },
-  { value: "ai", label: "AI check" },
-  { value: "fills", label: "Paper fills" },
-] as const;
-
-const SETTINGS_TAB_CLASS =
-  "inline-flex h-7 items-center gap-1.5 rounded-sm px-2.5 text-body whitespace-nowrap text-muted hover:bg-raised hover:text-fg data-[selected]:bg-raised data-[selected]:font-medium data-[selected]:text-fg";
-
 /** In the page header while the saved style is Scalping: the badge and its amounts, so the mode is never a surprise. */
 function ScalpingBadge({ config }: { config: TradingConfig }) {
   const c = withDefaults(config);
@@ -819,19 +859,6 @@ function ScalpingBadge({ config }: { config: TradingConfig }) {
   );
 }
 
-/** The open settings tab, kept while the page is open: saving remounts the form, which shouldn't jump tabs. */
-let openSettingsTab: string | null = null;
-
-/** One line saying how the engine trades with these settings. */
-function settingsSummary(c: TradingConfig): string {
-  const signal = SIGNALS.find((x) => x.id === c.strategy.signal)?.name ?? c.strategy.signal;
-  const lots = `${c.strategy.lots} lot${c.strategy.lots === 1 ? "" : "s"}`;
-  const off = (v: number, text: string) => (v > 0 ? text : null);
-  const exits = isScalping(c)
-    ? [off(c.strategy.targetNet, `take ₹${c.strategy.targetNet}`), off(c.strategy.stopNet, `cut at ₹${c.strategy.stopNet}`)].filter(Boolean).join(", ") + " after charges"
-    : [off(c.strategy.targetPct, `target ${c.strategy.targetPct}%`), off(c.strategy.stopLossPct, `stop ${c.strategy.stopLossPct}%`)].filter(Boolean).join(", ");
-  return `${isScalping(c) ? "Scalping" : "Standard"}: ${lots} on "${signal}", ${exits}, out within ${holdMinutesFor(c)} min`;
-}
 
 function Settings({
   config,
@@ -850,6 +877,25 @@ function Settings({
   // Starting and stopping entries is the header button's job, not this form's.
   const dirty = JSON.stringify({ ...draft, armed: null }) !== JSON.stringify({ ...saved, armed: null });
   const strategy = <K extends keyof TradingConfig["strategy"]>(key: K, value: TradingConfig["strategy"][K]) => setDraft((d) => ({ ...d, strategy: { ...d.strategy, [key]: value } }));
+  /** Follows a decision lab rule (or none), taking its own stop, target and opposite-vote exit, in percent, as the lab plays it. */
+  const followRule = (id: string) => {
+    const rule = id ? ruleById(id) : undefined;
+    setDraft((d) => ({
+      ...d,
+      strategy: {
+        ...d.strategy,
+        rule: rule ? (rule.id as TradingConfig["strategy"]["rule"]) : null,
+        ...(rule?.exits
+          ? {
+              exitIn: "percent" as const,
+              stopLossPct: rule.exits.stopPct ?? d.strategy.stopLossPct,
+              targetPct: rule.exits.targetPct ?? d.strategy.targetPct,
+              exitOnOpposite: rule.exits.opposite ?? d.strategy.exitOnOpposite,
+            }
+          : {}),
+      },
+    }));
+  };
   const risk = <K extends keyof TradingConfig["risk"]>(key: K, value: TradingConfig["risk"][K]) => setDraft((d) => ({ ...d, risk: { ...d.risk, [key]: value } }));
   const fills = <K extends keyof TradingConfig["fills"]>(key: K, value: TradingConfig["fills"][K]) => setDraft((d) => ({ ...d, fills: { ...d.fills, [key]: value } }));
   const decision = <K extends keyof TradingConfig["decision"]>(key: K, value: TradingConfig["decision"][K]) => setDraft((d) => ({ ...d, decision: { ...d.decision, [key]: value } }));
@@ -862,163 +908,135 @@ function Settings({
   };
 
   return (
-    <Panel title="Settings" meta="Changes apply from the next trade">
-      <form onSubmit={submit} className="space-y-4">
-        <p className="text-body">
-          <span className="text-muted">Trading now as </span>
-          {settingsSummary(saved)}
-        </p>
+    <Panel title="Settings" meta="Changes apply from the next trade" action={<ModeSwitch scalping={scalping} onChange={(on) => strategy("exitIn", on ? "rupees" : "percent")} />}>
+      <form onSubmit={submit} className="space-y-3">
+        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+          <Group title="Buy">
+            <SelectField label="Signal" value={draft.strategy.signal} onChange={(v) => strategy("signal", v)} options={SIGNALS.map((s) => ({ value: s.id, label: withData(s.name, SIGNAL_DATA[s.id]) }))} />
+            <SelectField
+              label="Or lab rule"
+              value={draft.strategy.rule ?? ""}
+              onChange={(v) => followRule(v)}
+              options={[{ value: "", label: "None" }, ...FOLLOWABLE_RULES.map((r) => ({ value: r.id, label: withData(r.name, RULE_DATA[r.id]) }))]}
+            />
+            <SelectField
+              label="Side"
+              value={draft.strategy.side}
+              onChange={(v) => strategy("side", v)}
+              options={[
+                { value: "both", label: "Calls and puts" },
+                { value: "calls", label: "Calls only" },
+                { value: "puts", label: "Puts only" },
+              ]}
+            />
+            <SelectField
+              label="Strike"
+              value={String(draft.strategy.strikeOffset)}
+              onChange={(v) => strategy("strikeOffset", Number(v))}
+              options={[
+                { value: "-2", label: "2 in the money" },
+                { value: "-1", label: "1 in the money" },
+                { value: "0", label: "At the money" },
+                { value: "1", label: "1 out of the money" },
+                { value: "2", label: "2 out of the money" },
+              ]}
+            />
+            <NumberField label="Lots" value={draft.strategy.lots} min={1} suffix={`× ${EXAMPLE_LOT}`} onChange={(v) => strategy("lots", v)} />
+            <NumberField label="Skip expiry within" value={draft.strategy.minDaysToExpiry} suffix="days" onChange={(v) => strategy("minDaysToExpiry", v)} />
+            <TimeField label="From" value={draft.risk.entryFrom} onChange={(v) => risk("entryFrom", v)} />
+            <TimeField label="Until" value={draft.risk.entryUntil} onChange={(v) => risk("entryUntil", v)} />
+            <Check label={`Cost check (${COST_CHECK_FACTOR}×)`} checked={draft.strategy.costCheck} onChange={(v) => strategy("costCheck", v)} />
+            <Check label="Sell on opposite signal" checked={draft.strategy.exitOnOpposite} onChange={(v) => strategy("exitOnOpposite", v)} />
+          </Group>
 
-        <ModeSwitch scalping={scalping} onChange={(on) => strategy("exitIn", on ? "rupees" : "percent")} />
-
-        <Tabs defaultValue={openSettingsTab ?? (isScalping(saved) ? "scalping" : "standard")} onValueChange={(tab) => (openSettingsTab = tab)} className="space-y-3">
-          <TabsList aria-label="Settings" className="flex gap-1 overflow-x-auto border-b border-line pb-1.5">
-            {SETTINGS_TABS.map((tab) => (
-              <TabsTab key={tab.value} value={tab.value} className={SETTINGS_TAB_CLASS}>
-                {tab.label}
-                {(tab.value === "scalping" && scalping) || (tab.value === "standard" && !scalping) ? <span className="size-1.5 rounded-full bg-accent" aria-label="in use" /> : null}
-              </TabsTab>
-            ))}
-          </TabsList>
-
-          <TabsPanel value="scalping" className="outline-none">
-            <StylePanel
-              name="Scalping"
-              blurb="Small, quick trades. You set the rupees to make or lose after all of Dhan's charges, and the engine works out the prices."
-              active={scalping}
-              onUse={() => strategy("exitIn", "rupees")}
-            >
-              <NumberField label="Take profit at" value={draft.strategy.targetNet} step={50} suffix="₹ after charges" onChange={(v) => strategy("targetNet", v)} />
-              <NumberField label="Cut loss at" value={draft.strategy.stopNet} step={50} suffix="₹ after charges" onChange={(v) => strategy("stopNet", v)} />
-              <NumberField label="Sell anyway after" value={draft.strategy.scalpHoldMinutes} min={1} suffix="min" onChange={(v) => strategy("scalpHoldMinutes", v)} />
-              <NumberField label="Wait between trades" value={draft.risk.scalpCooldownMinutes} suffix="min" onChange={(v) => risk("scalpCooldownMinutes", v)} />
+          {scalping ? (
+            <Group title="Exits · Scalping">
+              <NumberField label="Take profit" value={draft.strategy.targetNet} step={50} suffix="₹" onChange={(v) => strategy("targetNet", v)} />
+              <NumberField label="Cut loss" value={draft.strategy.stopNet} step={50} suffix="₹" onChange={(v) => strategy("stopNet", v)} />
+              <NumberField label="Hold" value={draft.strategy.scalpHoldMinutes} min={1} suffix="min" onChange={(v) => strategy("scalpHoldMinutes", v)} />
+              <NumberField label="Wait between" value={draft.risk.scalpCooldownMinutes} suffix="min" onChange={(v) => risk("scalpCooldownMinutes", v)} />
               <ScalpExample strategy={draft.strategy} fills={draft.fills} />
-              <p className="basis-full text-label text-muted">0 turns profit-taking or loss-cutting off. New trades are checked once a minute; exits are checked on every price change.</p>
-            </StylePanel>
-          </TabsPanel>
-
-          <TabsPanel value="standard" className="outline-none">
-            <StylePanel
-              name="Standard"
-              blurb="Longer trades. The target and stop are a share of the price you paid for the option, before charges."
-              active={!scalping}
-              onUse={() => strategy("exitIn", "percent")}
-            >
-              <NumberField label="Take profit at" value={draft.strategy.targetPct} suffix="% up" onChange={(v) => strategy("targetPct", v)} />
-              <NumberField label="Cut loss at" value={draft.strategy.stopLossPct} suffix="% down" onChange={(v) => strategy("stopLossPct", v)} />
-              <NumberField label="Sell anyway after" value={draft.strategy.holdMinutes} min={1} suffix="min" onChange={(v) => strategy("holdMinutes", v)} />
-              <NumberField label="Wait between trades" value={draft.risk.cooldownMinutes} suffix="min" onChange={(v) => risk("cooldownMinutes", v)} />
-              <p className="basis-full text-label text-muted">0 turns profit-taking or loss-cutting off.</p>
-            </StylePanel>
-          </TabsPanel>
-
-          <TabsPanel value="buy" className="space-y-3 outline-none">
-            <p className="text-body text-muted">When to buy, and which option. These apply to both styles.</p>
-            <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
-              <SelectField label="Buy when this signal fires" value={draft.strategy.signal} onChange={(v) => strategy("signal", v)} options={SIGNALS.map((s) => ({ value: s.id, label: s.name }))} />
+            </Group>
+          ) : (
+            <Group title="Exits · Standard">
               <SelectField
-                label="Buy"
-                value={draft.strategy.side}
-                onChange={(v) => strategy("side", v)}
+                label="Stop and target"
+                value={draft.strategy.exitsFrom}
+                onChange={(v) => strategy("exitsFrom", v)}
                 options={[
-                  { value: "both", label: "A call when it says up, a put when down" },
-                  { value: "calls", label: "Calls only (up)" },
-                  { value: "puts", label: "Puts only (down)" },
+                  { value: "volatility", label: "From NIFTY's moves" },
+                  { value: "fixed", label: "Fixed %" },
                 ]}
               />
-              <SelectField
-                label="Strike"
-                value={String(draft.strategy.strikeOffset)}
-                onChange={(v) => strategy("strikeOffset", Number(v))}
-                options={[
-                  { value: "-2", label: "2 strikes in the money" },
-                  { value: "-1", label: "1 strike in the money" },
-                  { value: "0", label: "At the money" },
-                  { value: "1", label: "1 strike out of the money" },
-                  { value: "2", label: "2 strikes out of the money" },
-                ]}
-              />
-              <NumberField label="Lots" value={draft.strategy.lots} min={1} suffix={`× ${EXAMPLE_LOT} units`} onChange={(v) => strategy("lots", v)} />
-              <NumberField label="Skip expiries closer than" value={draft.strategy.minDaysToExpiry} suffix="days" onChange={(v) => strategy("minDaysToExpiry", v)} />
-              <TimeField label="Buy from" value={draft.risk.entryFrom} onChange={(v) => risk("entryFrom", v)} />
-              <TimeField label="Buy until" value={draft.risk.entryUntil} onChange={(v) => risk("entryUntil", v)} />
-              <Check label="Sell when the signal turns the other way" checked={draft.strategy.exitOnOpposite} onChange={(v) => strategy("exitOnOpposite", v)} />
-            </div>
-          </TabsPanel>
+              {draft.strategy.exitsFrom === "volatility" && (
+                <>
+                  <NumberField label="Stop" value={draft.strategy.stopMoves} step={0.25} suffix="× move" onChange={(v) => strategy("stopMoves", v)} />
+                  <NumberField label="Target" value={draft.strategy.targetMoves} step={0.25} suffix="× move" onChange={(v) => strategy("targetMoves", v)} />
+                </>
+              )}
+              <NumberField label={draft.strategy.exitsFrom === "volatility" ? "Fallback stop" : "Stop"} value={draft.strategy.stopLossPct} suffix="%" onChange={(v) => strategy("stopLossPct", v)} />
+              <NumberField label={draft.strategy.exitsFrom === "volatility" ? "Fallback target" : "Target"} value={draft.strategy.targetPct} suffix="%" onChange={(v) => strategy("targetPct", v)} />
+              <NumberField label="Hold" value={draft.strategy.holdMinutes} min={1} suffix="min" onChange={(v) => strategy("holdMinutes", v)} />
+              <NumberField label="Wait between" value={draft.risk.cooldownMinutes} suffix="min" onChange={(v) => risk("cooldownMinutes", v)} />
+            </Group>
+          )}
 
-          <TabsPanel value="limits" className="space-y-4 outline-none">
-            <p className="text-body text-muted">Brakes that stop trading before losses pile up. These apply to both styles.</p>
-            <Group title="For the day">
-              <NumberField label="Stop for the day at a loss of" value={draft.risk.maxDailyLoss} step={100} suffix="₹ after charges" onChange={(v) => risk("maxDailyLoss", v)} />
-              <NumberField label="Or after this many losses in a row" value={draft.risk.maxConsecutiveLosses} min={1} onChange={(v) => risk("maxConsecutiveLosses", v)} />
-              <NumberField label="At most this many trades" value={draft.risk.maxTradesPerDay} min={1} onChange={(v) => risk("maxTradesPerDay", v)} />
-              <TimeField label="Sell everything at" value={draft.risk.squareOffAt} onChange={(v) => risk("squareOffAt", v)} />
-            </Group>
-            <Group title="For each trade">
-              <NumberField label="Positions open at once" value={draft.risk.maxOpenPositions} min={1} onChange={(v) => risk("maxOpenPositions", v)} />
-              <NumberField label="Spend at most" value={draft.risk.maxPremiumPerTrade} step={500} suffix="₹ a trade" onChange={(v) => risk("maxPremiumPerTrade", v)} />
-              <NumberField label="Skip options cheaper than" value={draft.risk.minPremium} suffix="₹" onChange={(v) => risk("minPremium", v)} />
-              <NumberField label="Skip if buy and sell prices differ by over" value={draft.risk.maxSpreadPct} step={0.5} suffix="%" onChange={(v) => risk("maxSpreadPct", v)} />
-            </Group>
-          </TabsPanel>
+          <Group title="Limits">
+            <NumberField label="Daily loss" value={draft.risk.maxDailyLoss} step={100} suffix="₹" onChange={(v) => risk("maxDailyLoss", v)} />
+            <NumberField label="Losses in a row" value={draft.risk.maxConsecutiveLosses} min={1} onChange={(v) => risk("maxConsecutiveLosses", v)} />
+            <NumberField label="Trades a day" value={draft.risk.maxTradesPerDay} min={1} onChange={(v) => risk("maxTradesPerDay", v)} />
+            <NumberField label="Open at once" value={draft.risk.maxOpenPositions} min={1} onChange={(v) => risk("maxOpenPositions", v)} />
+            <NumberField label="Max premium" value={draft.risk.maxPremiumPerTrade} step={500} suffix="₹" onChange={(v) => risk("maxPremiumPerTrade", v)} />
+            <NumberField label="Min premium" value={draft.risk.minPremium} suffix="₹" onChange={(v) => risk("minPremium", v)} />
+            <NumberField label="Max spread" value={draft.risk.maxSpreadPct} step={0.5} suffix="%" onChange={(v) => risk("maxSpreadPct", v)} />
+            <TimeField label="Square off" value={draft.risk.squareOffAt} onChange={(v) => risk("squareOffAt", v)} />
+          </Group>
 
-          <TabsPanel value="ai" className="space-y-3 outline-none">
-            <p className="text-body text-muted">An AI model looks at the market before each trade and can turn it down.</p>
-            <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
-              <SelectField
-                label="The AI"
-                value={draft.decision.mode}
-                onChange={(v) => decision("mode", v)}
-                options={[
-                  { value: "gate", label: "Can turn a trade down" },
-                  { value: "shadow", label: "Is asked, but only recorded" },
-                  { value: "off", label: "Is not asked" },
-                ]}
-              />
-              <NumberField label="Trade when it's at least" value={draft.decision.minProbability} step={0.05} suffix="sure (0 to 1)" onChange={(v) => decision("minProbability", v)} />
-              <SelectField
-                label="If it doesn't answer in time"
-                value={draft.decision.onError}
-                onChange={(v) => decision("onError", v)}
-                options={[
-                  { value: "skip", label: "Skip the trade" },
-                  { value: "allow", label: "Take the trade" },
-                ]}
-              />
-              <NumberField label="Wait for it at most" value={draft.decision.timeoutMs} step={500} min={500} suffix="ms" onChange={(v) => decision("timeoutMs", v)} />
-              <Check label="Turn down trades against the day's trend" checked={draft.decision.vetoAgainstRegime} onChange={(v) => decision("vetoAgainstRegime", v)} />
-            </div>
-            <Group title="Model">
-              <SelectField
-                label="Provider"
-                value={draft.decision.provider}
-                // A new provider starts on its own default model.
-                onChange={(v) => setDraft((d) => ({ ...d, decision: { ...d.decision, provider: v, model: DECISION_PROVIDERS.find((p) => p.id === v)!.defaultModel } }))}
-                options={DECISION_PROVIDERS.map((p) => ({ value: p.id, label: `${p.name}${providers[p.id] ? "" : ` (no ${p.keyName})`}` }))}
-              />
-              <label className="flex flex-col gap-1 text-label text-muted">
-                Model
-                <input type="text" value={draft.decision.model} onChange={(e) => decision("model", e.target.value)} className={`${fieldClass} w-72 font-mono`} spellCheck={false} />
-              </label>
-              <p className="basis-full text-label text-muted">{DECISION_PROVIDERS.find((p) => p.id === draft.decision.provider)!.price}</p>
-            </Group>
-          </TabsPanel>
+          <Group title="AI check">
+            <SelectField
+              label="Mode"
+              value={draft.decision.mode}
+              onChange={(v) => decision("mode", v)}
+              options={[
+                { value: "gate", label: "Can turn down" },
+                { value: "shadow", label: "Record only" },
+                { value: "off", label: "Off" },
+              ]}
+            />
+            <NumberField label="Min probability" value={draft.decision.minProbability} step={0.05} onChange={(v) => decision("minProbability", v)} />
+            <SelectField
+              label="No answer"
+              value={draft.decision.onError}
+              onChange={(v) => decision("onError", v)}
+              options={[
+                { value: "skip", label: "Skip trade" },
+                { value: "allow", label: "Take trade" },
+              ]}
+            />
+            <NumberField label="Wait up to" value={draft.decision.timeoutMs} step={500} min={500} suffix="ms" onChange={(v) => decision("timeoutMs", v)} />
+            <SelectField
+              label="Provider"
+              value={draft.decision.provider}
+              // A new provider starts on its own default model.
+              onChange={(v) => setDraft((d) => ({ ...d, decision: { ...d.decision, provider: v, model: DECISION_PROVIDERS.find((p) => p.id === v)!.defaultModel } }))}
+              options={DECISION_PROVIDERS.map((p) => ({ value: p.id, label: `${p.name}${providers[p.id] ? "" : " (no key)"}` }))}
+            />
+            <label className="flex flex-col gap-1 text-label text-muted">
+              Model
+              <input type="text" value={draft.decision.model} onChange={(e) => decision("model", e.target.value)} className={`${fieldClass} font-mono`} spellCheck={false} />
+            </label>
+            <Check label="Veto against trend" checked={draft.decision.vetoAgainstRegime} onChange={(v) => decision("vetoAgainstRegime", v)} />
+          </Group>
 
-          <TabsPanel value="fills" className="space-y-4 outline-none">
-            <p className="text-body text-muted">How paper trades are priced, so results look like real ones. The defaults are fine for most uses.</p>
-            <Group title="Pricing">
-              <NumberField label="Price worse than the quote by" value={draft.fills.slippage} step={0.05} suffix="₹ a unit" onChange={(v) => fills("slippage", v)} />
-              <NumberField label="Or, with only a last price, by" value={draft.fills.looseSlippage} step={0.05} suffix="₹ a unit" onChange={(v) => fills("looseSlippage", v)} />
-              <NumberField label="Order takes" value={draft.fills.latencyMs} step={50} suffix="ms to fill" onChange={(v) => fills("latencyMs", v)} />
-              <NumberField label="Don't buy on a price older than" value={draft.risk.maxQuoteAgeSeconds} min={1} suffix="s" onChange={(v) => risk("maxQuoteAgeSeconds", v)} />
-              <p className="basis-full text-label text-muted">Charges are Dhan&apos;s: ₹20 an order, STT 0.15% on sells, exchange fees, stamp duty and 18% GST.</p>
-            </Group>
-            <Group title="Recording">
-              <NumberField label="Options followed" value={draft.windowStrikes} min={1} suffix="strikes each side of the money" onChange={(v) => setDraft((d) => ({ ...d, windowStrikes: v }))} />
-              <Check label="Record them every session, even with trading off" checked={draft.recordOptions} onChange={(v) => setDraft((d) => ({ ...d, recordOptions: v }))} />
-            </Group>
-          </TabsPanel>
-        </Tabs>
+          <Group title="Fills and recording">
+            <NumberField label="Slippage" value={draft.fills.slippage} step={0.05} suffix="₹" onChange={(v) => fills("slippage", v)} />
+            <NumberField label="No book slippage" value={draft.fills.looseSlippage} step={0.05} suffix="₹" onChange={(v) => fills("looseSlippage", v)} />
+            <NumberField label="Fill delay" value={draft.fills.latencyMs} step={50} suffix="ms" onChange={(v) => fills("latencyMs", v)} />
+            <NumberField label="Max quote age" value={draft.risk.maxQuoteAgeSeconds} min={1} suffix="s" onChange={(v) => risk("maxQuoteAgeSeconds", v)} />
+            <NumberField label="Strikes followed" value={draft.windowStrikes} min={1} suffix="each side" onChange={(v) => setDraft((d) => ({ ...d, windowStrikes: v }))} />
+            <Check label="Record always" checked={draft.recordOptions} onChange={(v) => setDraft((d) => ({ ...d, recordOptions: v }))} />
+          </Group>
+        </div>
 
         <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
           <button type="submit" className={buttonClass} disabled={pending || !dirty}>
@@ -1029,7 +1047,7 @@ function Settings({
               <button type="button" className={buttonClass} disabled={pending} onClick={() => setDraft(saved)}>
                 Discard changes
               </button>
-              <span className="text-label text-warn">Unsaved: {settingsSummary(draft)}</span>
+              <span className="text-label text-warn">Unsaved changes</span>
             </>
           )}
         </div>

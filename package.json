@@ -13,6 +13,7 @@
     "engine:dev": "node --watch --env-file-if-exists=.env.local src/engine/main.ts",
     "engine:replay": "node --env-file-if-exists=.env.local src/engine/main.ts --replay",
     "scalp:lab": "node src/engine/trading/scalp-lab-cli.ts",
+    "decide": "node --env-file-if-exists=.env.local src/engine/decide/cli.ts",
     "test": "node --test \"src/**/*.test.ts\"",
     "test:feed": "node --test src/lib/live/feed/*.test.ts",
     "test:scrips": "node --test src/lib/dhan/*.test.ts",

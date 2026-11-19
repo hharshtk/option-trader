@@ -468,6 +468,8 @@ export interface EngineStatus {
   replayBlocked?: string | null;
   /** Absent from engines older than the recorder. */
   recorder?: RecorderStatus;
+  /** Set while paper trading is stopped for the day (the daily loss limit, losses in a row, or by hand), with why and when. */
+  tradingHalt?: { reason: string; at: number; source: "live" | "replay" } | null;
 }
 
 /**

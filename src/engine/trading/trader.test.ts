@@ -2,6 +2,7 @@
 // contracts and candles are injected, and the tables go to a temporary folder.
 
 import assert from "node:assert/strict";
+import type { MoveProfile } from "../../lib/trading/moves.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -114,7 +115,7 @@ interface Harness {
   close(): Promise<void>;
 }
 
-async function harness(config: { strategy?: object; decision?: object; risk?: object } = {}): Promise<Harness> {
+async function harness(config: { strategy?: object; decision?: object; risk?: object } = {}, extras: { moveProfile?: MoveProfile | null } = {}): Promise<Harness> {
   const root = await mkdtemp(path.join(tmpdir(), "trader-test-"));
   const book = contracts();
 
@@ -158,6 +159,7 @@ async function harness(config: { strategy?: object; decision?: object; risk?: ob
         return state.candles;
       },
       publish: (update) => void published.push(update),
+      ...(extras.moveProfile !== undefined ? { loadMoveProfile: async () => extras.moveProfile! } : {}),
     });
     return {
       trader,
@@ -179,7 +181,8 @@ async function harness(config: { strategy?: object; decision?: object; risk?: ob
 
   const first = build();
   await first.trader.start();
-  const patch = { ...config, strategy: { signal: "momentum", ...config.strategy }, decision: { mode: "off", ...config.decision } };
+  // Fixed percent exits unless a test asks for volatility exits: most tests check order mechanics at known levels.
+  const patch = { ...config, strategy: { signal: "momentum", exitsFrom: "fixed", ...config.strategy }, decision: { mode: "off", ...config.decision } };
   const merged = await first.trader.command({ action: "config", patch });
   assert.ok(merged.ok, merged.message);
   await first.trader.command({ action: "arm" });
@@ -542,6 +545,76 @@ test("the web gets the lists only when they change, and the open position's mark
     assert.ok(second.positions[0].unrealisedGross > 0);
     // The whole status is always there to read.
     assert.equal(h.trader.status().orders.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("following a decision lab rule: the rule decides, not the signal", async () => {
+  // Momentum votes long at minute 17, but Momentum when options are cheap also needs to know what options
+  // price, which this day doesn't have: the rule stays silent and nothing is proposed.
+  const h = await harness({ strategy: { rule: "cheap-momentum" } });
+  try {
+    await toSignal(h);
+    const status = h.trader.status();
+    assert.equal(status.signal?.vote, 1, "the signal still shows");
+    assert.deepEqual(status.intents, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("the cost check turns down a trade whose costs NIFTY's typical move doesn't cover three times over", async () => {
+  // NIFTY rises about 5 points a minute: over a 1-minute hold that is less than 3 × the move this trade needs.
+  const h = await harness({ strategy: { costCheck: true, holdMinutes: 1 } });
+  try {
+    await toSignal(h);
+    const [intent] = h.trader.status().intents;
+    assert.equal(intent.outcome, "rejected");
+    assert.match(intent.reason ?? "", /^Cost check: NIFTY typically moves .* less than 3 times over$/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("volatility exits: each trade's stop and target come from how much NIFTY is moving", async () => {
+  const h = await harness({ strategy: { exitsFrom: "volatility", stopMoves: 1, targetMoves: 2, holdMinutes: 10 } });
+  try {
+    const at = await toSignal(h);
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), at + 400);
+    const status = h.trader.status();
+    const [position] = status.positions;
+    const planned = position.plannedExits!;
+    // NIFTY rises about 5.2 points a minute: about 16 points in 10 minutes, about 8 rupees on an at-the-money option.
+    assert.ok(planned.move > 14 && planned.move < 18, `move ${planned.move}`);
+    assert.ok(planned.stopPct > 4 && planned.stopPct < 12, `stop ${planned.stopPct}%`);
+    // The target is twice as far as the stop.
+    const below = position.entryPrice - position.stopPrice!;
+    const above = position.targetPrice! - position.entryPrice;
+    assert.ok(Math.abs(above / below - 2) < 0.01, `target ${above} against stop ${below}`);
+    assert.ok(status.events.some((e) => /NIFTY typically moves .* points in 10 min now, from today's 1-minute move/.test(e.message)));
+  } finally {
+    await h.close();
+  }
+});
+
+test("volatility exits measure the typical move from recent days at this time of day when they are stored", async () => {
+  // Twenty days on which NIFTY drifts 3 points a minute with no back and forth: 30 points over 10 minutes.
+  const dates = Array.from({ length: 20 }, (_, i) => `2026-10-${String(i + 1).padStart(2, "0")}`);
+  const moveProfile: MoveProfile = { dates, closes: dates.map(() => Array.from({ length: 360 }, (_, t) => 25_000 + 3 * t)) };
+  const h = await harness({ strategy: { exitsFrom: "volatility", stopMoves: 1, targetMoves: 2, holdMinutes: 10 } }, { moveProfile });
+  try {
+    const at = await toSignal(h);
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), at + 400);
+    const status = h.trader.status();
+    assert.deepEqual(status.moveHistory, { days: 20, from: "2026-10-01", to: "2026-10-20" });
+    const planned = status.positions[0].plannedExits!;
+    assert.equal(planned.source, "history");
+    assert.equal(planned.history, 30);
+    assert.equal(planned.days, 20);
+    // Today moves about 5.2 points a minute against the days' 3: busier, so a little more than 30, at most 1.5×.
+    assert.ok(planned.move > 30 && planned.move <= 45, `move ${planned.move}`);
+    assert.ok(status.events.some((e) => /from 30\.0 at this time over the last 20 days/.test(e.message)));
   } finally {
     await h.close();
   }

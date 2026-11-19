@@ -5,7 +5,7 @@ import { engineConfig, forwardToEngine } from "@/lib/engine/web";
 // Browser → this route → engine. The browser never holds ENGINE_TOKEN: this checks the session
 // cookie, adds the token, and streams the engine's response through.
 
-const ALLOWED = /^v1\/(status|logs|telemetry|journal\/session|trading|trading\/history|trading\/decision|depth|chain)$/;
+const ALLOWED = /^v1\/(status|logs|telemetry|journal\/session|trading|trading\/history|trading\/decision|depth|chain|decide)$/;
 
 export async function GET(request: Request, ctx: RouteContext<"/api/engine/[...path]">) {
   await connection();

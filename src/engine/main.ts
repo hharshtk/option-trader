@@ -28,6 +28,9 @@ import { getDhanCredentials, getTokenStore } from "../lib/dhan/config.ts";
 import { INDEX } from "../lib/dhan/instruments.ts";
 import { createDepthFeed } from "./recording/depth-feed.ts";
 import { chainView, createLiveSideData, depthView } from "./replay/side-data.ts";
+import { createDecisionJob } from "./decide/job.ts";
+import { createDecisionLab } from "./decide/lab.ts";
+import { loadMoveProfile } from "./trading/move-history.ts";
 import { createFuturesSource } from "./recording/futures.ts";
 import { createRecorder } from "./recording/recorder.ts";
 import { createDecisionProviders } from "./trading/decision.ts";
@@ -189,6 +192,7 @@ const trader = createTrader({
     },
   }),
   publish: (status) => telemetry.publish("trading", status, status.marketTime),
+  loadMoveProfile: (date) => loadMoveProfile(parquet, date),
 });
 
 // The research recorder: futures, a wide option window, 20-level depth and option chain snapshots
@@ -220,6 +224,17 @@ const depthFeed = createDepthFeed({
   log: (message) => recorderLog.info(message),
   now: clock.now,
 });
+// The decision lab: after each session, the day's per-minute table and every rule scored on
+// every recorded day, in a child process. Its scorecard is on the Strategies page.
+const decisions = createDecisionJob({
+  lab: createDecisionLab({ store: parquet, directory: path.join(config.dataDir, "journal"), calendar, version, now: clock.now }),
+  calendar,
+  log: logs.logger("decide"),
+  now: clock.now,
+  root: ROOT,
+  dataDir: config.dataDir,
+});
+
 const recorder = createRecorder({
   log: recorderLog,
   health,
@@ -300,6 +315,7 @@ function status(): EngineStatus {
     replay: feeds.replayStatus(),
     replayBlocked: feeds.replayBlocked(),
     recorder: recorder.status(),
+    tradingHalt: trader.halted(),
   };
 }
 
@@ -326,6 +342,7 @@ const server = createControlServer({
   trading: trader,
   depth: (key) => depthView(feeds.replaySides() ?? liveSides, key),
   chain: (underlying, expiry) => chainView(feeds.replaySides() ?? liveSides, underlying, expiry),
+  decide: () => decisions.view(),
 });
 
 health.set("engine", "ok");
@@ -391,6 +408,7 @@ async function start() {
       feeds.tick();
       trader.tick();
       recorder.tick();
+      decisions.tick();
       metrics.gauge("api.clients", server.clients);
       telemetry.publish("status", status());
     }, STATUS_INTERVAL_MS),
@@ -417,6 +435,7 @@ async function stop(reason: string, code = 0) {
   // Before the feed goes: the run's tables are saved and its log closed.
   await trader.stop().catch((error: unknown) => log.error("trading did not stop cleanly", { error: String(error) }));
   recorder.shutdown();
+  decisions.shutdown();
   feeds.shutdown();
   journal.control("engine-stop", { reason }, clock.now());
   await Promise.all([journal.close(), depthJournal.close(), chainJournal.close()]);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { roundTripCharges, sellPriceForNet } from "./charges.ts";
-import { exitLevels, exitPercents } from "./exits.ts";
+import { exitLevels, exitPercents, volatilityExits } from "./exits.ts";
 
 const net = (buy: number, sell: number, quantity: number) => (sell - buy) * quantity - roundTripCharges(buy * quantity, sell * quantity).total;
 
@@ -33,4 +33,23 @@ test("percent exits are unchanged, and exitPercents reports rupee ones as a shar
   const pct = exitPercents({ exitIn: "rupees", stopLossPct: 0, targetPct: 0, stopNet: 200, targetNet: 250 }, 100, 65, 0.05, 0.05);
   assert.ok(pct.targetPct! > 3.8 && pct.targetPct! < 5, String(pct.targetPct));
   assert.ok(pct.stopPct! > 2 && pct.stopPct! < 3.5, String(pct.stopPct));
+});
+
+test("volatility exits follow NIFTY's typical move over the hold, kept within sane limits", () => {
+  const base = { premium: 170, strike: 25_250, type: "CE" as const, forward: 25_250, minutesToExpiry: 1_300, holdMinutes: 10, minuteMove: 6, stopMoves: 1, targetMoves: 2 };
+  const v = volatilityExits(base)!;
+  // 6 × √10 ≈ 19 points; at a delta near 0.5, about 9.5 rupees: 5.6% of 170.
+  assert.equal(v.move, 18.97);
+  assert.ok(v.delta > 0.45 && v.delta < 0.55, `delta ${v.delta}`);
+  assert.ok(Math.abs(v.stopPct - (v.premiumMove * 100) / 170) < 0.01);
+  assert.ok(Math.abs(v.targetPct - 2 * v.stopPct) < 0.02);
+  // Twice as busy a market, twice as far away; a longer hold, further by the square root.
+  assert.ok(Math.abs(volatilityExits({ ...base, minuteMove: 12 })!.stopPct - 2 * v.stopPct) < 0.02);
+  assert.ok(Math.abs(volatilityExits({ ...base, holdMinutes: 40 })!.move - 2 * v.move) < 0.02);
+  // Never under 2% nor over 60% (stop) and 300% (target).
+  assert.equal(volatilityExits({ ...base, minuteMove: 0.1 })!.stopPct, 2);
+  const wild = volatilityExits({ ...base, minuteMove: 500 })!;
+  assert.deepEqual([wild.stopPct, wild.targetPct], [60, 300]);
+  // Unknown movement or expiry: no levels (the fixed ones stand in).
+  for (const missing of [{ minuteMove: null }, { forward: null }, { minutesToExpiry: 0 }, { premium: 0 }]) assert.equal(volatilityExits({ ...base, ...missing }), null);
 });

@@ -97,5 +97,9 @@ export function readSignal(pulse: Pulse, minute: number, follow: SignalId, holdM
     vote: readings.find((r) => r.id === follow)?.vote ?? 0,
     stance: pulse.verdict.stance,
     score: pulse.score,
+    inputs: {
+      depth: pulse.derivatives?.future?.book20Imbalance != null,
+      chainAgeMinutes: pulse.derivatives?.chain?.ageMinutes ?? null,
+    },
   };
 }

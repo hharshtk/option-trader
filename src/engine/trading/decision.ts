@@ -96,6 +96,8 @@ export function buildDecisionState(input: {
   reading: SignalReading;
   /** The signal the strategy follows. */
   follow: SignalId;
+  /** The decision lab rule followed instead of `follow`, by name. */
+  followName?: string;
   direction: 1 | -1;
   contract: OptionRef;
   /** What the entry would pay: the ask, or the last price without a book. */
@@ -151,10 +153,11 @@ export function buildDecisionState(input: {
   const pointsFor = (pct: number) => (delta && delta > 0.02 && pct > 0 ? ((pct / 100) * premium + greeks!.decay) / delta : null);
 
   // --- The trigger's record --------------------------------------------------------------------
-  const followed = pulse.signals.find((s) => s.id === input.follow);
+  // Following a decision lab rule: it has no Pulse record of its own.
+  const followed = input.followName ? undefined : pulse.signals.find((s) => s.id === input.follow);
   const horizon = [...HORIZONS].reverse().find((h) => h <= hold) ?? HORIZONS[0];
   const todayStats = followed?.stats.find((st) => st.horizon === horizon);
-  const pastYear = SIGNALS.find((s) => s.id === input.follow)?.pastYear ?? null;
+  const pastYear = input.followName ? null : (SIGNALS.find((s) => s.id === input.follow)?.pastYear ?? null);
   const baseline = pulse.baselines.find((b) => b.horizon === horizon);
 
   const share = (flow: number | null) => (flow === null ? null : round((1 + flow) / 2));
@@ -171,7 +174,7 @@ export function buildDecisionState(input: {
     },
     proposal: {
       direction: direction > 0 ? "long: buy a call, profits if NIFTY rises" : "short: buy a put, profits if NIFTY falls",
-      followed_signal: followed?.name ?? input.follow,
+      followed_signal: input.followName ?? followed?.name ?? input.follow,
       trigger: reading.readings.filter((r) => r.vote === direction).map((r) => `${r.name}: ${r.reading}`),
       contract: contract.name,
       premium: round(premium),

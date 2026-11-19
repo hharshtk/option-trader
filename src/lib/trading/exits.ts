@@ -2,11 +2,14 @@
 // entry fill) and the web (the settings hint, the decision API's trade math).
 //
 // Two ways to say it:
-//   percent — a share of the premium paid, as a broker's bracket order takes it.
+//   percent — a share of the premium paid, as a broker's bracket order takes it. Either fixed in
+//             the settings, or worked out for each trade from how much NIFTY is moving
+//             (`volatilityExits`), which is what the trader does by default.
 //   rupees  — rupees made or lost on the trade after Dhan's charges on both orders and the
 //             slippage on the sale. This is the scalping setting: "take ₹250, cut at ₹200", and the
 //             engine works out what the option has to trade at for that to be true.
 
+import { optionView } from "../insight/derivatives.ts";
 import { sellPriceForNet } from "./charges.ts";
 
 export type ExitUnit = "percent" | "rupees";
@@ -70,3 +73,73 @@ export function exitPercents(settings: ExitSettings, premium: number, quantity: 
     targetPct: targetPrice === null || premium <= 0 ? null : ((targetPrice - premium) / premium) * 100,
   };
 }
+
+/** How far NIFTY typically moves over the hold, as stop and target distances: the defaults. */
+export const STOP_MOVES = 1;
+export const TARGET_MOVES = 2;
+/** Volatility exits are kept within these, in percent of the premium. */
+const MIN_PCT = 2;
+const MAX_STOP_PCT = 60;
+const MAX_TARGET_PCT = 300;
+
+export interface VolatilityExitInput {
+  /** What the option costs now (the entry, or the ask before it). */
+  premium: number;
+  strike: number;
+  type: "CE" | "PE";
+  /** NIFTY's forward, or its price. */
+  forward: number | null;
+  minutesToExpiry: number | null;
+  holdMinutes: number;
+  /** NIFTY's average 1-minute move either way, recently, in points. */
+  minuteMove: number | null;
+  /**
+   * NIFTY's typical move over the hold, in points, when measured from recent days at this time of
+   * day (lib/trading/moves.ts `expectedMove`). Without it, `minuteMove` × √hold stands in.
+   */
+  move?: number | null;
+  /** The stop and target as multiples of the typical move over the hold. */
+  stopMoves: number;
+  targetMoves: number;
+}
+
+export interface VolatilityExits {
+  stopPct: number;
+  targetPct: number;
+  /** NIFTY's typical move over the hold, in points, and what it moves this option, in rupees a unit. */
+  move: number;
+  premiumMove: number;
+  delta: number;
+}
+
+/**
+ * A stop and target that follow the market instead of fixed percents: NIFTY's typical move over
+ * the hold (measured from recent days at this time of day when known, `move`; else its recent
+ * 1-minute move times the square root of the hold) times the option's delta is how far the premium
+ * typically moves. The stop
+ * sits `stopMoves` of those below the entry and the target `targetMoves` above: outside the
+ * ordinary noise, and a target a fixed multiple of the stop. On 18 November 2026 a fixed 20% stop
+ * on a ₹170 option was about 68 NIFTY points away while NIFTY typically moved 20 in 10 minutes, so
+ * fixed levels almost never triggered. Null when the inputs aren't known.
+ */
+export function volatilityExits(input: VolatilityExitInput): VolatilityExits | null {
+  const { premium, strike, type, forward, minutesToExpiry, holdMinutes, minuteMove, stopMoves, targetMoves } = input;
+  const measured = input.move != null && input.move > 0 ? input.move : null;
+  if (!(premium > 0) || forward === null || minutesToExpiry === null || minutesToExpiry <= 0) return null;
+  if (measured === null && (minuteMove === null || !(minuteMove > 0))) return null;
+  const view = optionView({ premium, forward, strike, type, minutesToExpiry, holdMinutes });
+  if (!view) return null;
+  const delta = Math.abs(view.delta);
+  const move = measured ?? minuteMove! * Math.sqrt(holdMinutes);
+  const premiumMove = move * delta;
+  const pct = (moves: number, most: number) => Math.min(most, Math.max(MIN_PCT, (moves * premiumMove * 100) / premium));
+  return {
+    stopPct: round(pct(stopMoves, MAX_STOP_PCT)),
+    targetPct: round(pct(targetMoves, MAX_TARGET_PCT)),
+    move: round(move),
+    premiumMove: round(premiumMove),
+    delta: round(delta),
+  };
+}
+
+const round = (value: number) => Math.round(value * 100) / 100;

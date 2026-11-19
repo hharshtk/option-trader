@@ -22,6 +22,7 @@ import { INDEX } from "../../lib/dhan/instruments.ts";
 import type { JournalSession } from "../../lib/engine/protocol.ts";
 import {
   DECISION_PROVIDERS,
+  AI_CHECK_DATA,
   cooldownMinutesFor,
   DEFAULT_TRADING_CONFIG,
   holdMinutesFor,
@@ -48,11 +49,16 @@ import {
   type TradingStatus,
   type TradingUpdate,
 } from "../../lib/engine/trading.ts";
+import { costCheck } from "../../lib/decide/cost.ts";
+import { movesFor, ruleById } from "../../lib/decide/rules.ts";
+import { minuteState, type MinuteState } from "../../lib/decide/state.ts";
+import { tradingMinutesToExpiry } from "../../lib/insight/derivatives.ts";
 import { computePulse, type Pulse } from "../../lib/insight/pulse.ts";
 import type { FeedHub } from "../../lib/live/feed/feed-hub.ts";
 import { parseFrame, parseInstrumentKey, type Instrument } from "../../lib/live/feed/packets.ts";
 import { addCharges, breakevenSellPrice, NO_CHARGES, orderCharges, roundTripCharges } from "../../lib/trading/charges.ts";
-import { exitLevels } from "../../lib/trading/exits.ts";
+import { exitLevels, volatilityExits } from "../../lib/trading/exits.ts";
+import { expectedMove, type MoveProfile } from "../../lib/trading/moves.ts";
 import type { SessionCalendar } from "../market/session-calendar.ts";
 import type { Health } from "../telemetry/health.ts";
 import type { Logger } from "../telemetry/logger.ts";
@@ -133,6 +139,8 @@ export interface TraderOptions {
   loadFutures?: (marketDate: string, underlying: string) => Promise<{ futures: IndexFuture[]; problem: string | null }>;
   /** 1-minute candles for a contract on a day, for replays of days recorded without options. */
   loadCandles: (contract: OptionRef, date: string) => Promise<Candle[]>;
+  /** NIFTY's recent days before `date`, for volatility exits' typical move; null when too few are stored. */
+  loadMoveProfile?: (date: string) => Promise<MoveProfile | null>;
   /** Sends the status to the web: the lists only when they changed since the last call. */
   publish: (update: TradingUpdate) => void;
 }
@@ -145,6 +153,8 @@ export interface Trader {
   /** Call once a second. */
   tick(): void;
   status(): TradingStatus;
+  /** Why trading is stopped for the day, if it is: cheap enough for the engine's status every second. */
+  halted(): { reason: string; at: number; source: "live" | "replay" } | null;
   command(body: unknown): Promise<TradingCommandResult>;
   history(run: string | null): Promise<TradingHistory>;
   /** What was sent to the decision API for one of the current run's decisions, or null when there is no such decision. */
@@ -190,6 +200,10 @@ interface ActiveRun {
   lastExitAt: number | null;
   /** When the last paper buy was placed. */
   lastEntryAt: number | null;
+  /** The minute states a followed decision lab rule has seen this run, oldest first. */
+  ruleStates: MinuteState[];
+  /** NIFTY's recent days, for volatility exits; null until loaded or when too few are stored. */
+  moveProfile: MoveProfile | null;
   pendingSave: number;
   saveDueAt: number;
   savedAt: number | null;
@@ -485,6 +499,8 @@ export function createTrader(options: TraderOptions): Trader {
       answers: new Map(),
       lastExitAt: null,
       lastEntryAt: null,
+      ruleStates: [],
+      moveProfile: null,
       pendingSave: 0,
       saveDueAt: wall + SAVE_EVERY_MS,
       savedAt: null,
@@ -522,7 +538,23 @@ export function createTrader(options: TraderOptions): Trader {
       quote: (key) => market.get(key),
     });
     void loadFuture(active);
+    void loadMoveProfile(active);
     await loadContracts(active);
+  }
+
+  /** Loads NIFTY's recent days for volatility exits. Without them, today's formula stands in. */
+  async function loadMoveProfile(active: ActiveRun) {
+    if (!options.loadMoveProfile) return;
+    try {
+      const profile = await options.loadMoveProfile(active.info.date);
+      if (run !== active) return;
+      active.moveProfile = profile;
+      if (profile) event(active, "run", `Volatility exits measure NIFTY's typical move from ${profile.dates.length} recent days (${profile.dates[0]} to ${profile.dates.at(-1)})`);
+      else event(active, "run", "Fewer than 5 recent days of NIFTY are stored: volatility exits use today's 1-minute move until there are", "warn");
+      touch();
+    } catch (error) {
+      log.warn("could not load NIFTY's recent days for volatility exits", { error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   /** Finds NIFTY's near-month future for the scalp lab. The recorder keeps it on the live feed; a replay has it in the journal. */
@@ -664,8 +696,10 @@ export function createTrader(options: TraderOptions): Trader {
       position.spotAtEntry = market.get(NIFTY_KEY)?.ltp ?? null;
       // Rupee exits are raised by the sale's slippage, so the fill, not the trigger, nets the amount.
       const exitSlippage = order.priceSource === "book" ? config.fills.slippage : config.fills.looseSlippage;
-      const levels = exitLevels(config.strategy, order.price, position.quantity, position.contract.tickSize, exitSlippage);
-      position.exitIn = config.strategy.exitIn;
+      const planned = position.plannedExits;
+      const settings = planned ? { exitIn: "percent" as const, stopLossPct: planned.stopPct, targetPct: planned.targetPct } : config.strategy;
+      const levels = exitLevels(settings, order.price, position.quantity, position.contract.tickSize, exitSlippage);
+      position.exitIn = settings.exitIn;
       position.stopPrice = levels.stopPrice;
       position.targetPrice = levels.targetPrice;
       position.exitBy = order.filledAt + holdMinutesFor(config) * MINUTE_MS;
@@ -675,6 +709,19 @@ export function createTrader(options: TraderOptions): Trader {
       position.unrealisedNet = -order.charges.total - orderCharges("SELL", order.price * position.quantity).total;
       record(active, { kind: "position", position });
       event(active, "fill", `${tag}Bought ${position.quantity} ${position.contract.name} at ${price(order.price)} (${against}); charges ${rupees(order.charges.total)}`);
+      if (planned) {
+        event(
+          active,
+          "fill",
+          `${tag}Stop ${price(levels.stopPrice ?? 0)} (−${planned.stopPct.toFixed(1)}%), target ${price(levels.targetPrice ?? 0)} (+${planned.targetPct.toFixed(1)}%): NIFTY typically moves ${planned.move.toFixed(1)} points in ${planned.holdMinutes} min now, ${
+            planned.source === "history"
+              ? `from ${planned.history?.toFixed(1)} at this time over the last ${planned.days} days, ×${planned.scale} for how busy today is`
+              : "from today's 1-minute move (not enough recent days stored)"
+          }`,
+        );
+      } else if (config.strategy.exitIn === "percent" && config.strategy.exitsFrom === "volatility") {
+        event(active, "risk", `${tag}NIFTY's movement isn't known yet: the fixed stop of ${config.strategy.stopLossPct}% and target of ${config.strategy.targetPct}% apply`, "warn");
+      }
       if (position.exitIn === "rupees") {
         const at = (level: number | null) => (level === null ? "off" : price(level));
         event(
@@ -867,12 +914,23 @@ export function createTrader(options: TraderOptions): Trader {
     touch();
     subscribe(active);
 
-    if (config.strategy.exitOnOpposite && reading.vote !== 0) {
+    // Following a decision lab rule: the vote is the rule's, on the minute's state, the same
+    // function the lab scores.
+    const rule = config.strategy.rule ? ruleById(config.strategy.rule) : undefined;
+    let vote = reading.vote;
+    if (rule) {
+      const state = minuteState(pulse, minute);
+      if (!state) return;
+      vote = rule.decide(state, active.ruleStates) ?? 0;
+      if (active.ruleStates.at(-1)?.t !== state.t) active.ruleStates.push(state);
+    }
+
+    if (config.strategy.exitOnOpposite && vote !== 0) {
       for (const position of active.positions) {
-        if (position.direction === -reading.vote) exit(active, position, "opposite", null, marketTime);
+        if (position.direction === -vote) exit(active, position, "opposite", null, marketTime);
       }
     }
-    if (reading.vote !== 0) await propose(active, pulse, reading, reading.vote);
+    if (vote !== 0) await propose(active, pulse, { ...reading, vote }, vote, rule?.name);
   }
 
   /** Why no entry is even considered now; these happen every minute, so they aren't recorded. */
@@ -890,6 +948,14 @@ export function createTrader(options: TraderOptions): Trader {
     if (active.positions.some((p) => p.book === "shadow" && p.direction === direction)) return "This signal was turned down and is being shadowed";
     // Open positions count towards the day's trades, so holding several can't overshoot the limit.
     if (active.trades.filter((t) => t.book === "paper").length + open >= config.risk.maxTradesPerDay) return `The day's limit of ${config.risk.maxTradesPerDay} trades is reached`;
+    // A followed decision lab rule's own window and daily cap, as the lab plays it.
+    const rule = config.strategy.rule ? ruleById(config.strategy.rule) : undefined;
+    if (rule?.window) {
+      // Entries are decided just after a minute closes: the minute being read is the one before.
+      const minutes = Math.floor((at - active.session.open) / MINUTE_MS) - 1;
+      if (minutes < rule.window.from || minutes > rule.window.until) return `${rule.name} buys only between minutes ${rule.window.from} and ${rule.window.until} of the session`;
+    }
+    if (rule?.maxTrades !== undefined && active.trades.filter((t) => t.book === "paper").length + open >= rule.maxTrades) return `${rule.name} takes at most ${rule.maxTrades} trades a day`;
     // Measured from the last buy as well as the last sell: with several positions allowed, a signal that stays on
     // for minutes would otherwise buy again every minute.
     const last = Math.max(active.lastExitAt ?? -Infinity, active.lastEntryAt ?? -Infinity);
@@ -927,7 +993,7 @@ export function createTrader(options: TraderOptions): Trader {
     return { quote, problem: null };
   }
 
-  async function propose(active: ActiveRun, pulse: Pulse, reading: SignalReading, direction: 1 | -1) {
+  async function propose(active: ActiveRun, pulse: Pulse, reading: SignalReading, direction: 1 | -1, ruleName?: string) {
     if (quietBlock(active, direction, marketTime)) return;
     const followed = reading.readings.find((r) => r.id === config.strategy.signal);
     const spot = market.get(NIFTY_KEY);
@@ -937,7 +1003,7 @@ export function createTrader(options: TraderOptions): Trader {
       minute: reading.minute,
       direction,
       signal: config.strategy.signal,
-      reading: followed?.reading ?? "",
+      reading: ruleName ? `Rule: ${ruleName}` : (followed?.reading ?? ""),
       spot: spot?.ltp ?? reading.nifty,
       contract: null,
       outcome: "pending",
@@ -969,6 +1035,32 @@ export function createTrader(options: TraderOptions): Trader {
       const spread = ((quote.ask - quote.bid) / ((quote.ask + quote.bid) / 2)) * 100;
       if (spread > config.risk.maxSpreadPct) return settle("rejected", `Spread ${spread.toFixed(1)}% (${price(quote.bid)}/${price(quote.ask)}) is wider than ${config.risk.maxSpreadPct}%`);
     }
+    const hold = holdMinutesFor(config);
+    const forward = pulse.derivatives?.options?.forward ?? spot.ltp;
+    const minutesToExpiry = tradingMinutesToExpiry(marketTime, contract.expiry, active.info.date, active.session);
+    const minuteMove = pulse.volatility.minuteMove;
+    if (config.strategy.costCheck) {
+      const check = costCheck({ bid: quote.bid, ask, quantity, strike: contract.strike, type: contract.type, forward, minutesToExpiry, holdMinutes: hold, minuteMove });
+      if (!check.pass) return settle("rejected", check.reason);
+    }
+    // Volatility exits: this trade's stop and target, from how much NIFTY is moving now.
+    let planned: Position["plannedExits"] = null;
+    if (config.strategy.exitIn === "percent" && config.strategy.exitsFrom === "volatility") {
+      const rule = config.strategy.rule ? ruleById(config.strategy.rule) : undefined;
+      const moves = movesFor(rule, config.strategy.stopMoves, config.strategy.targetMoves);
+      const expected = expectedMove(active.moveProfile, Math.round((reading.minute - active.session.open) / MINUTE_MS), hold, minuteMove);
+      const levels = volatilityExits({ premium: ask, strike: contract.strike, type: contract.type, forward, minutesToExpiry, holdMinutes: hold, minuteMove, move: expected?.move, ...moves });
+      if (levels) {
+        planned = {
+          stopPct: levels.stopPct,
+          targetPct: levels.targetPct,
+          move: levels.move,
+          holdMinutes: hold,
+          source: expected ? "history" : "today",
+          ...(expected ? { history: expected.history, scale: expected.scale, days: expected.days } : {}),
+        };
+      }
+    }
 
     event(active, "intent", `${direction > 0 ? "Long" : "Short"} signal (${intent.reading}): proposing ${config.strategy.lots} lot${config.strategy.lots === 1 ? "" : "s"} of ${contract.name} near ${price(ask)}`);
 
@@ -982,6 +1074,7 @@ export function createTrader(options: TraderOptions): Trader {
         pulse,
         reading,
         follow: config.strategy.signal,
+        followName: ruleName,
         direction,
         contract,
         premium: ask,
@@ -989,7 +1082,7 @@ export function createTrader(options: TraderOptions): Trader {
         costPct,
         slippage: { book: config.fills.slippage, loose: config.fills.looseSlippage },
         daysToExpiry: daysBetween(active.info.date, contract.expiry),
-        strategy: { ...config.strategy, holdMinutes: holdMinutesFor(config) },
+        strategy: { ...config.strategy, holdMinutes: hold, ...(planned ? { stopLossPct: planned.stopPct, targetPct: planned.targetPct } : {}) },
         at: marketTime,
         date: active.info.date,
         session: active.session,
@@ -1029,6 +1122,7 @@ export function createTrader(options: TraderOptions): Trader {
       spotAtEntry: spot.ltp,
       stopPrice: null,
       targetPrice: null,
+      plannedExits: planned,
       exitBy: marketTime + holdMinutesFor(config) * MINUTE_MS,
       mark: latest.ltp,
       markAt: latest.at,
@@ -1199,6 +1293,7 @@ export function createTrader(options: TraderOptions): Trader {
       config,
       ...describe(run, source),
       halt: run?.halt ?? null,
+      moveHistory: run?.moveProfile ? { days: run.moveProfile.dates.length, from: run.moveProfile.dates[0], to: run.moveProfile.dates.at(-1)! } : null,
       source,
       marketTime: marketTime || (replay ? replay.at : now()),
       run: active?.info ?? null,
@@ -1221,6 +1316,7 @@ export function createTrader(options: TraderOptions): Trader {
       },
       decisionReady: decisions[config.decision.provider].ready,
       decisionProviders: { openrouter: decisions.openrouter.ready, liquid: decisions.liquid.ready },
+      aiCheckData: AI_CHECK_DATA,
       prices,
       scalpLab: lab.status(),
     };
@@ -1402,6 +1498,7 @@ export function createTrader(options: TraderOptions): Trader {
     onFrame,
     tick,
     status,
+    halted: () => (run?.halt ? { ...run.halt, source: run.info.source } : null),
     command,
     history: (id) => store.history(id),
     decisionRequest(id) {

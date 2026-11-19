@@ -60,6 +60,7 @@ function setup() {
     log: logs.logger("api"),
     depth: (key) => ({ source: "replay", at: 42, instruments: [{ key: "NSE_FNO:61471", name: "NIFTY NOV FUT" }], book: key ? { key, name: null, at: 41, bids: [], asks: [] } : null }),
     chain: (underlying, expiry) => ({ source: "live", at: 42, underlying, expiries: expiry ? [expiry] : [], snapshot: null }),
+    decide: async () => ({ days: [], holds: [5], rows: [], rules: [], costCheckFactor: 3, moveMinutes: 10, assumptions: { stopPct: 20, targetPct: 30, stopMoves: 1, targetMoves: 2, opposite: true, slippage: 0.05, entries: "", squareOff: "" }, fields: [], build: { state: "idle", at: null, message: null } }),
   });
   return { server, telemetry, logs, feed, tick: (ms: number) => (clock += ms) };
 }
@@ -133,6 +134,8 @@ test("control API", { timeout: 15_000 }, async (t) => {
     assert.deepEqual([chain.underlying, chain.expiries], ["NIFTY", ["2026-11-23"]]);
     assert.equal((await get("/v1/chain?underlying=nifty")).status, 400);
     assert.equal((await get("/v1/chain?expiry=tomorrow")).status, 400);
+    const lab = (await (await get("/v1/decide")).json()) as { holds: number[]; build: { state: string } };
+    assert.deepEqual([lab.holds, lab.build.state], [[5], "idle"]);
   });
 
   await t.test("serves the log backlog with filters", async () => {
