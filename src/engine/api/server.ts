@@ -15,6 +15,7 @@ import {
   type TelemetryHello,
   type TelemetryTopic,
 } from "../../lib/engine/protocol.ts";
+import type { PredictionView } from "../../lib/decide/predict.ts";
 import type { DecideView } from "../../lib/decide/score.ts";
 import type { DecisionRequest, TradingCommandResult, TradingHistory, TradingStatus } from "../../lib/engine/trading.ts";
 import type { LogHub } from "../telemetry/logger.ts";
@@ -47,6 +48,8 @@ export interface ControlServerOptions {
   chain?: (underlying: string, expiry: string | null) => ChainView;
   /** The decision lab's scorecard: every rule over every recorded day, after costs. */
   decide?: () => Promise<DecideView>;
+  /** The prediction scoreboard over the recorded days. */
+  predictions?: () => Promise<PredictionView>;
   /** Handles a `POST /v1/replay` body: switch the feed to a recorded day and back, and steer it. */
   replay?: (body: unknown) => Promise<ReplayCommandResult>;
   /** Paper trading: its state, its commands (`POST /v1/trading`) and its stored runs. */
@@ -164,6 +167,16 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
             log.warn("could not read the decision lab", { error: message });
             return json(response, 502, { error: `Could not read the decision lab's tables: ${message}` });
+          }
+        }
+        case "/v1/predictions": {
+          if (!options.predictions) return json(response, 404, { error: "No prediction scoreboard" });
+          try {
+            return json(response, 200, await options.predictions());
+          } catch (error) {
+            const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+            log.warn("could not read the prediction scoreboard", { error: message });
+            return json(response, 502, { error: `Could not read the prediction scoreboard's tables: ${message}` });
           }
         }
         case "/v1/depth": {

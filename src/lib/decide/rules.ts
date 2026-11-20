@@ -17,15 +17,27 @@ export interface Rule {
   idea: string;
   /** +1 buys a call, −1 a put, null does nothing. `before` holds the earlier minutes' states, oldest first. */
   decide(now: MinuteState, before: readonly MinuteState[]): 1 | -1 | null;
-  /** The rule's own exits, in place of the trader's defaults (the hold still comes from the scoring). */
-  exits?: Partial<Pick<Exits, "stopPct" | "targetPct" | "opposite">>;
+  /**
+   * The rule's own exits, in place of the trader's defaults. The hold comes from the scoring unless
+   * the rule sets its own (UNTIL_CLOSE: kept until 15:10). `trail` makes the stop follow the best
+   * price, with no target.
+   */
+  exits?: Partial<Pick<Exits, "stopPct" | "targetPct" | "opposite" | "trail" | "holdMinutes">>;
   /** At most this many trades a day. */
   maxTrades?: number;
   /** Entries only from and until these minutes since 09:15, within the trader's 09:25 to 14:45. */
   window?: { from: number; until: number };
   /** One of the step-2 candidates the live trader can follow. */
   candidate?: true;
+  /**
+   * The first day that tests a candidate (YYYY-MM-DD): it was written with the days before it
+   * already seen, so those days say nothing about it and the scorecard keeps them apart.
+   */
+  since?: string;
 }
+
+/** A rule's own hold that keeps the position until the square-off at 15:10, whatever the hold scored. */
+export const UNTIL_CLOSE = 360;
 
 /** No signal fires every this many minutes, alternating calls and puts. */
 const RANDOM_EVERY = 15;
@@ -77,6 +89,20 @@ export const RULES: readonly Rule[] = [
  * not to be tuned on the days that score them. Each reads different data. A target bigger than
  * the stop means a rule can be right less than half the time and still pay.
  */
+/** Trend day's test: NIFTY well away from its open, its stocks and the future's buyers or sellers all on that side. */
+function trendSide(now: MinuteState): 1 | -1 | null {
+  const { nifty, nifty_from_open: move, advancers, decliners, fut_flow_15m: flow } = now;
+  if (nifty === null || move === null || advancers === null || decliners === null || flow === null) return null;
+  const side = move > 0 ? 1 : -1;
+  if (Math.abs(move) < 0.0025 * nifty) return null;
+  if ((advancers - decliners) * side < 10) return null;
+  if (flow * side < 0.1) return null;
+  return side;
+}
+
+/** Minutes a vote counts for when two signals must agree: the one now and the 14 before. */
+const AGREE_MINUTES = 15;
+
 export const CANDIDATES: readonly Rule[] = [
   {
     id: "trend",
@@ -86,15 +112,8 @@ export const CANDIDATES: readonly Rule[] = [
     maxTrades: 2,
     exits: { stopPct: 15, targetPct: 45, opposite: false },
     candidate: true,
-    decide(now) {
-      const { nifty, nifty_from_open: move, advancers, decliners, fut_flow_15m: flow } = now;
-      if (nifty === null || move === null || advancers === null || decliners === null || flow === null) return null;
-      const side = move > 0 ? 1 : -1;
-      if (Math.abs(move) < 0.0025 * nifty) return null;
-      if ((advancers - decliners) * side < 10) return null;
-      if (flow * side < 0.1) return null;
-      return side;
-    },
+    since: "2026-11-19",
+    decide: trendSide,
   },
   {
     id: "cheap-momentum",
@@ -103,6 +122,7 @@ export const CANDIDATES: readonly Rule[] = [
     maxTrades: 3,
     exits: { stopPct: 20, targetPct: 40 },
     candidate: true,
+    since: "2026-11-19",
     decide(now) {
       const vote = now.sig_momentum;
       if (vote !== 1 && vote !== -1) return null;
@@ -117,6 +137,7 @@ export const CANDIDATES: readonly Rule[] = [
     maxTrades: 2,
     exits: { stopPct: 15, targetPct: 45, opposite: false },
     candidate: true,
+    since: "2026-11-19",
     decide(now) {
       const nifty = now.nifty;
       const climb = now.nifty_points_15m;
@@ -127,6 +148,48 @@ export const CANDIDATES: readonly Rule[] = [
       if (calls !== null && calls >= nifty && calls - nifty <= near && climb >= near) return -1;
       if (puts !== null && puts <= nifty && nifty - puts <= near && -climb >= near) return 1;
       return null;
+    },
+  },
+  // Written on 19 November 2026 with 18 and 19 November seen; only days from 20 November test them.
+  {
+    id: "trend-hold",
+    name: "Trend day, held",
+    idea: "Trend day's entry from 10:00 to 13:00, but held: once NIFTY, its stocks and the future's buyers or sellers agree, buy with the trend and keep it until 15:10. The stop starts 25% below the buy and follows the option's best price up, staying 25% below it; there is no target. On 19 November Trend day's call was stopped out at 15% on a dip, then NIFTY rose about 390 points from its low to the close. At most 2 trades a day.",
+    window: { from: 45, until: 225 },
+    maxTrades: 2,
+    exits: { stopPct: 25, trail: true, opposite: false, holdMinutes: UNTIL_CLOSE },
+    candidate: true,
+    since: "2026-11-20",
+    decide: trendSide,
+  },
+  {
+    id: "breadth-buildup",
+    name: "Breadth and OI build-up agree",
+    idea: `Buys when Breadth thrust and Futures OI build-up have both voted the same way within ${AGREE_MINUTES} minutes, neither has voted the other way since, and one of them votes now. The two signals picked the day's side on both 18 and 19 November. At most 3 trades a day; a 40% target against a 20% stop.`,
+    maxTrades: 3,
+    exits: { stopPct: 20, targetPct: 40 },
+    candidate: true,
+    since: "2026-11-20",
+    decide(now, before) {
+      const recent = [...before.slice(-(AGREE_MINUTES - 1)), now];
+      for (const side of [1, -1] as const) {
+        const votesNow = now.sig_breadth === side || now.sig_buildup === side;
+        const held = (field: "sig_breadth" | "sig_buildup") => recent.some((m) => m[field] === side) && !recent.some((m) => m[field] === -side);
+        if (votesNow && held("sig_breadth") && held("sig_buildup")) return side;
+      }
+      return null;
+    },
+  },
+  {
+    id: "flow-fade",
+    name: "Fade futures order flow",
+    idea: "Trades against Futures order flow: a put when buyers have been taking the future, a call when sellers have. Following it lost on both 18 and 19 November, more than trading at random. Fading only pays if that was more than bad luck and costs: both sides pay the same charges. At most 6 trades a day, with the default exits.",
+    maxTrades: 6,
+    candidate: true,
+    since: "2026-11-20",
+    decide(now) {
+      const vote = now.sig_flow;
+      return vote === 1 ? -1 : vote === -1 ? 1 : null;
     },
   },
 ];

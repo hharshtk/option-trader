@@ -12,10 +12,11 @@ What the Pulse page (`/pulse`) shows, how each number is computed, and what it c
 6. [Learned weights](#learned-weights)
 7. [Futures and options](#futures-and-options)
 8. [Signal lab](#signal-lab)
-9. [Trade it with options](#trade-it-with-options)
-10. [What it doesn't do](#what-it-doesnt-do)
-11. [Code layout](#code-layout)
-12. [Changing it](#changing-it)
+9. [Prediction scoreboard](#prediction-scoreboard)
+10. [Trade it with options](#trade-it-with-options)
+11. [What it doesn't do](#what-it-doesnt-do)
+12. [Code layout](#code-layout)
+13. [Changing it](#changing-it)
 
 ## In one paragraph
 
@@ -162,6 +163,10 @@ Seven candidate signals, each a fixed rule read at the end of every minute from 
 Each card states its verdict's numbers, for example: "Right 12 of 18 (67%), 95% range 44–84%. … +41.6 pts before costs, 18 × 8 pts of costs, −102.4 after."
 
 **Reading it.** One day gives 10 to 40 firings per signal, too few to separate skill from luck. Picking the best hold after seeing the results is itself overfitting. A signal earns a place in a strategy only after it holds up across weeks of replayed days (step E6 in the [engine plan](engine-plan.md#build-steps)).
+
+## Prediction scoreboard
+
+Under the Signal lab: every signal, decision lab rule and baseline (a coin flip, and "keeps going since the open") graded on every minute of every recorded day, 15 minutes later, in rupees from the recorded option prices after charges. Unlike the Signal lab it covers past days, not today; it updates after each session. How it works and the first results: [predictions.md](predictions.md).
 
 ## Trade it with options
 

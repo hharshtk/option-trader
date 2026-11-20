@@ -63,6 +63,7 @@ To try it with the market closed, start a replay on the Engine page (or `npm run
 |---|---|
 | Start paper trading / Turn entries off | Arms or disarms entries. Open positions keep their exits either way |
 | Sell open position(s) | Sells everything that is open now |
+| Sell (on a row of **Open positions**) | Sells that one position at the next quote, to take a profit or cut a loss by hand. The others keep their stops, targets and hold times. The trade shows as "Sold by you" |
 | Stop for the day | Sells what is open and takes no more entries until you press Resume or the next day starts |
 
 **What starts on its own.** With entries off the engine still reads the signals and, when "Record these options every session" is on (the default), keeps the option window subscribed so the journal records it. It never opens a position with entries off.
@@ -97,10 +98,11 @@ Set on the Strategies page; kept in `data/engine/trading/config.json`. They appl
 | Trade | Calls on long, puts on short | Or calls only, or puts only |
 | Strike | At the money | Up to 2 strikes in or out of the money |
 | Lots | 1 | Quantity is lots × the contract's lot size |
-| Hold | 10 min | Sold this long after the buy filled |
+| Hold | 10 min | Sold this long after the buy filled; up to 375 (a lab rule held until the close sets 360) |
 | Stop and target | From NIFTY's moves | Or fixed percents. See [Volatility exits](#volatility-exits) |
 | Stop / target, with volatility exits | 1× / 2× NIFTY's typical move over the hold | In option rupees, as a share of the premium |
 | Stop loss / Target | 20% / 30% of premium | Fixed exits; with volatility exits, used only while NIFTY's movement isn't known. 0 turns either off |
+| Trailing stop, no target | Off | The stop follows the option's best price up and there is no target. See [Trailing stop](#trailing-stop) |
 | Style | Standard | Or **Scalping** (see [Scalping](#scalping)). Hold, stop, target and wait above are Standard's |
 | Scalping: take profit / cut loss | ₹250 / ₹250 after charges | 0 turns either off |
 | Scalping: sell anyway after / wait between trades | 3 min / 0 min | Scalping's own hold and wait |
@@ -139,7 +141,13 @@ A fixed percent ignores the market: on 18 November 2026 a 20% stop on a ₹170 o
 - The **stop** sits 1 of those below the entry and the **target** 2 above (**Stop / target, with volatility exits**), kept between 2% and 60% (stop) and 300% (target) of the premium. A followed decision lab rule keeps its own target-to-stop ratio (Trend day: 3).
 - When NIFTY's movement isn't known yet (the first minutes, a feed gap), the fixed percents apply and the log says so. The Activity log shows each trade's levels and the move they came from (the recent days' figure and today's scale), and the settings summary says which days are in use.
 
-What it does, from the decision lab on 18 November at a 10-minute hold, trading at random moments: 379 trades of 642 ended on their stop or target instead of 14, the worst trade lost ₹1,335 instead of ₹2,571 and the average loss was ₹648 instead of ₹723. The average result is about the same (−₹111 a trade against −₹105): exits can't make a coin-flip entry pay; they size its losses and let a rule with an edge keep its winners.
+### Trailing stop
+
+With **Trailing stop, no target** on (Standard style only), each position's stop starts where it would anyway (fixed, or from NIFTY's moves) and follows the option's best last price up, staying as far below it, in percent, as it started below the entry. It never comes down. There is no target: a winner runs until it falls back to the stop, the hold runs out or the square-off. A sale on a stop that has moved up shows as "Trailing stop"; one on the stop where it started, as "Stop loss". **Open positions** shows the stop as it climbs, marked "trails". The position is recorded each time its stop climbs 1% of the entry, so a restart keeps the stop near where it was.
+
+Why: on 19 November 2026, NIFTY rose about 390 points from its low to the close. Trend day's call was stopped out at 15% on a 46-point dip before it, and its second call was sold at the end of its 30-minute hold for ₹511. A fixed target caps the day's best trades, and a fixed hold cuts them short.
+
+What volatility exits did, from the decision lab on 18 November at a 10-minute hold, trading at random moments: 379 trades of 642 ended on their stop or target instead of 14, the worst trade lost ₹1,335 instead of ₹2,571 and the average loss was ₹648 instead of ₹723. The average result is about the same (−₹111 a trade against −₹105): exits can't make a coin-flip entry pay; they size its losses and let a rule with an edge keep its winners.
 
 ### Scalping
 
@@ -183,7 +191,7 @@ The quick, honest test of a decision rule across days. Paper trading tests one s
 
 **What a rule sees.** At the close of each minute, one record of everything the engine knows then: NIFTY, India VIX and how far NIFTY has been moving, breadth, the near-month future (premium, VWAP, open interest, who is trading, the 5- and 20-level book, the spread), the options in the journal's window (put/call ratio, straddle, walls, max pain), the option chain (volatility from bid-ask middles, skew, the next expiry, open interest across every strike) and every Pulse signal's vote and reading. The fields and their meanings are in [state.ts](../src/lib/decide/state.ts) and under **What a rule sees** on the Strategies page. The record is built from the day as it stood at that minute (read 1.5 seconds after its close, as the trader reads its signals), never from the day's end, so nothing from later leaks in.
 
-**A rule** is a plain function of that record (and the minutes before it): buy a call, buy a put or do nothing ([rules.ts](../src/lib/decide/rules.ts)). The bars are **No signal** (a call, then a put 15 minutes later, and so on; averaged over all 30 starting minutes and sides, since one fixed schedule can line up with a day's swings by chance) and one rule per Pulse signal, following it as the trader does. Then the **candidates**, written on 18 November 2026 with that day already seen, so only days from 19 November test them, and not to be tuned on the days that score them. Each trades rarely, with a target bigger than its stop, so it can be right less than half the time and still pay:
+**A rule** is a plain function of that record (and the minutes before it): buy a call, buy a put or do nothing ([rules.ts](../src/lib/decide/rules.ts)). The bars are **No signal** (a call, then a put 15 minutes later, and so on; averaged over all 30 starting minutes and sides, since one fixed schedule can line up with a day's swings by chance) and one rule per Pulse signal, following it as the trader does. Then the **candidates**, each written with some days already seen and marked with the first day that tests it (`since` in rules.ts); they are not to be tuned on the days that score them. A candidate's figures on the scorecard count only the days from that date; **Day by day** shows the earlier ones too, dimmed. Each trades rarely, most with a target bigger than its stop, so it can be right less than half the time and still pay:
 
 | Candidate | Buys when | Exits |
 |---|---|---|
@@ -191,13 +199,25 @@ The quick, honest test of a decision rule across days. Paper trading tests one s
 | Momentum when options are cheap | 15-minute momentum fires and NIFTY has lately moved at least as much as the at-the-money straddle prices | Stop 20%, target 40%; at most 3 a day |
 | Fade at the walls | NIFTY climbed 0.15% or more in 15 minutes to within 0.15% of the strike with the most call open interest (whole chain, else the journal's window): a put. The mirror at the biggest put strike: a call | Stop 15%, target 45%, no exit on an opposite vote; at most 2 a day |
 
+Those three were written on 18 November and are tested from 19 November. Three more were written on 19 November, with 18 and 19 November seen, and are tested from 20 November:
+
+| Candidate | Buys when | Exits |
+|---|---|---|
+| Trend day, held | Trend day's entry, from 10:00 to 13:00 | Held until 15:10: the stop starts 25% below the buy and trails the best price; no target, no exit on an opposite vote; at most 2 a day |
+| Breadth and OI build-up agree | Breadth thrust and Futures OI build-up both voted the same way within 15 minutes, neither the other way since, and one votes now. The two signals picked the day's side on both 18 and 19 November | Stop 20%, target 40%; at most 3 a day |
+| Fade futures order flow | Against Futures order flow: a put when buyers have been taking the future, a call when sellers have. Following it lost on both days, by more than trading at random | The defaults; at most 6 a day |
+
+Following Futures order flow lost more than random trades did, but both sides of a trade pay the same charges, so fading it pays only if the losses were more than bad luck and costs.
+
 **The cost check** ([cost.ts](../src/lib/decide/cost.ts)), a gate on any rule with no AI in it: Dhan's charges, the spread, slippage both ways and the time value lost over the hold, divided by the option's delta, is the NIFTY move a trade needs to break even. A trade is let through only when NIFTY's typical move over the hold (its recent 1-minute move scaled to the hold) is at least 3 times that. The scorecard shows every rule with it off and on. On 18 November a trade needed about 4 points and NIFTY typically moved 17 to 45 over 10 minutes, so it almost never stood in the way: costs, about ₹100 to ₹130 a trade, were small next to the moves, and the difficulty was the direction. It matters on quiet days and close to expiry.
 
 **Options priced against NIFTY delivered.** Each day the lab averages, over every minute, the move over 10 minutes that the at-the-money straddle priced and the move NIFTY then made. Delivered above priced, buying options paid that day; below, it was dear. 18 November: options priced 30 points, NIFTY moved 20.4. Part of the gap is the overnight and weekend risk options also price, which an intraday move never shows, so the priced figure reads a little high.
 
-**How a rule is played** ([simulate.ts](../src/lib/decide/simulate.ts)): the trader's own rules. A firing from 09:25 to 14:45 buys one lot of the nearest expiry's at-the-money option at the ask + ₹0.05; it is sold when the hold is up, at its stop or target (on the last price), on an opposite vote or at 15:10; one position at a time, 2 minutes between trades; Dhan's charges on both orders. Every rule is scored with fixed exits (20% stop, 30% target, or a candidate's own) and with [volatility exits](#volatility-exits) worked out at entry exactly as the trader does. Quotes are those at each minute's close, with each option's lowest and highest last price within the minute: a stop or target crossed inside a minute is sold at its level less half the spread and ₹0.05, as paper trading's tick-by-tick check would (both crossed in one minute: the stop is taken first); other exits sell at the bid − ₹0.05 at the minute's close. Each rule is scored at holds of 5, 10, 15 and 30 minutes.
+**How a rule is played** ([simulate.ts](../src/lib/decide/simulate.ts)): the trader's own rules. A firing from 09:25 to 14:45 buys one lot of the nearest expiry's at-the-money option at the ask + ₹0.05; it is sold when the hold is up, at its stop or target (on the last price), on an opposite vote or at 15:10; one position at a time, 2 minutes between trades; Dhan's charges on both orders. Every rule is scored three ways: fixed exits (20% stop, 30% target, or a candidate's own), [volatility exits](#volatility-exits) worked out at entry exactly as the trader does, and a [trailing stop](#trailing-stop) (the fixed stop, or a candidate's own, made to trail the best price, with no target). A rule held until the close (Trend day, held) keeps its trades to 15:10 whatever the hold column says. Quotes are those at each minute's close, with each option's lowest and highest last price within the minute: a stop or target crossed inside a minute is sold at its level less half the spread and ₹0.05, as paper trading's tick-by-tick check would (both crossed in one minute: the stop is taken first); other exits sell at the bid − ₹0.05 at the minute's close. A trailing stop moves up with the best price of the minutes before, so a minute's high raises it from the next minute. Each rule is scored at holds of 5, 10, 15 and 30 minutes.
 
-**Where to see it.** The **Decision lab** panel on Strategies: per rule at the chosen hold, with exits following NIFTY's moves or fixed, the cost check off or on, trades, how many made money, the net after costs, per trade, against No signal, and the worst day; each day's priced against delivered move. The engine rebuilds it 10 minutes after each session's close, in a child process. By hand:
+**Against random trades on the same side.** On a day NIFTY goes one way, every rule that bought that side looks good: on 19 November random calls made about ₹635 each at a 30-minute hold, and most signals' calls did no better. So each rule's calls are compared with No signal's calls on the same day, and its puts with its puts. **Vs random, same side** is the rupees a trade above or below them; **Days ahead** counts the days it beat that bar out of the days it traded; **Day by day** lists each day's net beside the bar. A rule worth following stays ahead of it, day after day.
+
+**Where to see it.** The **Decision lab** panel on Strategies: per rule at the chosen hold, with exits following NIFTY's moves, fixed or trailing, the cost check off or on, trades, how many made money, the net after costs, per trade, against random trades on the same side, days ahead, and the worst day; **Day by day** under the table; each day's priced against delivered move. The engine rebuilds it 10 minutes after each session's close, in a child process. By hand:
 
 ```bash
 npm run decide                       # build days not built yet, score every rule, print the scorecard
@@ -205,9 +225,9 @@ npm run decide -- --date 2026-11-18  # build that day again, then score
 npm run decide -- --score            # score only (after changing a rule)
 ```
 
-**Following a rule with paper trading.** In Settings, Buy section, **Or lab rule** makes the trader take its entries from a candidate's function on the minute's record, the one the lab scores, with its window and daily cap; choosing one also sets its stop, target and opposite-vote exit. **Cost check** puts every entry through the same check. The signal still shows on the page; a turned-down entry's reason is in the proposals. The decision API is told the rule's name as the followed signal, with no past-year record.
+**Following a rule with paper trading.** In Settings, Buy section, **Or lab rule** makes the trader take its entries from a candidate's function on the minute's record, the one the lab scores, with its window and daily cap; choosing one also sets its stop, target, trailing stop, opposite-vote exit and, for a rule held until the close, a 360-minute hold. Choosing another rule afterwards undoes a trailing stop or hold the previous one set. **Cost check** puts every entry through the same check. The signal still shows on the page; a turned-down entry's reason is in the proposals. The decision API is told the rule's name as the followed signal, with no past-year record.
 
-**Tables** (Parquet in the file store, [lab.ts](../src/engine/decide/lab.ts)): `decide/minutes/<date>` (one row a minute: the record), `decide/quotes/<date>` (the nearest expiry's options at each minute's close, with the minute's price range), `decide/days/<date>` (with the day's priced and delivered move), `decide/trades/<date>` (every rule's trades at every hold, cost check off and on, fixed and volatility exits, with each trade's stop and target).
+**Tables** (Parquet in the file store, [lab.ts](../src/engine/decide/lab.ts)): `decide/minutes/<date>` (one row a minute: the record), `decide/quotes/<date>` (the nearest expiry's options at each minute's close, with the minute's price range), `decide/days/<date>` (with the day's priced and delivered move), `decide/trades/<date>` (every rule's trades at every hold, cost check off and on, fixed, volatility and trailing exits, with each trade's stop and target), and for the [prediction scoreboard](predictions.md) `decide/outcomes/<date>` and `decide/calls/<date>`.
 
 **Which days count.** A day needs NIFTY's options recorded with the `instruments` records that describe them: from 18 November 2026. 16 and 17 November are built but have no option quotes, so they aren't scored.
 
@@ -402,7 +422,7 @@ Added to the engine's control API ([engine.md](engine.md#control-api)); the web 
 | Endpoint | Returns |
 |---|---|
 | `GET /v1/trading` | `TradingStatus`: state, settings, run, contracts, signals, positions, trades, orders, proposals, decisions, log, totals |
-| `POST /v1/trading` | A command: `{ action: "arm" }`, `"disarm"`, `"flatten"`, `"halt"`, `"resume"`, or `{ action: "config", patch }`. Answers `{ ok, message }` |
+| `POST /v1/trading` | A command: `{ action: "arm" }`, `"disarm"`, `"flatten"`, `{ action: "sell", positionId }` (one paper position), `"halt"`, `"resume"`, or `{ action: "config", patch }`. Answers `{ ok, message }` |
 | `GET /v1/trading/decision?id=` | What was sent to the decision API for one of the current run's decisions: `{ id, model, questions, state }`. The Strategies page shows it under **Sent** in the Decision API table |
 | `GET /v1/trading/history?run=` | Stored runs, newest first, read from Parquet; with `run`, that run's trades |
 | Telemetry topic `trading` | The status about once a second while anything changes. The lists (trades, orders, proposals, decisions, log) are included only when they changed; a page reads `GET /v1/trading` once for the rest |

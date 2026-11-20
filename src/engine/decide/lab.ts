@@ -12,6 +12,7 @@
 import { readdirSync } from "node:fs";
 import type { Columns, ParquetStore, Row } from "../../lib/db/parquet-store.ts";
 import { COST_CHECK_FACTOR } from "../../lib/decide/cost.ts";
+import { calls as predictorCalls, HORIZON, outcomes as dayOutcomes, scoreboard, type Call, type Outcome, type PredictionView } from "../../lib/decide/predict.ts";
 import { PLAYED, SCORED } from "../../lib/decide/rules.ts";
 import { ASSUMPTIONS, exitsText, FIELD_LIST, movement, scorecard, type DecideView, type LabDay } from "../../lib/decide/score.ts";
 import { DEFAULT_EXITS, EXIT_MODES, HOLDS, simulateDay, type DayData, type MinuteQuote, type SimTrade } from "../../lib/decide/simulate.ts";
@@ -58,6 +59,11 @@ const TRADES: Columns = {
   nifty_move: "DOUBLE",
 };
 
+/** Each minute's outcome over the next HORIZON minutes: NIFTY's move and the at-the-money call's and put's net. */
+const OUTCOMES: Columns = { date: "VARCHAR", t: "INTEGER", horizon: "INTEGER", move: "DOUBLE", call_net: "DOUBLE", put_net: "DOUBLE" };
+/** Every predictor's call at every minute it made one. */
+const CALLS: Columns = { date: "VARCHAR", predictor: "VARCHAR", t: "INTEGER", vote: "INTEGER" };
+
 export interface DecisionLab {
   /** Journal dates in the directory that had a session, oldest first. */
   recordedDates(): string[];
@@ -69,6 +75,8 @@ export interface DecisionLab {
   score(log?: (message: string) => void): Promise<DecideView>;
   /** The scorecard from the saved trades, without playing the rules again. */
   view(build: DecideView["build"]): Promise<DecideView>;
+  /** The prediction scoreboard from the saved outcomes and calls. */
+  predictions(build: PredictionView["build"]): Promise<PredictionView>;
 }
 
 export function createDecisionLab({
@@ -146,6 +154,34 @@ export function createDecisionLab({
     return makeView(labDays, trades.map(toTrade), build);
   }
 
+  async function predictions(build: PredictionView["build"]): Promise<PredictionView> {
+    const [outs, all, moves] = await Promise.all([
+      store.query<{ date: string; t: number; move: number; call_net: number | null; put_net: number | null }>(
+        (table) => `SELECT date, t, move, call_net, put_net FROM ${table("decide/outcomes/*.parquet")} WHERE horizon = ${HORIZON} ORDER BY date, t`,
+      ),
+      store.query<{ date: string; predictor: string; t: number; vote: number }>((table) => `SELECT date, predictor, t, vote FROM ${table("decide/calls/*.parquet")} ORDER BY date, t`),
+      // NIFTY from the day's first minute to 15:14, for context: an up day flatters every call.
+      store.query<{ date: string; first: number | null; last: number | null }>(
+        (table) => `SELECT date, arg_min(nifty, t) AS first, arg_max(nifty, t) AS last FROM ${table("decide/minutes/*.parquet")} WHERE t < 360 GROUP BY date`,
+      ),
+    ]);
+    const dates = [...new Set(outs.map((o) => o.date))].sort();
+    const days = dates.map((date) => ({
+      date,
+      outcomes: outs.filter((o) => o.date === date).map((o): Outcome => ({ t: o.t, move: o.move, call: o.call_net, put: o.put_net })),
+      calls: all.filter((c) => c.date === date).map((c): Call => ({ predictor: c.predictor, t: c.t, vote: c.vote > 0 ? 1 : -1 })),
+    }));
+    return {
+      horizon: HORIZON,
+      days: days.map((d) => {
+        const m = moves.find((x) => x.date === d.date);
+        return { date: d.date, minutes: d.outcomes.length, niftyMove: m && m.first !== null && m.last !== null ? Math.round((m.last - m.first) * 100) / 100 : null };
+      }),
+      rows: scoreboard(days),
+      build,
+    };
+  }
+
   return {
     recordedDates() {
       return readdirSync(directory)
@@ -211,13 +247,22 @@ export function createDecisionLab({
         Object.assign(labDay, { pricedMove: moves?.priced ?? null, deliveredMove: moves?.delivered ?? null });
         await writeDay(labDay);
         await store.write(`decide/trades/${date}.parquet`, TRADES, trades.map(fromTrade));
+        // The prediction scoreboard: what followed every minute, and every predictor's calls.
+        const outs = dayOutcomes(day);
+        await store.write(
+          `decide/outcomes/${date}.parquet`,
+          OUTCOMES,
+          outs.map((o) => ({ date, t: o.t, horizon: HORIZON, move: o.move, call_net: o.call, put_net: o.put })),
+        );
+        await store.write(`decide/calls/${date}.parquet`, CALLS, predictorCalls(day).map((c) => ({ date, predictor: c.predictor, t: c.t, vote: c.vote })));
         const paid = moves ? `; options priced ${moves.priced.toFixed(1)} points a ${MOVE_MINUTES} min, NIFTY moved ${moves.delivered.toFixed(1)}` : "";
-        log(`${date}: ${trades.length} trades across ${SCORED.length} rules, ${HOLDS.length} holds, cost check off and on, fixed and volatility exits${paid}`);
+        log(`${date}: ${trades.length} trades across ${SCORED.length} rules, ${HOLDS.length} holds, cost check off and on, fixed, volatility and trailing exits${paid}`);
         all.push(...trades);
       }
       return makeView(labDays, all, { state: "idle", at: now(), message: null });
     },
     view,
+    predictions,
   };
 }
 
@@ -237,10 +282,11 @@ function makeView(labDays: (LabDay & { version?: string })[], trades: SimTrade[]
     })),
     holds: HOLDS,
     rows: scorecard(trades, priced),
-    rules: SCORED.map((r) => ({ id: r.id, name: r.name, idea: r.idea, candidate: r.candidate === true, exits: exitsText(r) })),
+    rules: SCORED.map((r) => ({ id: r.id, name: r.name, idea: r.idea, candidate: r.candidate === true, exits: exitsText(r), since: r.since ?? null })),
     costCheckFactor: COST_CHECK_FACTOR,
     moveMinutes: MOVE_MINUTES,
     assumptions: ASSUMPTIONS,
+    exitModes: EXIT_MODES,
     fields: FIELD_LIST,
     build,
   };
@@ -278,7 +324,7 @@ function toTrade(r: Record<string, unknown>): SimTrade {
     rule: String(r.rule),
     hold: Number(r.hold),
     checked: r.checked === true,
-    exits: r.exits === "volatility" ? "volatility" : "fixed",
+    exits: r.exits === "volatility" || r.exits === "trailing" ? r.exits : "fixed",
     stopPct: Number(r.stop_pct ?? 0),
     targetPct: Number(r.target_pct ?? 0),
     direction: Number(r.direction) > 0 ? 1 : -1,

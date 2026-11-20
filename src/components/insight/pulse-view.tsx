@@ -10,6 +10,7 @@ import { useJournalSession } from "@/components/engine/session-view";
 import { useEngineTelemetry } from "@/components/engine/use-engine-telemetry";
 import { OptionReplay } from "@/components/insight/option-replay";
 import { OrderBook } from "@/components/insight/order-book";
+import { PredictionBoard } from "@/components/insight/prediction-board";
 import { formatAge } from "@/components/shell/freshness";
 import { EmptyState, Field, Panel } from "@/components/ui";
 import { INDEX_CONSTITUENTS } from "@/lib/index-constituents";
@@ -153,6 +154,7 @@ function PulseBody({ pulse, age, replay, replayAt }: { pulse: Pulse; age: number
       <OrderBook />
       <PulseChart pulse={pulse} focus={focus} />
       <SignalLab pulse={pulse} lab={lab} />
+      <PredictionBoard />
       <OptionReplay pulse={pulse} focus={focus} horizon={lab.horizon} onSelect={lab.setFocus} replayAt={replayAt} />
       <HowItWorks pulse={pulse} />
 

@@ -31,6 +31,7 @@ export function describeSettings(trading: Pick<TradingStatus, "config" | "moveHi
           ["Fallback", `${s.stopLossPct}% / ${s.targetPct}%`],
         ]
       : [["Stop / target", `${off(s.stopLossPct, `${s.stopLossPct}%`)} / ${off(s.targetPct, `${s.targetPct}%`)}`]];
+  if (!scalping && s.trailStop) exits.push(["Trailing stop", "on: follows the best price, no target"]);
   exits.push(
     ["Hold", `${scalping ? s.scalpHoldMinutes : s.holdMinutes} min`],
     ["Opposite signal", s.exitOnOpposite ? "sells" : "ignored"],

@@ -42,6 +42,9 @@ export const FOLLOWABLE_RULES = [
   { id: "trend", name: "Trend day" },
   { id: "cheap-momentum", name: "Momentum when options are cheap" },
   { id: "wall-fade", name: "Fade at the walls" },
+  { id: "trend-hold", name: "Trend day, held" },
+  { id: "breadth-buildup", name: "Breadth and OI build-up agree" },
+  { id: "flow-fade", name: "Fade futures order flow" },
 ] as const;
 export type FollowableRuleId = (typeof FOLLOWABLE_RULES)[number]["id"];
 
@@ -113,6 +116,11 @@ export interface TradingConfig {
     stopLossPct: number;
     /** Sell when the premium rises this far above the entry, in percent. 0 turns it off. */
     targetPct: number;
+    /**
+     * With percent exits: the stop follows the option's best price up, staying as far below it as
+     * it started below the entry, and there is no target, so a winner runs until it falls back.
+     */
+    trailStop: boolean;
     /**
      * How the stop and target are set: a share of the premium (`stopLossPct`, `targetPct`), or
      * rupees made or lost after charges on both orders (`stopNet`, `targetNet`), the scalping way.
@@ -200,6 +208,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     holdMinutes: 10,
     stopLossPct: 20,
     targetPct: 30,
+    trailStop: false,
     exitIn: "percent",
     exitsFrom: "volatility",
     stopMoves: 1,
@@ -323,9 +332,11 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
     apply(next.strategy, strategy, "side", (v, n) => oneOf(v, n, ["both", "calls", "puts"] as const), "Side");
     apply(next.strategy, strategy, "strikeOffset", (v, n) => number(v, n, -5, 5, true), "Strike offset");
     apply(next.strategy, strategy, "lots", (v, n) => number(v, n, 1, 50, true), "Lots");
-    apply(next.strategy, strategy, "holdMinutes", (v, n) => number(v, n, 1, 240, true), "Hold");
+    // Up to a whole session: a rule held until the close (Trend day, held) sets 360.
+    apply(next.strategy, strategy, "holdMinutes", (v, n) => number(v, n, 1, 375, true), "Hold");
     apply(next.strategy, strategy, "stopLossPct", (v, n) => number(v, n, 0, 90), "Stop loss");
     apply(next.strategy, strategy, "targetPct", (v, n) => number(v, n, 0, 500), "Target");
+    apply(next.strategy, strategy, "trailStop", bool, "Trailing stop");
     apply(next.strategy, strategy, "exitIn", (v, n) => oneOf(v, n, ["percent", "rupees"] as const), "Stop and target in");
     apply(next.strategy, strategy, "exitsFrom", (v, n) => oneOf(v, n, ["volatility", "fixed"] as const), "Stop and target from");
     apply(next.strategy, strategy, "stopMoves", (v, n) => number(v, n, 0.25, 10), "Stop in typical moves");
@@ -402,7 +413,7 @@ export interface OptionRef {
 /** The paper account, or the shadow book that follows trades the decision gate turned down. */
 export type Book = "paper" | "shadow";
 
-export type ExitReason = "stop" | "target" | "time" | "opposite" | "square-off" | "manual" | "halt";
+export type ExitReason = "stop" | "trail" | "target" | "time" | "opposite" | "square-off" | "manual" | "halt";
 export type OrderReason = "entry" | ExitReason;
 /** What an order was filled against: the order book, a last traded price, or a 1-minute candle. */
 export type PriceSource = "book" | "ltp" | "candle";
@@ -455,6 +466,11 @@ export interface Position {
   spotAtEntry: number | null;
   stopPrice: number | null;
   targetPrice: number | null;
+  /**
+   * A trailing stop: how far below the best price the stop stays (percent of that price), the best
+   * last price since the buy, and whether the stop has moved up from where it started.
+   */
+  trail?: { pct: number; best: number; raised: boolean } | null;
   /** What the stop and target trigger on: the last traded price (percent), or the bid when known (rupees). */
   exitIn?: "percent" | "rupees";
   /** With volatility exits: the levels worked out for this trade when it was proposed, and from what. */
@@ -744,6 +760,11 @@ export type TradingCommand =
   | { action: "disarm" }
   /** Sell every open position now. */
   | { action: "flatten" }
+  /**
+   * Sell one paper position now. Its own action, not an option on `flatten`: an engine older than
+   * it refuses an unknown action, where it would ignore an unknown field and sell everything.
+   */
+  | { action: "sell"; positionId: string }
   /** Stop trading for the day and sell open positions; `resume` lifts it. */
   | { action: "halt" }
   | { action: "resume" }

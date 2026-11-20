@@ -221,3 +221,101 @@ describe("exits inside a minute", () => {
     assert.deepEqual([trade.exit, trade.sell], ["stop", 74.95]);
   });
 });
+
+describe("trailing stops and holding to the close", () => {
+  it("trails the stop up behind the best price, with no target, and says it was the trailing stop", () => {
+    // Bought at 100.55 at minute 10; rises 2 a minute to minute 30 (last price 140.25), then falls 2 a minute.
+    const path = (t: number) => (t <= 30 ? 100 + 2 * Math.max(0, t - 10) : 140 - 2 * (t - 30));
+    const d = day(120, () => 25_000, (t) => ({ bid: path(t), ask: path(t) + 0.5, ltp: path(t) + 0.25 }));
+    const [trade] = simulateDay(at([10]), d, { ...DEFAULT_EXITS, from: "trailing", holdMinutes: 60 }).trades;
+    assert.equal(trade.exits, "trailing");
+    assert.equal(trade.targetPct, 0, "no target: the fixed 30% target would have sold at 130.72");
+    // Best last price 140.25 makes the stop 112.20; the close falls through it at minute 45 (110.25).
+    assert.equal(trade.exit, "trail");
+    assert.equal(trade.exitMinute, 45);
+    assert.ok(trade.net > 0, `kept most of the run: ${trade.net}`);
+    // Without the run, the trailing stop is the plain stop.
+    const falling = day(60, () => 25_000, (t) => ({ bid: 100 - 3 * Math.max(0, t - 10), ask: 100.5 - 3 * Math.max(0, t - 10), ltp: 100.25 - 3 * Math.max(0, t - 10) }));
+    assert.equal(simulateDay(at([10]), falling, { ...DEFAULT_EXITS, from: "trailing", holdMinutes: 60 }).trades[0].exit, "stop");
+  });
+
+  it("a rule's own hold keeps the trade until 15:10, filed under the hold being scored", () => {
+    const d = day(375, () => 25_000, flat(100, 100.5));
+    const held: Rule = { ...at([100]), exits: { stopPct: 25, trail: true, opposite: false, holdMinutes: 360 } };
+    const [trade] = simulateDay(held, d, { ...DEFAULT_EXITS, holdMinutes: 10 }).trades;
+    assert.deepEqual([trade.exit, trade.exitMinute, trade.hold, trade.targetPct], ["square-off", 355, 10, 0]);
+  });
+});
+
+describe("the candidates written on 19 November", () => {
+  const state = (t: number, fields: Partial<Record<string, number | null>>) => ({ t, ...fields }) as unknown as MinuteState;
+
+  it("are tested only from 20 November; the earlier ones from 19 November", () => {
+    assert.deepEqual(CANDIDATES.map((r) => [r.id, r.since]), [
+      ["trend", "2026-11-19"],
+      ["cheap-momentum", "2026-11-19"],
+      ["wall-fade", "2026-11-19"],
+      ["trend-hold", "2026-11-20"],
+      ["breadth-buildup", "2026-11-20"],
+      ["flow-fade", "2026-11-20"],
+    ]);
+  });
+
+  it("Trend day, held enters as Trend day does, from 10:00 to 13:00, and keeps the trade with a trailing stop", () => {
+    const rule = ruleById("trend-hold")!;
+    const up = { nifty: 25_100, nifty_from_open: 80, advancers: 35, decliners: 15, fut_flow_15m: 0.3 };
+    assert.equal(rule.decide(state(100, up), []), ruleById("trend")!.decide(state(100, up), []));
+    assert.deepEqual(rule.window, { from: 45, until: 225 });
+    assert.deepEqual(rule.exits, { stopPct: 25, trail: true, opposite: false, holdMinutes: 360 });
+  });
+
+  it("Breadth and OI build-up agree needs both on one side within 15 minutes, neither against, one of them now", () => {
+    const rule = ruleById("breadth-buildup")!;
+    const quiet = (t: number) => state(t, { sig_breadth: 0, sig_buildup: 0 });
+    const before = [quiet(90), state(91, { sig_breadth: 0, sig_buildup: 1 }), ...Array.from({ length: 8 }, (_, i) => quiet(92 + i))];
+    assert.equal(rule.decide(state(100, { sig_breadth: 1, sig_buildup: 0 }), before), 1);
+    assert.equal(rule.decide(state(100, { sig_breadth: 0, sig_buildup: 0 }), before), null, "neither votes now");
+    assert.equal(rule.decide(state(100, { sig_breadth: 1, sig_buildup: -1 }), before), null, "build-up turned the other way");
+    const old = [state(80, { sig_breadth: 0, sig_buildup: 1 }), ...Array.from({ length: 19 }, (_, i) => quiet(81 + i))];
+    assert.equal(rule.decide(state(100, { sig_breadth: 1, sig_buildup: 0 }), old), null, "build-up's vote is over 15 minutes old");
+    const down = [state(95, { sig_breadth: -1, sig_buildup: 0 })];
+    assert.equal(rule.decide(state(100, { sig_breadth: 0, sig_buildup: -1 }), down), -1);
+  });
+
+  it("Fade futures order flow buys the other way", () => {
+    const rule = ruleById("flow-fade")!;
+    assert.equal(rule.decide(state(100, { sig_flow: 1 }), []), -1);
+    assert.equal(rule.decide(state(100, { sig_flow: -1 }), []), 1);
+    assert.equal(rule.decide(state(100, { sig_flow: 0 }), []), null);
+  });
+});
+
+describe("the scorecard against random trades on the same side", () => {
+  const trade = (date: string, rule: string, type: "CE" | "PE", net: number) =>
+    ({ date, rule, hold: 10, net, type, checked: false, exits: "fixed" }) as Parameters<typeof scorecard>[0][number];
+  // On 18 Nov random calls made ₹300 a trade and random puts lost ₹500; on 19 Nov the other way.
+  const randomDay = (date: string, call: number, put: number) => RANDOM_SCHEDULES.flatMap((r) => [trade(date, r.id, "CE", call), trade(date, r.id, "PE", put)]);
+  const random = [...randomDay("2026-11-18", 300, -500), ...randomDay("2026-11-19", -500, 300)];
+  const row = (rows: ReturnType<typeof scorecard>, rule: string) => rows.find((r) => r.rule === rule && r.hold === 10 && !r.checked && r.exits === "fixed")!;
+
+  it("compares calls with random calls and puts with random puts, day by day", () => {
+    // Flow bought calls on 18 Nov (₹250 each, under the ₹300 random calls made) and a put on 19 Nov (₹400 against ₹300).
+    const rows = scorecard([...random, trade("2026-11-18", "signal:flow", "CE", 250), trade("2026-11-18", "signal:flow", "CE", 250), trade("2026-11-19", "signal:flow", "PE", 400)], ["2026-11-18", "2026-11-19"]);
+    const flow = row(rows, "signal:flow");
+    assert.equal(flow.vsSameSide, Math.round(((250 - 300) * 2 + (400 - 300)) / 3 * 100) / 100);
+    assert.deepEqual(flow.byDay, [
+      { date: "2026-11-18", tested: true, trades: 2, net: 500, bar: 600 },
+      { date: "2026-11-19", tested: true, trades: 1, net: 400, bar: 300 },
+    ]);
+    assert.deepEqual([flow.daysTraded, flow.daysAhead], [2, 1]);
+    assert.equal(row(rows, "random").vsSameSide, null);
+  });
+
+  it("counts a candidate's figures only from the day that tests it, and still shows the days before", () => {
+    const rows = scorecard([...random, trade("2026-11-18", "trend", "CE", 900), trade("2026-11-19", "trend", "CE", -200)], ["2026-11-18", "2026-11-19"]);
+    const trend = row(rows, "trend");
+    assert.deepEqual([trend.days, trend.trades, trend.net, trend.vsSameSide, trend.daysTraded, trend.daysAhead], [1, 1, -200, 300, 1, 1]);
+    assert.deepEqual(trend.byDay.map((d) => [d.date, d.tested, d.net]), [["2026-11-18", false, 900], ["2026-11-19", true, -200]]);
+    assert.deepEqual(trend.worstDay, { date: "2026-11-19", net: -200 });
+  });
+});

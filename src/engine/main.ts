@@ -343,6 +343,7 @@ const server = createControlServer({
   depth: (key) => depthView(feeds.replaySides() ?? liveSides, key),
   chain: (underlying, expiry) => chainView(feeds.replaySides() ?? liveSides, underlying, expiry),
   decide: () => decisions.view(),
+  predictions: () => decisions.predictions(),
 });
 
 health.set("engine", "ok");

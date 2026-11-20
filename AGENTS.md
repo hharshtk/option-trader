@@ -8,6 +8,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
+## Constitution
+
+- Read [docs/constitution.md](docs/constitution.md) before proposing or starting a feature. It says what this app is for (predicting NIFTY from live data with Decision APIs, and trading only on predictions that have proven themselves) and what it won't become (a backtester, a strategy builder, a collection of settings). Check every proposal against its "Deciding what to build" list. If a request conflicts with it, say so and let the owner decide. Only the owner amends it.
+- What is built, being built and next: [docs/roadmap.md](docs/roadmap.md). Update it in the same change whenever a feature ships or a plan changes.
+- How predictions are made and graded (the prediction scoreboard): [docs/predictions.md](docs/predictions.md).
+
 ## Server and deployment
 
 - The frontend deploys to Vercel; only the engine runs on the OCI VM, behind Caddy at `https://<public IP>`.

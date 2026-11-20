@@ -7,13 +7,17 @@
 //     spread is wider than 3%.
 //   - It is sold at the bid − ₹0.05 when the hold is up, the stop or target is crossed (on the last
 //     price, as the trader's percent levels are), the rule votes the other way, or at 15:10.
+//   - With a trailing stop there is no target: the stop follows the option's best last price up,
+//     staying the stop's distance below it, so a winner runs until it falls back.
 //   - One position at a time, and 2 minutes between a sale and the next buy.
 //   - Dhan's charges on both orders.
 //
 // Quotes are those at each minute's close, with each option's lowest and highest last price within
 // the minute: a stop or target crossed inside a minute is sold near its level (less half the spread
 // and the slippage), as paper trading's tick-by-tick check would. When both were crossed in one
-// minute the stop is taken to have come first. Other exits wait for the minute's close. Replaying
+// minute the stop is taken to have come first. A trailing stop moves up with the best price of the
+// minutes before, so a minute's high raises it from the next minute. Other exits wait for the
+// minute's close. Replaying
 // the day with paper trading is the exact check; this is the quick one across days.
 
 import { roundTripCharges } from "../trading/charges.ts";
@@ -52,9 +56,9 @@ export interface Exits {
   /**
    * Fixed percents (`stopPct`, `targetPct`), or each trade's own from how much NIFTY is moving at
    * entry (lib/trading/exits.ts `volatilityExits`), as the trader sets them; the fixed ones stand
-   * in when the movement isn't known.
+   * in when the movement isn't known. `trailing` is the fixed stop made to trail, with no target.
    */
-  from: "fixed" | "volatility";
+  from: ExitMode;
   /** Percent of the premium; 0 turns it off. */
   stopPct: number;
   targetPct: number;
@@ -63,12 +67,17 @@ export interface Exits {
   targetMoves: number;
   /** Sell when the rule votes the other way. */
   opposite: boolean;
+  /** The stop follows the best price up at its distance, and there is no target. */
+  trail: boolean;
 }
 
+/** How a trade's stop and target are set: fixed percents, from NIFTY's moves, or a trailing stop with no target. */
+export type ExitMode = "fixed" | "volatility" | "trailing";
+
 /** The trader's defaults, with fixed percents. */
-export const DEFAULT_EXITS: Exits = { holdMinutes: 10, from: "fixed", stopPct: 20, targetPct: 30, stopMoves: STOP_MOVES, targetMoves: TARGET_MOVES, opposite: true };
+export const DEFAULT_EXITS: Exits = { holdMinutes: 10, from: "fixed", stopPct: 20, targetPct: 30, stopMoves: STOP_MOVES, targetMoves: TARGET_MOVES, opposite: true, trail: false };
 /** The ways exits are scored. */
-export const EXIT_MODES = ["fixed", "volatility"] as const;
+export const EXIT_MODES = ["fixed", "volatility", "trailing"] as const satisfies readonly ExitMode[];
 /** Holds every rule is scored at. */
 export const HOLDS = [5, 10, 15, 30] as const;
 
@@ -86,7 +95,7 @@ export const LIMITS = {
   tick: 0.05,
 };
 
-export type ExitReason = "hold" | "stop" | "target" | "opposite" | "square-off" | "end of data";
+export type ExitReason = "hold" | "stop" | "trail" | "target" | "opposite" | "square-off" | "end of data";
 
 /** How trades are taken, beyond the rule itself. */
 export interface Policy {
@@ -100,8 +109,8 @@ export interface SimTrade {
   hold: number;
   /** Taken with the cost check on. */
   checked: boolean;
-  /** How its stop and target were set, and where they were, in percent of the premium paid. */
-  exits: "fixed" | "volatility";
+  /** How its stop and target were set, and where they were, in percent of the premium paid (target 0 with a trailing stop). */
+  exits: ExitMode;
   stopPct: number;
   targetPct: number;
   direction: 1 | -1;
@@ -133,9 +142,43 @@ export interface DayResult {
 const up = (price: number) => Math.round(Math.ceil(price / LIMITS.tick - 1e-9) * LIMITS.tick * 100) / 100;
 const down = (price: number) => Math.max(LIMITS.tick, Math.round(Math.floor(price / LIMITS.tick + 1e-9) * LIMITS.tick * 100) / 100);
 
+/** A buy that can be made at a minute's close: the at-the-money contract, its ask and what the fill pays. */
+export interface Entry {
+  quote: MinuteQuote;
+  /** True when the order book is known (bid and ask); else the last price stands in. */
+  book: boolean;
+  /** The ask, or the last price without a book. */
+  ask: number;
+  /** The fill: the ask + ₹0.05 (the last price + ₹0.50 without a book), up to the tick. */
+  buy: number;
+}
+
+/**
+ * The trader's entry rules at one minute's close: the nearest expiry's option of `type` closest
+ * to NIFTY (within 100 points), skipped when its premium is under ₹5 or its spread over 3%.
+ * Shared by the lab's trades and the prediction scoreboard.
+ */
+export function entryAt(quotes: readonly MinuteQuote[] | undefined, spot: number | null, type: "CE" | "PE"): { entry: Entry } | { skip: string } {
+  const choices = (quotes ?? []).filter((q) => q.type === type && (q.ask !== null || q.ltp !== null));
+  if (spot === null || choices.length === 0) return { skip: "no quote" };
+  const quote = choices.reduce((best, q) => (Math.abs(q.strike - spot) < Math.abs(best.strike - spot) ? q : best), choices[0]);
+  if (Math.abs(quote.strike - spot) > 100) return { skip: "no quote near the money" };
+  const book = quote.bid !== null && quote.ask !== null && quote.ask >= quote.bid;
+  const ask = book ? quote.ask! : quote.ltp!;
+  if (ask < LIMITS.minPremium) return { skip: "premium too low" };
+  if (book && ((quote.ask! - quote.bid!) / ((quote.ask! + quote.bid!) / 2)) * 100 > LIMITS.maxSpreadPct) return { skip: "spread too wide" };
+  return { entry: { quote, book, ask, buy: up(ask + (book ? LIMITS.slippage : LIMITS.looseSlippage)) } };
+}
+
+/** What a sale at this quote fetches: the bid − ₹0.05 (the last price − ₹0.50 without a bid), down to the tick. */
+export function exitPrice(q: MinuteQuote): number {
+  return down(q.bid !== null && q.bid > 0 ? q.bid - LIMITS.slippage : (q.ltp ?? 0) - LIMITS.looseSlippage);
+}
+
 export function simulateDay(rule: Rule, day: DayData, base: Exits = DEFAULT_EXITS, policy: Policy = { costCheck: false }): DayResult {
-  // A rule's own stop, target and opposite-vote exit; the hold is the scoring's.
-  const exits: Exits = { ...base, ...rule.exits };
+  // A rule's own stop, target, trailing stop, opposite-vote exit and hold (when it holds to the
+  // close); trades are filed under the scoring's hold either way. Trailing exits trail any stop.
+  const exits: Exits = { ...base, ...rule.exits, ...(base.from === "trailing" ? { trail: true } : {}) };
   const firstEntry = Math.max(LIMITS.firstEntry, rule.window?.from ?? 0);
   const lastEntry = Math.min(LIMITS.lastEntry, rule.window?.until ?? Infinity);
   const trades: SimTrade[] = [];
@@ -143,17 +186,16 @@ export function simulateDay(rule: Rule, day: DayData, base: Exits = DEFAULT_EXIT
   const skip = (why: string) => (skipped[why] = (skipped[why] ?? 0) + 1);
   const priced = day.quotes.some((q) => q && q.length > 0);
   const before: MinuteState[] = [];
-  let open: { direction: 1 | -1; quote: MinuteQuote; buy: number; entryMinute: number; nifty: number | null; stopPct: number; targetPct: number } | null = null;
+  let open: { direction: 1 | -1; quote: MinuteQuote; buy: number; entryMinute: number; nifty: number | null; stopPct: number; targetPct: number; best: number } | null = null;
   let freeFrom = 0;
 
   const quoteAt = (t: number, key: string) => day.quotes[t]?.find((q) => q.key === key) ?? null;
-  const sellPrice = (q: MinuteQuote) => (q.bid !== null && q.bid > 0 ? q.bid - LIMITS.slippage : (q.ltp ?? 0) - LIMITS.looseSlippage);
 
   /** `at`: the sale price when known (a level crossed inside the minute), else the bid at the close. */
   const close = (t: number, exit: ExitReason, q: MinuteQuote | null, at: number | null = null) => {
     const position = open!;
     const last = q ?? lastQuote(position.quote.key, t);
-    const sell = down(at ?? (last ? sellPrice(last) : position.buy));
+    const sell = at !== null ? down(at) : last ? exitPrice(last) : down(position.buy);
     const quantity = position.quote.lotSize;
     const charges = roundTripCharges(position.buy * quantity, sell * quantity).total;
     const gross = (sell - position.buy) * quantity;
@@ -161,9 +203,9 @@ export function simulateDay(rule: Rule, day: DayData, base: Exits = DEFAULT_EXIT
     trades.push({
       date: day.date,
       rule: rule.id,
-      hold: exits.holdMinutes,
+      hold: base.holdMinutes,
       checked: policy.costCheck,
-      exits: exits.from,
+      exits: base.from,
       stopPct: position.stopPct,
       targetPct: position.targetPct,
       direction: position.direction,
@@ -206,16 +248,20 @@ export function simulateDay(rule: Rule, day: DayData, base: Exits = DEFAULT_EXIT
       const ltp = q?.ltp ?? null;
       const low = q?.low ?? ltp;
       const high = q?.high ?? ltp;
-      const stopAt = open.stopPct > 0 ? open.buy * (1 - open.stopPct / 100) : null;
+      const fixedStop = open.stopPct > 0 ? open.buy * (1 - open.stopPct / 100) : null;
+      // A trailing stop sits its distance below the best price of the minutes before this one.
+      const stopAt = exits.trail && fixedStop !== null ? Math.max(fixedStop, open.best * (1 - open.stopPct / 100)) : fixedStop;
+      const trailed = stopAt !== null && fixedStop !== null && stopAt > fixedStop;
       const targetAt = open.targetPct > 0 ? open.buy * (1 + open.targetPct / 100) : null;
       // Crossed inside the minute: sold near the level, as a tick-by-tick check would.
       const ranged = q?.low !== undefined && q?.low !== null;
       const nearLevel = (level: number) => (ranged ? level - halfSpread(q!) - LIMITS.slippage : null);
       if (t >= LIMITS.squareOff) close(t, "square-off", q);
-      else if (low !== null && stopAt !== null && low <= stopAt) close(t, "stop", q, nearLevel(stopAt));
+      else if (low !== null && stopAt !== null && low <= stopAt) close(t, trailed ? "trail" : "stop", q, nearLevel(stopAt));
       else if (high !== null && targetAt !== null && high >= targetAt) close(t, "target", q, nearLevel(targetAt));
       else if (exits.opposite && vote !== null && vote !== open.direction) close(t, "opposite", q);
       else if (t - open.entryMinute >= exits.holdMinutes) close(t, "hold", q);
+      if (open && high !== null && high > open.best) open.best = high;
       // An exit this minute doesn't buy again in the same minute: the cooldown starts now.
       if (open || freeFrom > t) continue;
     }
@@ -224,26 +270,12 @@ export function simulateDay(rule: Rule, day: DayData, base: Exits = DEFAULT_EXIT
     if (rule.maxTrades !== undefined && trades.length >= rule.maxTrades) continue;
     const type: "CE" | "PE" = vote > 0 ? "CE" : "PE";
     const spot = now.nifty;
-    const choices: MinuteQuote[] = (day.quotes[t] ?? []).filter((q) => q.type === type && (q.ask !== null || q.ltp !== null));
-    if (spot === null || choices.length === 0) {
-      skip("no quote");
+    const found = entryAt(day.quotes[t], spot, type);
+    if ("skip" in found) {
+      skip(found.skip);
       continue;
     }
-    const quote: MinuteQuote = choices.reduce((best: MinuteQuote, q: MinuteQuote) => (Math.abs(q.strike - spot) < Math.abs(best.strike - spot) ? q : best), choices[0]);
-    if (Math.abs(quote.strike - spot) > 100) {
-      skip("no quote near the money");
-      continue;
-    }
-    const book = quote.bid !== null && quote.ask !== null && quote.ask >= quote.bid;
-    const ask = book ? quote.ask! : quote.ltp!;
-    if (ask < LIMITS.minPremium) {
-      skip("premium too low");
-      continue;
-    }
-    if (book && ((quote.ask! - quote.bid!) / ((quote.ask! + quote.bid!) / 2)) * 100 > LIMITS.maxSpreadPct) {
-      skip("spread too wide");
-      continue;
-    }
+    const { quote, book, ask, buy } = found.entry;
     if (policy.costCheck) {
       const check = costCheck({
         bid: book ? quote.bid : null,
@@ -276,7 +308,8 @@ export function simulateDay(rule: Rule, day: DayData, base: Exits = DEFAULT_EXIT
       });
       if (levels) ({ stopPct, targetPct } = levels);
     }
-    open = { direction: vote, quote, buy: up(ask + (book ? LIMITS.slippage : LIMITS.looseSlippage)), entryMinute: t, nifty: spot, stopPct, targetPct };
+    if (exits.trail) targetPct = 0;
+    open = { direction: vote, quote, buy, entryMinute: t, nifty: spot!, stopPct, targetPct, best: buy };
   }
   if (open) close(lastMinute, "end of data", null);
   return { trades, skipped, priced };

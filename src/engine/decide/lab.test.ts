@@ -125,5 +125,16 @@ describe("decision lab", () => {
     const read = await lab.view({ state: "idle", at: null, message: null });
     assert.deepEqual(read.rows, scored.rows, "the stored trades give the same scorecard");
     assert.ok(read.fields.some((f) => f.name === "fut_book20") && read.fields.some((f) => f.name === "chain_iv"), "a rule sees the book and the chain");
+
+    // The prediction scoreboard reads the stored outcomes and calls back.
+    const board = await lab.predictions({ state: "idle", at: null, message: null });
+    assert.equal(board.horizon, 15);
+    assert.deepEqual(board.days.map((d) => d.date), [DATE]);
+    assert.ok(board.days[0].minutes > 0 && board.days[0].niftyMove !== null);
+    const coin = board.rows.find((r) => r.id === "coin")!;
+    assert.ok(coin.priced > 0, "the coin flip is priced at minutes with both options quoted");
+    // NIFTY rises through the morning, so "keeps going since the open" calls up and is right.
+    const trend = board.rows.find((r) => r.id === "trend-open")!;
+    assert.ok(trend.calls > 0 && trend.right > 0);
   });
 });

@@ -5,6 +5,7 @@
 
 import { spawn } from "node:child_process";
 import path from "node:path";
+import type { PredictionView } from "../../lib/decide/predict.ts";
 import type { DecideView } from "../../lib/decide/score.ts";
 import type { SessionCalendar } from "../market/session-calendar.ts";
 import type { Logger } from "../telemetry/logger.ts";
@@ -17,6 +18,8 @@ export interface DecisionJob {
   /** Call every second: starts the lab once a day after the close. */
   tick(): void;
   view(): Promise<DecideView>;
+  /** The prediction scoreboard, read from the stored tables and kept for a minute. */
+  predictions(): Promise<PredictionView>;
   shutdown(): void;
 }
 
@@ -41,6 +44,7 @@ export function createDecisionJob({
   let doneFor: string | null = null;
   let child: ReturnType<typeof spawn> | null = null;
   let cached: { at: number; view: Promise<DecideView> } | null = null;
+  let cachedPredictions: { at: number; view: Promise<PredictionView> } | null = null;
 
   function start(date: string) {
     build = { state: "running", at: now(), message: `Building and scoring after the ${date} session` };
@@ -59,6 +63,7 @@ export function createDecisionJob({
     child.on("exit", (code) => {
       child = null;
       cached = null;
+      cachedPredictions = null;
       if (code === 0) {
         doneFor = date;
         build = { state: "idle", at: now(), message: `Built and scored after the ${date} session` };
@@ -90,6 +95,14 @@ export function createDecisionJob({
         view.catch(() => (cached = null));
       }
       return cached.view.then((v) => ({ ...v, build }));
+    },
+    predictions() {
+      if (!cachedPredictions || now() - cachedPredictions.at > VIEW_TTL_MS) {
+        const view = lab.predictions(build);
+        cachedPredictions = { at: now(), view };
+        view.catch(() => (cachedPredictions = null));
+      }
+      return cachedPredictions.view.then((v) => ({ ...v, build }));
     },
     shutdown() {
       child?.kill("SIGTERM");

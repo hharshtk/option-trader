@@ -450,6 +450,70 @@ test("with two positions allowed, a signal that stays on buys again after the co
   }
 });
 
+test("selling one position by hand leaves the others open", async () => {
+  const h = await harness({ strategy: { holdMinutes: 60, stopLossPct: 0, targetPct: 0, exitOnOpposite: false }, risk: { maxOpenPositions: 2, cooldownMinutes: 1 } });
+  try {
+    const at = await toSignal(h);
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), at + 400);
+    h.state.session = session(19);
+    const t = OPEN + 18 * MIN + 2_000;
+    h.feed(niftyTick(25_905), t - 500);
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), t - 400);
+    h.feed(niftyTick(25_905), t);
+    await h.trader.idle();
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), t + 400);
+    const [first, second] = h.trader.status().positions;
+    assert.ok(first && second, "two positions open");
+
+    assert.equal((await h.trader.command({ action: "sell", positionId: "p999" })).ok, false, "an unknown position is refused");
+    const sold = await h.trader.command({ action: "sell", positionId: first.id });
+    assert.ok(sold.ok, sold.message);
+    assert.match((await h.trader.command({ action: "sell", positionId: first.id })).message, /already being sold/);
+
+    // The premium has risen; the sale fills at the bid less slippage after the latency.
+    h.feed(optionQuote(CALL_25900, 120, 119.9, 120.1), t + 1_000);
+    const status = h.trader.status();
+    assert.deepEqual(status.positions.map((p) => p.id), [second.id], "the other position stays open");
+    assert.equal(status.trades.length, 1);
+    assert.equal(status.trades[0].id, first.id, "a trade keeps its position's id");
+    assert.deepEqual([status.trades[0].exitReason, status.trades[0].exitPrice], ["manual", 119.85]);
+    assert.ok(status.trades[0].net > 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a trailing stop follows the best price up, replaces the target, and sells as a trailing stop", async () => {
+  const h = await harness({ strategy: { holdMinutes: 120, stopLossPct: 20, targetPct: 30, trailStop: true, exitOnOpposite: false } });
+  try {
+    const at = await toSignal(h);
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), at + 400);
+    let [position] = h.trader.status().positions;
+    assert.equal(position.entryPrice, 100.15);
+    assert.equal(position.targetPrice, null, "no target with a trailing stop");
+    assert.ok(Math.abs(position.stopPrice! - 100.15 * 0.8) < 1e-9);
+
+    // Past where the 30% target was (130.20): still held, and the stop has climbed 20% below the best price.
+    h.feed(optionQuote(CALL_25900, 150, 149.9, 150.1), at + 60_000);
+    [position] = h.trader.status().positions;
+    assert.equal(position.status, "open");
+    assert.equal(position.stopPrice, 120);
+    assert.equal(position.trail?.raised, true);
+    // A dip that stays above it changes nothing; the stop never comes down.
+    h.feed(optionQuote(CALL_25900, 125, 124.9, 125.1), at + 90_000);
+    assert.equal(h.trader.status().positions[0].stopPrice, 120);
+
+    h.feed(optionQuote(CALL_25900, 119.5, 119.4, 119.6), at + 120_000);
+    h.feed(optionQuote(CALL_25900, 119.5, 119.4, 119.6), at + 120_400);
+    const status = h.trader.status();
+    assert.equal(status.positions.length, 0);
+    assert.equal(status.trades[0].exitReason, "trail");
+    assert.ok(status.trades[0].net > 0, "the trade kept part of the run");
+  } finally {
+    await h.close();
+  }
+});
+
 test("a replay of a day recorded without options trades against 1-minute candles", async () => {
   const h = await harness();
   try {

@@ -241,6 +241,8 @@ export function createTrader(options: TraderOptions): Trader {
   let ended: ActiveRun | null = null;
   /** A run being started or ended; frames only update quotes meanwhile. */
   let changing: Promise<void> | null = null;
+  /** Each trailing stop's level when its position was last recorded, so it is recorded as it climbs, not on every tick. */
+  const trailRecorded = new WeakMap<Position, number>();
   /** The run that last ended, so the same day isn't started again. */
   let finished: { source: string; date: string; jumps: number } | null = null;
   let marketTime = 0;
@@ -699,9 +701,12 @@ export function createTrader(options: TraderOptions): Trader {
       const planned = position.plannedExits;
       const settings = planned ? { exitIn: "percent" as const, stopLossPct: planned.stopPct, targetPct: planned.targetPct } : config.strategy;
       const levels = exitLevels(settings, order.price, position.quantity, position.contract.tickSize, exitSlippage);
+      // A trailing stop keeps the stop's distance below the best price, and replaces the target.
+      const trailing = config.strategy.trailStop && settings.exitIn !== "rupees" && levels.stopPrice !== null;
       position.exitIn = settings.exitIn;
       position.stopPrice = levels.stopPrice;
-      position.targetPrice = levels.targetPrice;
+      position.targetPrice = trailing ? null : levels.targetPrice;
+      position.trail = trailing ? { pct: ((order.price - levels.stopPrice!) / order.price) * 100, best: order.price, raised: false } : null;
       position.exitBy = order.filledAt + holdMinutesFor(config) * MINUTE_MS;
       position.mark = order.price;
       position.markAt = order.filledAt;
@@ -709,18 +714,21 @@ export function createTrader(options: TraderOptions): Trader {
       position.unrealisedNet = -order.charges.total - orderCharges("SELL", order.price * position.quantity).total;
       record(active, { kind: "position", position });
       event(active, "fill", `${tag}Bought ${position.quantity} ${position.contract.name} at ${price(order.price)} (${against}); charges ${rupees(order.charges.total)}`);
+      const target = trailing ? "no target, the stop trails the best price" : `target ${price(levels.targetPrice ?? 0)} (+${(planned?.targetPct ?? config.strategy.targetPct).toFixed(1)}%)`;
       if (planned) {
         event(
           active,
           "fill",
-          `${tag}Stop ${price(levels.stopPrice ?? 0)} (−${planned.stopPct.toFixed(1)}%), target ${price(levels.targetPrice ?? 0)} (+${planned.targetPct.toFixed(1)}%): NIFTY typically moves ${planned.move.toFixed(1)} points in ${planned.holdMinutes} min now, ${
+          `${tag}Stop ${price(levels.stopPrice ?? 0)} (−${planned.stopPct.toFixed(1)}%), ${target}: NIFTY typically moves ${planned.move.toFixed(1)} points in ${planned.holdMinutes} min now, ${
             planned.source === "history"
               ? `from ${planned.history?.toFixed(1)} at this time over the last ${planned.days} days, ×${planned.scale} for how busy today is`
               : "from today's 1-minute move (not enough recent days stored)"
           }`,
         );
       } else if (config.strategy.exitIn === "percent" && config.strategy.exitsFrom === "volatility") {
-        event(active, "risk", `${tag}NIFTY's movement isn't known yet: the fixed stop of ${config.strategy.stopLossPct}% and target of ${config.strategy.targetPct}% apply`, "warn");
+        event(active, "risk", `${tag}NIFTY's movement isn't known yet: the fixed stop of ${config.strategy.stopLossPct}% and ${trailing ? "no target" : `target of ${config.strategy.targetPct}%`} apply`, "warn");
+      } else if (trailing) {
+        event(active, "fill", `${tag}Stop ${price(levels.stopPrice!)} (−${position.trail!.pct.toFixed(1)}%), ${target}`);
       }
       if (position.exitIn === "rupees") {
         const at = (level: number | null) => (level === null ? "off" : price(level));
@@ -840,8 +848,26 @@ export function createTrader(options: TraderOptions): Trader {
       // ones trigger on what the position can be sold for (the bid when the book is known), since
       // they promise an amount after the sale.
       const level = position.exitIn === "rupees" ? position.mark : quote.ltp;
-      if (position.stopPrice !== null && level <= position.stopPrice) exit(active, position, "stop", position.stopPrice, at);
+      if (position.trail) raiseTrail(active, position, quote.ltp);
+      if (position.stopPrice !== null && level <= position.stopPrice) exit(active, position, position.trail?.raised ? "trail" : "stop", position.stopPrice, at);
       else if (position.targetPrice !== null && level >= position.targetPrice) exit(active, position, "target", position.targetPrice, at);
+    }
+  }
+
+  /** A new best price lifts a trailing stop to stay its distance below it; the stop never comes down. */
+  function raiseTrail(active: ActiveRun, position: Position, ltp: number) {
+    const trail = position.trail!;
+    if (!(ltp > trail.best)) return;
+    trail.best = ltp;
+    const stop = Math.round(ltp * (1 - trail.pct / 100) * 100) / 100;
+    if (position.stopPrice === null || stop <= position.stopPrice) return;
+    const recorded = trailRecorded.get(position) ?? position.stopPrice;
+    position.stopPrice = stop;
+    trail.raised = true;
+    // Recorded once it has climbed 1% of the entry since the last record, so a restart keeps it.
+    if (stop - recorded >= position.entryPrice * 0.01) {
+      trailRecorded.set(position, stop);
+      record(active, { kind: "position", position });
     }
   }
 
@@ -1433,6 +1459,17 @@ export function createTrader(options: TraderOptions): Trader {
         }
         touch();
         return { ok: true, message: armed ? "Paper trading is on. Entries are taken when the signal fires." : "Trading is off. Open positions keep their exits." };
+      }
+      case "sell": {
+        // One position, sold by you: paper only, so the shadow book stays a record of what the gate turned down.
+        if (!active) return { ok: false, message: "There is no run in progress." };
+        const position = active.positions.find((p) => p.id === request.positionId && p.book === "paper");
+        if (!position) return { ok: false, message: "That position isn't open any more." };
+        if (position.status === "closing") return { ok: true, message: `${position.contract.name} is already being sold.` };
+        if (position.status === "opening") return { ok: false, message: `${position.contract.name} is still being bought. Try again in a moment.` };
+        exit(active, position, "manual", null, marketTime);
+        event(active, "risk", `Selling ${position.quantity} ${position.contract.name} bought at ${istClock(position.openedAt)} on your request`);
+        return { ok: true, message: `Selling ${position.contract.name} bought at ${istClock(position.openedAt)}.` };
       }
       case "flatten": {
         if (!active) return { ok: false, message: "There is no run in progress." };

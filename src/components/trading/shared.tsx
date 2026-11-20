@@ -19,6 +19,7 @@ export const clock = (time: number) => istTime.format(new Date(time));
 
 export const EXIT_REASON: Record<ExitReason, string> = {
   stop: "Stop loss",
+  trail: "Trailing stop",
   target: "Target",
   time: "Hold time",
   opposite: "Opposite signal",

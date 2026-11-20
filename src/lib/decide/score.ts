@@ -3,7 +3,7 @@
 
 import { FIELDS } from "./state.ts";
 import { RANDOM_SCHEDULES, SCORED } from "./rules.ts";
-import { DEFAULT_EXITS, EXIT_MODES, HOLDS, LIMITS, type SimTrade } from "./simulate.ts";
+import { DEFAULT_EXITS, EXIT_MODES, HOLDS, LIMITS, type ExitMode, type SimTrade } from "./simulate.ts";
 import { MOVE_MINUTES, type MinuteState } from "./state.ts";
 
 export interface ScoreRow {
@@ -12,9 +12,12 @@ export interface ScoreRow {
   hold: number;
   /** With every entry put through the cost check. */
   checked: boolean;
-  /** Fixed percent exits, or each trade's own from how much NIFTY was moving. */
-  exits: "fixed" | "volatility";
-  /** Days with option quotes to trade on. */
+  /** Fixed percent exits, each trade's own from how much NIFTY was moving, or a trailing stop with no target. */
+  exits: ExitMode;
+  /**
+   * Days with option quotes to trade on that test the rule. A candidate's figures count only the
+   * days from its `since`: the days it was written with say nothing about it.
+   */
   days: number;
   /** For No signal, averages over its schedules (so possibly fractional). */
   trades: number;
@@ -26,6 +29,21 @@ export interface ScoreRow {
   /** The day's net on the worst and best days, and when. */
   worstDay: { date: string; net: number } | null;
   bestDay: { date: string; net: number } | null;
+  /**
+   * Rupees a trade above (or below) what random trades on the same side made on the same days: a
+   * rule's calls against No signal's calls that day, its puts against its puts. On a day NIFTY went
+   * one way, every rule that bought that side looks good; this takes the day's direction out.
+   * Null for No signal itself, and without trades.
+   */
+  vsSameSide: number | null;
+  /** Tested days the rule traded on, and how many of them it beat that bar. */
+  daysTraded: number;
+  daysAhead: number;
+  /**
+   * Every scored day, tested or not: the rule's trades and net, and `bar`, what as many random
+   * trades on the same sides made that day (null without them).
+   */
+  byDay: { date: string; tested: boolean; trades: number; net: number; bar: number | null }[];
 }
 
 /** A recorded day in the lab. */
@@ -52,11 +70,13 @@ export interface DecideView {
   days: LabDay[];
   holds: readonly number[];
   rows: ScoreRow[];
-  rules: { id: string; name: string; idea: string; candidate: boolean; exits: string | null }[];
+  rules: { id: string; name: string; idea: string; candidate: boolean; exits: string | null; since: string | null }[];
   costCheckFactor: number;
   moveMinutes: number;
   /** What every trade assumes, for the page to say. */
   assumptions: { stopPct: number; targetPct: number; stopMoves: number; targetMoves: number; opposite: boolean; slippage: number; entries: string; squareOff: string };
+  /** Exit styles in the order the page offers them. */
+  exitModes: readonly ExitMode[];
   /** What a rule can read at each minute: field and meaning. */
   fields: { name: string; meaning: string }[];
   /** A build running now, or the last one's outcome. */
@@ -66,33 +86,70 @@ export interface DecideView {
 export function scorecard(trades: readonly SimTrade[], pricedDays: readonly string[]): ScoreRow[] {
   const rows: ScoreRow[] = [];
   for (const hold of HOLDS) for (const checked of [false, true]) for (const exits of EXIT_MODES) {
+    const scored = trades.filter((t) => t.hold === hold && t.checked === checked && t.exits === exits);
+    // What a random trade made on each day and side: the bar for that day's calls and puts.
+    const sides = new Map<string, { trades: number; net: number }>();
+    for (const t of scored) {
+      if (!t.rule.startsWith("random:")) continue;
+      const side = sides.get(`${t.date}|${t.type}`) ?? { trades: 0, net: 0 };
+      side.trades += 1;
+      side.net += t.net;
+      sides.set(`${t.date}|${t.type}`, side);
+    }
+    const randomTrade = (t: SimTrade) => {
+      const side = sides.get(`${t.date}|${t.type}`);
+      return side && side.trades > 0 ? side.net / side.trades : null;
+    };
+
     for (const rule of SCORED) {
       // No signal is the average of its schedules: totals divided by how many there are.
       const random = rule.id === "random";
       const share = random ? 1 / RANDOM_SCHEDULES.length : 1;
-      const mine = trades.filter((t) => (random ? t.rule.startsWith("random:") : t.rule === rule.id) && t.hold === hold && t.checked === checked && t.exits === exits);
-      const byDay = new Map<string, number>();
-      for (const day of pricedDays) byDay.set(day, 0);
-      for (const t of mine) byDay.set(t.date, (byDay.get(t.date) ?? 0) + t.net * share);
-      const days = [...byDay].map(([date, net]) => ({ date, net: round(net) }));
+      const tested = (date: string) => !rule.since || date >= rule.since;
+      const all = scored.filter((t) => (random ? t.rule.startsWith("random:") : t.rule === rule.id));
+      const byDay = pricedDays.map((date) => {
+        const day = all.filter((t) => t.date === date);
+        const bars = day.map(randomTrade);
+        return {
+          date,
+          tested: tested(date),
+          trades: round(day.length * share),
+          net: round(day.reduce((a, t) => a + t.net, 0) * share),
+          bar: random || bars.some((b) => b === null) ? null : round(bars.reduce((a: number, b) => a + b!, 0)),
+        };
+      });
+      const days = byDay.filter((d) => d.tested);
+      const mine = all.filter((t) => tested(t.date));
       const total = mine.reduce((a, t) => a + t.net, 0);
+      const compared = random ? [] : mine.filter((t) => randomTrade(t) !== null);
+      const traded = days.filter((d) => d.trades > 0 && d.bar !== null);
       rows.push({
         rule: rule.id,
         name: rule.name,
         hold,
         checked,
         exits,
-        days: pricedDays.length,
+        days: days.length,
         trades: round(mine.length * share),
         wins: round(mine.filter((t) => t.net > 0).length * share),
         net: round(total * share),
         perTrade: mine.length ? round(total / mine.length) : null,
-        worstDay: days.length ? days.reduce((a, b) => (b.net < a.net ? b : a)) : null,
-        bestDay: days.length ? days.reduce((a, b) => (b.net > a.net ? b : a)) : null,
+        worstDay: days.length ? pick(days, (a, b) => b.net < a.net) : null,
+        bestDay: days.length ? pick(days, (a, b) => b.net > a.net) : null,
+        vsSameSide: compared.length ? round(compared.reduce((a, t) => a + t.net - randomTrade(t)!, 0) / compared.length) : null,
+        daysTraded: random ? 0 : traded.length,
+        daysAhead: random ? 0 : traded.filter((d) => d.net > d.bar!).length,
+        byDay,
       });
     }
   }
   return rows;
+}
+
+/** The day `better` prefers, as date and net. */
+function pick(days: readonly { date: string; net: number }[], better: (a: { date: string; net: number }, b: { date: string; net: number }) => boolean) {
+  const { date, net } = days.reduce((a, b) => (better(a, b) ? b : a));
+  return { date, net };
 }
 
 /**
@@ -120,13 +177,16 @@ export function exitsText(rule: (typeof SCORED)[number]): string | null {
   const e = rule.exits;
   if (!e && rule.maxTrades === undefined) return null;
   const parts = [
-    e?.stopPct !== undefined && `stop ${e.stopPct}%`,
-    e?.targetPct !== undefined && `target ${e.targetPct}%`,
+    e?.stopPct !== undefined && (e.trail ? `stop ${e.stopPct}% below the best price, no target` : `stop ${e.stopPct}%`),
+    e?.targetPct !== undefined && !e.trail && `target ${e.targetPct}%`,
     e?.opposite === false && "no exit on an opposite vote",
+    e?.holdMinutes !== undefined && `held until ${SQUARE_OFF} whatever the hold`,
     rule.maxTrades !== undefined && `at most ${rule.maxTrades} trades a day`,
   ].filter(Boolean);
   return parts.join(", ");
 }
+
+const SQUARE_OFF = "15:10";
 
 export const ASSUMPTIONS: DecideView["assumptions"] = {
   stopPct: DEFAULT_EXITS.stopPct,
@@ -136,7 +196,7 @@ export const ASSUMPTIONS: DecideView["assumptions"] = {
   opposite: DEFAULT_EXITS.opposite,
   slippage: LIMITS.slippage,
   entries: "09:25 to 14:45",
-  squareOff: "15:10",
+  squareOff: SQUARE_OFF,
 };
 
 export const FIELD_LIST: DecideView["fields"] = (Object.entries(FIELDS) as [string, string][]).map(([name, meaning]) => ({ name, meaning }));

@@ -7,6 +7,13 @@
 import { useEffect, useState } from "react";
 import { DataTable, EmptyState, Panel, Pnl, Td } from "@/components/ui";
 import type { DecideView, ScoreRow } from "@/lib/decide/score";
+import type { ExitMode } from "@/lib/decide/simulate";
+
+const EXIT_LABELS: Record<ExitMode, string> = {
+  volatility: "Exits follow NIFTY's moves",
+  fixed: "Fixed stop and target",
+  trailing: "Trailing stop, no target",
+};
 
 const REFRESH_MS = 60_000;
 /** Fewer trades than this and a result says nothing. */
@@ -44,38 +51,48 @@ function useDecide(): Load {
 const count = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 const day = (date: string) => new Date(`${date}T00:00:00Z`).toLocaleDateString("en-IN", { timeZone: "UTC", day: "numeric", month: "short" });
 
-/** The bottom line: does any rule beat trading at random, after costs, over enough days? */
+/**
+ * The bottom line: does any rule beat random trades on the same side, after costs, on the days that
+ * test it? Same side, so that a day NIFTY went one way doesn't flatter every rule that bought it.
+ */
 function verdict(rows: ScoreRow[], days: number, hold: number): string {
   const random = rows.find((r) => r.rule === "random");
   const bar = random?.perTrade ?? null;
   const best = rows
-    .filter((r) => r.rule !== "random" && r.perTrade !== null)
-    .sort((a, b) => b.perTrade! - a.perTrade!)[0];
+    .filter((r) => r.rule !== "random" && r.vsSameSide !== null && r.perTrade !== null)
+    .sort((a, b) => b.vsSameSide! - a.vsSameSide!)[0];
   const lead = bar === null ? "" : `A trade at a random moment ${bar < 0 ? "loses" : "makes"} ₹${Math.abs(Math.round(bar))} at a ${hold}-minute hold. `;
-  if (!best) return `${lead}No rule has traded yet.`;
+  if (!best) return `${lead}No rule has traded on a day that tests it yet.`;
+  const ahead = Math.round(best.vsSameSide!);
   const each = Math.round(best.perTrade!);
   const tail = days < ENOUGH_DAYS ? ` With ${days} day${days === 1 ? "" : "s"} recorded, that is not evidence yet: a rule must stay ahead for weeks.` : "";
-  if (each <= 0) return `${lead}No rule makes money after costs. The best, ${best.name}, ${each < 0 ? `loses ₹${-each}` : "breaks even"} a trade.${tail}`;
-  const few = best.trades < ENOUGH ? ` on only ${count(best.trades)} trades` : "";
-  return `${lead}The best, ${best.name}, makes ₹${each} a trade${few}.${tail}`;
+  const few = best.trades < ENOUGH ? `, on only ${count(best.trades)} trades` : "";
+  const record = `ahead on ${best.daysAhead} of the ${best.daysTraded} day${best.daysTraded === 1 ? "" : "s"} it traded`;
+  if (ahead <= 0) return `${lead}No rule beats random trades on the same side. The closest, ${best.name}, is ₹${-ahead} a trade behind them.${tail}`;
+  return `${lead}The best against random trades on the same side, ${best.name}, is ₹${ahead} a trade ahead of them (${each < 0 ? `losing ₹${-each}` : `making ₹${each}`} a trade, ${record}${few}).${tail}`;
 }
+
+/** "tested from 20 Nov" for a candidate written with earlier days seen. */
+const testedFrom = (since: string | null) => (since ? `tested from ${day(since)}` : null);
 
 export function DecisionLabPanel() {
   const load = useDecide();
   const [hold, setHold] = useState(10);
   const [checked, setChecked] = useState(false);
-  const [exits, setExits] = useState<"fixed" | "volatility">("volatility");
+  const [exits, setExits] = useState<ExitMode>("volatility");
   const view = load.state === "ready" ? load.view : null;
   const priced = view?.days.filter((d) => d.pricedMinutes > 0) ?? [];
   const rows = view?.rows.filter((r) => r.hold === hold && r.checked === checked && r.exits === exits) ?? [];
-  const bar = rows.find((r) => r.rule === "random")?.perTrade ?? null;
   const rules = new Map(view?.rules.map((r) => [r.id, r]) ?? []);
 
   const holds = view ? (
     <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Hold">
-      <select value={exits} onChange={(e) => setExits(e.target.value as "fixed" | "volatility")} className="mr-2 h-7 rounded-sm border border-line-strong bg-canvas px-2 text-label" aria-label="Exits">
-        <option value="volatility">Exits follow NIFTY&apos;s moves</option>
-        <option value="fixed">Fixed stop and target</option>
+      <select value={exits} onChange={(e) => setExits(e.target.value as ExitMode)} className="mr-2 h-7 rounded-sm border border-line-strong bg-canvas px-2 text-label" aria-label="Exits">
+        {(view.exitModes ?? ["volatility", "fixed"]).map((mode) => (
+          <option key={mode} value={mode}>
+            {EXIT_LABELS[mode]}
+          </option>
+        ))}
       </select>
       <label className="mr-2 inline-flex items-center gap-1.5 text-label text-muted">
         <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
@@ -109,8 +126,10 @@ export function DecisionLabPanel() {
             {view.assumptions.opposite ? ", on an opposite vote" : ""} or at {view.assumptions.squareOff}, with Dhan&apos;s charges and ₹{view.assumptions.slippage} slippage each way. Entries {view.assumptions.entries}.{" "}
             {exits === "volatility"
               ? `Each trade's stop sits ${view.assumptions.stopMoves}× and its target ${view.assumptions.targetMoves}× NIFTY's typical move over the hold away, in option rupees, worked out at entry from how much NIFTY was moving (candidates keep their own target-to-stop ratio).`
-              : `A fixed ${view.assumptions.stopPct}% stop and ${view.assumptions.targetPct}% target (candidates use their own).`}
-            A rule is only worth following if it beats <span className="text-fg">No signal</span> and stays above zero, day after day.
+              : exits === "trailing"
+                ? `The stop starts ${view.assumptions.stopPct}% below the buy (candidates: their own stop) and follows the option's best price up, staying that far below it; there is no target, so a winner runs until it falls back or the hold is up.`
+                : `A fixed ${view.assumptions.stopPct}% stop and ${view.assumptions.targetPct}% target (candidates use their own).`}
+            A rule is only worth following if it beats random trades on the same side (its calls against random calls that day, its puts against random puts) and stays above zero, day after day.
           </p>
           {view.build.state === "running" && <p className="text-body text-warn">{view.build.message}…</p>}
           {view.build.state === "failed" && <p className="text-body text-down">The last build failed: {view.build.message}</p>}
@@ -119,16 +138,16 @@ export function DecisionLabPanel() {
             {checked
               ? `With the cost check: a trade only when NIFTY's typical move over the hold is ${view.costCheckFactor}× what it needs to break even.`
               : "Without the cost check. Tick it to see every rule with it."}{" "}
-            Rules marked <span className="text-accent">candidate</span> were written on 18 November and use their own exits; only the days after test them.
+            Rules marked <span className="text-accent">candidate</span> use their own exits and were written with some days already seen: their figures count only the days after (&ldquo;tested from&rdquo;). Day by day, below, shows those days too, marked.
           </p>
 
-          <DataTable caption={`Decision rules at a ${hold}-minute hold, after costs, ${exits === "volatility" ? "exits following NIFTY's moves" : "fixed exits"}${checked ? ", with the cost check" : ""}`} minWidth="min-w-[52rem]" columns={["Rule", "Trades", "Won", "Net", "A trade", "Vs no signal", "Worst day"]}>
+          <DataTable caption={`Decision rules at a ${hold}-minute hold, after costs, ${exits === "volatility" ? "exits following NIFTY's moves" : "fixed exits"}${checked ? ", with the cost check" : ""}`} minWidth="min-w-[52rem]" columns={["Rule", "Trades", "Won", "Net", "A trade", "Vs random, same side", "Days ahead", "Worst day"]}>
             {rows.map((r) => (
               <tr key={r.rule} className={r.rule === "random" ? "text-muted" : undefined}>
                 <Td className="!whitespace-normal py-1.5">
                   <span className="block font-medium">
                     {r.name}
-                    {rules.get(r.rule)?.candidate && <span className="ml-2 text-label font-normal text-accent">candidate</span>}
+                    {rules.get(r.rule)?.candidate && <span className="ml-2 text-label font-normal text-accent">candidate{rules.get(r.rule)?.since ? ` · ${testedFrom(rules.get(r.rule)!.since)}` : ""}</span>}
                   </span>
                   <span className="block max-w-md text-label text-muted">{rules.get(r.rule)?.idea}</span>
                   {rules.get(r.rule)?.exits && <span className="block max-w-md text-label text-muted">Own exits: {rules.get(r.rule)?.exits}{exits === "volatility" ? " (as a ratio of target to stop)" : ""}</span>}
@@ -137,7 +156,8 @@ export function DecisionLabPanel() {
                 <Td numeric>{r.trades > 0 ? `${Math.round((r.wins / r.trades) * 100)}%` : "—"}</Td>
                 <Td numeric>{r.trades > 0 ? <Pnl value={r.net} /> : "—"}</Td>
                 <Td numeric>{r.perTrade === null ? "—" : <Pnl value={r.perTrade} />}</Td>
-                <Td numeric>{r.rule === "random" || r.perTrade === null || bar === null ? "" : <Pnl value={r.perTrade - bar} />}</Td>
+                <Td numeric>{r.vsSameSide === null || r.vsSameSide === undefined ? "" : <Pnl value={r.vsSameSide} />}</Td>
+                <Td numeric>{r.rule === "random" || !r.daysTraded ? "" : `${r.daysAhead} of ${r.daysTraded}`}</Td>
                 <Td numeric>
                   {r.worstDay && r.trades > 0 ? (
                     <span className="inline-flex flex-col items-end leading-tight">
@@ -151,6 +171,8 @@ export function DecisionLabPanel() {
               </tr>
             ))}
           </DataTable>
+
+          <DayByDay rows={rows} rules={rules} />
 
           <p className="text-label text-muted">
             Days:{" "}
@@ -184,5 +206,45 @@ export function DecisionLabPanel() {
         </div>
       )}
     </Panel>
+  );
+}
+
+/**
+ * Each rule's net on each scored day beside what as many random trades on the same sides made
+ * that day. Days a candidate was written with are shown dimmed: they don't count for it.
+ */
+function DayByDay({ rows, rules }: { rows: ScoreRow[]; rules: Map<string, DecideView["rules"][number]> }) {
+  const dates = rows[0]?.byDay?.map((d) => d.date) ?? [];
+  if (dates.length === 0) return null;
+  return (
+    <details>
+      <summary className="cursor-pointer text-label text-muted">Day by day: each rule against random trades on the same side</summary>
+      <p className="mt-2 text-label text-muted">
+        Each cell is the rule&apos;s net that day, then what as many random trades on the same sides made (the bar). Green: ahead of the bar. Dimmed: a day the candidate was written with, which doesn&apos;t count for it.
+      </p>
+      <DataTable caption="Each rule's net by day against random trades on the same side" minWidth="min-w-[40rem]" columns={["Rule", ...dates.map((d) => ({ label: day(d), align: "right" as const }))]}>
+        {rows.map((r) => (
+          <tr key={r.rule} className={r.rule === "random" ? "text-muted" : undefined}>
+            <Td>{r.name}</Td>
+            {(r.byDay ?? []).map((d) => (
+              <Td key={d.date} numeric className={d.tested ? undefined : "opacity-50"}>
+                {d.trades === 0 ? (
+                  <span className="text-muted">—</span>
+                ) : (
+                  <span className="inline-flex flex-col items-end leading-tight" title={d.tested ? undefined : `${rules.get(r.rule)?.name} was written with this day seen`}>
+                    <Pnl value={d.net} />
+                    <span className={`text-label ${d.bar === null || r.rule === "random" ? "text-muted" : d.net > d.bar ? "text-up" : "text-down"}`}>
+                      {count(d.trades)} trade{d.trades === 1 ? "" : "s"}
+                      {d.bar !== null && r.rule !== "random" && ` · bar ${d.bar < 0 ? "−" : ""}₹${Math.abs(Math.round(d.bar)).toLocaleString("en-IN")}`}
+                      {!d.tested && " · seen"}
+                    </span>
+                  </span>
+                )}
+              </Td>
+            ))}
+          </tr>
+        ))}
+      </DataTable>
+    </details>
   );
 }

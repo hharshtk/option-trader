@@ -117,7 +117,7 @@ export function TradingConsole() {
         <Notices trading={trading} result={result} onDismiss={dismiss} />
         <Totals trading={trading} />
         <Now trading={trading} />
-        {open.length > 0 && <OpenPositions positions={open} decisions={trading.decisions} />}
+        {open.length > 0 && <OpenPositions positions={open} decisions={trading.decisions} pending={pending} onSell={(id) => send({ action: "sell", positionId: id })} />}
         <Trades trades={trading.trades} decisions={trading.decisions} prices={trading.prices ?? {}} showShadow={showShadow} onShowShadow={setShowShadow} />
         {showShadow && <ShadowBook trading={trading} />}
         <DecisionLabPanel />
@@ -384,21 +384,32 @@ function DecisionInputs({ trading }: { trading: TradingStatus }) {
 }
 
 /** Open positions in the same columns as closed trades, marked to the latest price; shown only while something is open. */
-function OpenPositions({ positions, decisions }: { positions: Position[]; decisions: DecisionRecord[] }) {
+function OpenPositions({ positions, decisions, pending, onSell }: { positions: Position[]; decisions: DecisionRecord[]; pending: boolean; onSell: (positionId: string) => void }) {
   return (
     <Panel title="Open positions" meta={`${positions.length} on paper · P&L if sold now, after charges on both orders`} flush>
-      <PositionsTable positions={positions} decisions={decisions} caption="Open positions" />
+      <PositionsTable positions={positions} decisions={decisions} caption="Open positions" sell={{ pending, onSell }} />
     </Panel>
   );
 }
 
-function PositionsTable({ positions, decisions, caption }: { positions: Position[]; decisions: DecisionRecord[]; caption: string }) {
+/** With `sell`, each row gets a button that sells that position alone at the next quote. */
+function PositionsTable({
+  positions,
+  decisions,
+  caption,
+  sell,
+}: {
+  positions: Position[];
+  decisions: DecisionRecord[];
+  caption: string;
+  sell?: { pending: boolean; onSell: (positionId: string) => void };
+}) {
   const byId = new Map(decisions.map((d) => [d.id, d]));
   return (
     <DataTable
       caption={caption}
       minWidth="min-w-[62rem]"
-      columns={["Bought", { label: "Sell by", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Now", "Stop", "Target", "Before charges", "Charges", "Net", "Decision"]}
+      columns={["Bought", { label: "Sell by", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Now", "Stop", "Target", "Before charges", "Charges", "Net", "Decision", ...(sell ? [{ label: "Sell now", align: "right" as const }] : [])]}
     >
       {positions.map((position) => {
         const decision = position.decisionId ? byId.get(position.decisionId) : undefined;
@@ -422,7 +433,14 @@ function PositionsTable({ positions, decisions, caption }: { positions: Position
                 {position.entryPrice > 0 && <ChangeSinceSale change={move} />}
               </span>
             </Td>
-            <Td numeric>{position.stopPrice ? price.format(position.stopPrice) : "off"}</Td>
+            <Td numeric>
+              {position.stopPrice ? price.format(position.stopPrice) : "off"}
+              {position.trail && (
+                <span className="ml-1.5 text-label text-muted" title={`Follows the best price (${price.format(position.trail.best)}), ${position.trail.pct.toFixed(1)}% below it`}>
+                  trails
+                </span>
+              )}
+            </Td>
             <Td numeric>{position.targetPrice ? price.format(position.targetPrice) : "off"}</Td>
             <Td numeric>
               <Pnl value={position.unrealisedGross} />
@@ -434,6 +452,20 @@ function PositionsTable({ positions, decisions, caption }: { positions: Position
               <Pnl value={position.unrealisedNet} />
             </Td>
             <Td numeric>{decision?.probability != null ? decision.probability.toFixed(2) : "—"}</Td>
+            {sell && (
+              <Td className="text-right">
+                <button
+                  type="button"
+                  className={buttonClass}
+                  disabled={sell.pending || position.status !== "open"}
+                  onClick={() => sell.onSell(position.id)}
+                  title={`Sell ${quantity.format(position.quantity)} ${position.contract.name} now, at the next quote`}
+                  aria-label={`Sell ${position.contract.name}`}
+                >
+                  Sell
+                </button>
+              </Td>
+            )}
           </tr>
         );
       })}
@@ -877,24 +909,34 @@ function Settings({
   // Starting and stopping entries is the header button's job, not this form's.
   const dirty = JSON.stringify({ ...draft, armed: null }) !== JSON.stringify({ ...saved, armed: null });
   const strategy = <K extends keyof TradingConfig["strategy"]>(key: K, value: TradingConfig["strategy"][K]) => setDraft((d) => ({ ...d, strategy: { ...d.strategy, [key]: value } }));
-  /** Follows a decision lab rule (or none), taking its own stop, target and opposite-vote exit, in percent, as the lab plays it. */
+  /**
+   * Follows a decision lab rule (or none), taking its own stop, target, trailing stop, opposite-vote
+   * exit and hold, in percent, as the lab plays it. A trailing stop or hold the previous rule set is
+   * undone when the new one doesn't have it.
+   */
   const followRule = (id: string) => {
     const rule = id ? ruleById(id) : undefined;
-    setDraft((d) => ({
-      ...d,
-      strategy: {
-        ...d.strategy,
-        rule: rule ? (rule.id as TradingConfig["strategy"]["rule"]) : null,
-        ...(rule?.exits
-          ? {
-              exitIn: "percent" as const,
-              stopLossPct: rule.exits.stopPct ?? d.strategy.stopLossPct,
-              targetPct: rule.exits.targetPct ?? d.strategy.targetPct,
-              exitOnOpposite: rule.exits.opposite ?? d.strategy.exitOnOpposite,
-            }
-          : {}),
-      },
-    }));
+    setDraft((d) => {
+      const previous = d.strategy.rule ? ruleById(d.strategy.rule)?.exits : undefined;
+      const e = rule?.exits;
+      return {
+        ...d,
+        strategy: {
+          ...d.strategy,
+          rule: rule ? (rule.id as TradingConfig["strategy"]["rule"]) : null,
+          trailStop: e?.trail ?? (previous?.trail ? false : d.strategy.trailStop),
+          holdMinutes: e?.holdMinutes ?? (previous?.holdMinutes !== undefined ? DEFAULT_TRADING_CONFIG.strategy.holdMinutes : d.strategy.holdMinutes),
+          ...(e
+            ? {
+                exitIn: "percent" as const,
+                stopLossPct: e.stopPct ?? d.strategy.stopLossPct,
+                targetPct: e.targetPct ?? d.strategy.targetPct,
+                exitOnOpposite: e.opposite ?? d.strategy.exitOnOpposite,
+              }
+            : {}),
+        },
+      };
+    });
   };
   const risk = <K extends keyof TradingConfig["risk"]>(key: K, value: TradingConfig["risk"][K]) => setDraft((d) => ({ ...d, risk: { ...d.risk, [key]: value } }));
   const fills = <K extends keyof TradingConfig["fills"]>(key: K, value: TradingConfig["fills"][K]) => setDraft((d) => ({ ...d, fills: { ...d.fills, [key]: value } }));
@@ -976,6 +1018,7 @@ function Settings({
               )}
               <NumberField label={draft.strategy.exitsFrom === "volatility" ? "Fallback stop" : "Stop"} value={draft.strategy.stopLossPct} suffix="%" onChange={(v) => strategy("stopLossPct", v)} />
               <NumberField label={draft.strategy.exitsFrom === "volatility" ? "Fallback target" : "Target"} value={draft.strategy.targetPct} suffix="%" onChange={(v) => strategy("targetPct", v)} />
+              <Check label="Trailing stop, no target" checked={draft.strategy.trailStop} onChange={(v) => strategy("trailStop", v)} />
               <NumberField label="Hold" value={draft.strategy.holdMinutes} min={1} suffix="min" onChange={(v) => strategy("holdMinutes", v)} />
               <NumberField label="Wait between" value={draft.risk.cooldownMinutes} suffix="min" onChange={(v) => risk("cooldownMinutes", v)} />
             </Group>
