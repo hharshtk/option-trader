@@ -23,7 +23,8 @@ const ENOUGH_DAYS = 20;
 
 type Load = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; view: DecideView };
 
-function useDecide(): Load {
+/** The decision lab from the engine, refreshed every minute. */
+export function useDecide(): Load {
   const [load, setLoad] = useState<Load>({ state: "loading" });
   useEffect(() => {
     let cancelled = false;

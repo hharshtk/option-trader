@@ -42,6 +42,7 @@ import { breakevenSellPrice } from "@/lib/trading/charges";
 import { exitLevels } from "@/lib/trading/exits";
 import { clock, DataTags, EXIT_REASON, fieldClass, NoTrading, useTrading, Vote } from "./shared";
 import { DecisionLabPanel } from "./decision-lab-panel";
+import { LabTab } from "./lab-tab";
 import { ScalpLabPanel } from "./scalp-lab-panel";
 import { SettingsSummary } from "./settings-summary";
 import { StrategyPicker } from "./strategy-picker";
@@ -124,7 +125,7 @@ export function TradingConsole() {
         <Notices trading={trading} result={result} onDismiss={dismiss} />
         <Tabs defaultValue={section ?? "strategy"} onValueChange={setSection} className="space-y-3">
           <TabsList aria-label="Strategies" className="flex flex-wrap gap-1 border-b border-line">
-            {Object.entries({ strategy: "Strategy", run: "Current run", research: "Signal research", history: "Stored runs", settings: "Settings" }).map(([id, label]) => (
+            {Object.entries({ strategy: "Strategy", lab: "Decision Lab", run: "Current run", research: "Signal research", history: "Stored runs", settings: "Settings" }).map(([id, label]) => (
               <TabsTab key={id} value={id} className="border-b-2 border-transparent px-3 py-2 text-body text-muted hover:text-fg data-[selected]:border-accent data-[selected]:text-fg">
                 {label}
               </TabsTab>
@@ -133,6 +134,7 @@ export function TradingConsole() {
           <TabsPanel value="strategy">
             {section === "strategy" && <StrategyPicker strategy={withDefaults(config).strategy} pending={pending} onFollow={(next) => send({ action: "config", patch: { strategy: next } })} />}
           </TabsPanel>
+          <TabsPanel value="lab">{section === "lab" && <LabTab config={withDefaults(config)} followed={strategyId} />}</TabsPanel>
           <TabsPanel value="run" className="space-y-2">
             <Totals trading={trading} />
             <ActiveStrategy trading={trading} followed={followed} />

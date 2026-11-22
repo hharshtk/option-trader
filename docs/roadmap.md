@@ -37,6 +37,7 @@ Newest first.
 
 | Date | What | Where |
 |---|---|---|
+| 22 Nov 2026 | Strategies page: a Decision Lab tab, the lab in one plain table (every strategy by day in rupees after charges, against random trades, played with the trader's own settings, no switches). Second step in simplifying the page | [trading.md](trading.md#using-it) |
 | 22 Nov 2026 | Strategies page: a Strategy tab to pick what the trader follows, every signal and Decision Lab rule with its graded record; the picker leaves Settings. First step in simplifying the page | [trading.md](trading.md#using-it) |
 | 19 Nov 2026 | Prediction scoreboard: outcomes and calls stored per day, `GET /v1/predictions`, Pulse page panel, `npm run decide` prints it | [predictions.md](predictions.md) |
 | 19 Nov 2026 | Constitution, linked from AGENTS.md | [constitution.md](constitution.md) |
