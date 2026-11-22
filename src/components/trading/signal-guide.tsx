@@ -48,9 +48,9 @@ export const GUIDE: Record<SignalId, Guide> = {
     group: "Price",
     line: "6 stocks in 5 min",
     watches: "NIFTY's 50 stocks: how many are up on the day and how many are down. It compares that count with 5 minutes ago.",
-    votes: "When 6 or more stocks switched from down to up in 5 minutes (stocks up minus down rose by 6), it votes ▲ long. When 6 or more switched the other way, ▼ short.",
+    votes: "Count rising NIFTY stocks minus falling stocks. A rise of 6 or more in that count over 5 minutes signals a call. A fall of 6 or more signals a put.",
     idea: "A sudden swing in how many stocks are rising means buying (or selling) is spreading across the market, not stuck in one or two heavyweights. The hope is that NIFTY follows the crowd.",
-    silent: ["Fewer than 6 stocks changed side. Most minutes are like this.", "The first 5 minutes of the day: nothing to compare with yet."],
+    silent: ["The net count changed by less than 6. Most minutes are like this.", "The first 5 minutes of the day: nothing to compare with yet."],
     right: { time: "09:37", vote: -1, reading: "−6 stocks in 5 min", from: 25284.45, to: 25228.75 },
     wrong: { time: "12:17", vote: 1, reading: "+6 stocks in 5 min", from: 25264.7, to: 25230.9 },
   },
@@ -318,7 +318,7 @@ function Overview() {
 }
 
 /** The dialog: an overview tab, then a tab per signal. Opens on `initial`. */
-export function SignalGuide({ open, onClose, initial, signal, follow }: { open: boolean; onClose: () => void; initial: SignalId | "overview"; signal: SignalReading | null; follow: SignalId }) {
+export function SignalGuide({ open, onClose, initial, signal, follow }: { open: boolean; onClose: () => void; initial: SignalId | "overview"; signal: SignalReading | null; follow: SignalId | null }) {
   const tabClass =
     "flex w-full shrink-0 items-center gap-2 rounded-sm px-2 py-1.5 text-left text-body whitespace-nowrap text-muted hover:bg-raised hover:text-fg data-[selected]:bg-raised data-[selected]:font-medium data-[selected]:text-fg sm:whitespace-normal";
   return (

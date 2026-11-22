@@ -6,11 +6,14 @@
 
 import { Fragment, useCallback, useEffect, useState, useTransition, type FormEvent, type ReactNode } from "react";
 import { controlTrading } from "@/app/(cockpit)/strategies/actions";
+import { FollowedPredictionRecord } from "@/components/insight/prediction-board";
+import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/tabs";
 import { buttonClass, DataTable, EmptyState, Field, PageHeader, Panel, Pnl, StatRow, Tag, Td } from "@/components/ui";
 import {
   DECISION_DATA,
   DECISION_PROVIDERS,
   DEFAULT_TRADING_CONFIG,
+  holdMinutesFor,
   isScalping,
   FOLLOWABLE_RULES,
   RULE_DATA,
@@ -47,7 +50,7 @@ export function TradingConsole() {
   const telemetry = useTrading();
   const trading = telemetry.trading;
   const [result, setResult] = useState<TradingCommandResult | null>(null);
-  const [shadowShown, setShowShadow] = useState(false);
+  const [section, setSection] = useState("run");
   const [pending, startTransition] = useTransition();
   // Stable, so the notice's fade timer isn't restarted by every telemetry update.
   const dismiss = useCallback(() => setResult(null), []);
@@ -70,8 +73,8 @@ export function TradingConsole() {
 
   const { config, run } = trading;
   const open = trading.positions.filter((p) => p.book === "paper");
-  // Shadow trades get their own panel, never rows among the real ones.
-  const showShadow = shadowShown && (trading.trades.some((t) => t.book === "shadow") || trading.positions.some((p) => p.book === "shadow"));
+  const strategyId = config.strategy.rule ?? `signal:${config.strategy.signal}`;
+  const followed = ruleById(strategyId)?.name ?? strategyId;
   return (
     <>
       <PageHeader
@@ -86,7 +89,7 @@ export function TradingConsole() {
         }
       >
         <SettingsSummary trading={trading} />
-        <Watching trading={trading} />
+        <Watching trading={trading} followed={followed} />
         {trading.halt ? (
           <button type="button" className={buttonClass} disabled={pending} onClick={() => send({ action: "resume" })}>
             Resume trading
@@ -115,18 +118,50 @@ export function TradingConsole() {
 
       <div className="space-y-2 p-2 sm:p-3">
         <Notices trading={trading} result={result} onDismiss={dismiss} />
-        <Totals trading={trading} />
-        <Now trading={trading} />
-        {open.length > 0 && <OpenPositions positions={open} decisions={trading.decisions} pending={pending} onSell={(id) => send({ action: "sell", positionId: id })} />}
-        <Trades trades={trading.trades} decisions={trading.decisions} prices={trading.prices ?? {}} showShadow={showShadow} onShowShadow={setShowShadow} />
-        {showShadow && <ShadowBook trading={trading} />}
-        <DecisionLabPanel />
-        <ScalpLabPanel lab={trading.scalpLab} />
-        <Decisions trading={trading} />
-        <Settings key={JSON.stringify({ ...config, armed: null })} config={config} pending={pending} send={send} providers={trading.decisionProviders ?? { openrouter: trading.decisionReady, liquid: false }} />
-        <History live={run?.id ?? null} />
+        <Tabs defaultValue="run" onValueChange={setSection} className="space-y-3">
+          <TabsList aria-label="Strategies" className="flex flex-wrap gap-1 border-b border-line">
+            {Object.entries({ run: "Current run", research: "Signal research", history: "Stored runs", settings: "Settings" }).map(([id, label]) => (
+              <TabsTab key={id} value={id} className="border-b-2 border-transparent px-3 py-2 text-body text-muted hover:text-fg data-[selected]:border-accent data-[selected]:text-fg">
+                {label}
+              </TabsTab>
+            ))}
+          </TabsList>
+          <TabsPanel value="run" className="space-y-2">
+            <Totals trading={trading} />
+            <ActiveStrategy trading={trading} followed={followed} />
+            {open.length > 0 && <OpenPositions positions={open} decisions={trading.decisions} pending={pending} onSell={(id) => send({ action: "sell", positionId: id })} />}
+            <Trades key={run?.id} trading={trading} />
+            {trading.decisionScore.asked > 0 && (
+              <Disclosure label={`Decision API · ${trading.decisionScore.approved} for entry · ${trading.decisionScore.vetoed} against${trading.decisionScore.failed ? ` · ${trading.decisionScore.failed} failed` : ""}`}>
+                <Decisions trading={trading} />
+              </Disclosure>
+            )}
+          </TabsPanel>
+          <TabsPanel value="research" className="space-y-2">
+            {section === "research" && <>
+              <FollowedPredictionRecord predictor={strategyId} name={followed} />
+              <Disclosure label="All signal readings"><Now trading={trading} /></Disclosure>
+              <Disclosure label="Compare Decision Lab rules"><DecisionLabPanel /></Disclosure>
+              {trading.scalpLab && <Disclosure label="Scalp lab"><ScalpLabPanel lab={trading.scalpLab} /></Disclosure>}
+            </>}
+          </TabsPanel>
+          <TabsPanel value="history">{section === "history" && <History live={run?.id ?? null} />}</TabsPanel>
+          <TabsPanel value="settings">
+            <Settings key={JSON.stringify({ ...config, armed: null })} config={config} pending={pending} send={send} providers={trading.decisionProviders ?? { openrouter: trading.decisionReady, liquid: false }} />
+          </TabsPanel>
+        </Tabs>
       </div>
     </>
+  );
+}
+
+function Disclosure({ label, children }: { label: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="rounded-sm border border-line bg-panel" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer px-3 py-2 text-body font-medium">{label}</summary>
+      {open && children}
+    </details>
   );
 }
 
@@ -140,33 +175,22 @@ function Stat({ label, children, hint }: { label: string; children: ReactNode; h
 }
 
 function Totals({ trading }: { trading: TradingStatus }) {
-  const { paper, shadow } = trading.totals;
-  const score = trading.decisionScore;
+  const { paper } = trading.totals;
   return (
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
-      <Stat label="Net P&L, after charges" hint="Closed paper trades, after brokerage, STT, exchange fees, stamp duty and GST">
+    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <Stat label="Closed paper P&L">
         <Pnl value={paper.net} />
+        <span className="block text-label font-normal text-muted">After {inr.format(paper.charges)} in charges</span>
       </Stat>
-      <Stat label="Open position" hint="What the open position would add if sold now, after charges on both orders">
+      <Stat label="Paper win rate">
+        {paper.trades ? `${Math.round((100 * paper.wins) / paper.trades)}%` : "—"}
+        <span className="block text-label font-normal text-muted">{paper.wins} of {paper.trades} closed trades profitable</span>
+      </Stat>
+      <Stat label="Open paper P&L" hint="What open positions would add if sold now, after charges on both orders">
         {trading.positions.some((p) => p.book === "paper") ? <Pnl value={paper.open} /> : <span className="text-muted">—</span>}
-      </Stat>
-      <Stat label="Trades">
-        {paper.trades}
-        <span className="ml-1.5 text-label text-muted">{paper.wins} won</span>
-      </Stat>
-      <Stat label="Charges paid" hint="Brokerage and statutory charges on every fill, at Dhan's rates">
-        {inr.format(paper.charges)}
       </Stat>
       <Stat label="Largest drawdown" hint="The furthest the day's net P&L fell from its high">
         {inr.format(paper.maxDrawdown)}
-      </Stat>
-      <Stat label="Turned down by the gate" hint="Trades the decision API turned down, followed on the shadow book">
-        {score.vetoed}
-        {shadow.trades > 0 && (
-          <span className="ml-1.5 text-label text-muted">
-            would have made <Pnl value={shadow.net} />
-          </span>
-        )}
       </Stat>
     </div>
   );
@@ -176,8 +200,7 @@ function Totals({ trading }: { trading: TradingStatus }) {
  * What trading is doing, small, beside the buttons: "Looking for a signal" with a live dot while it
  * waits for the followed signal, otherwise the engine's one-line note.
  */
-function Watching({ trading }: { trading: TradingStatus }) {
-  const followed = SIGNALS.find((s) => s.id === trading.config.strategy.signal)?.name ?? trading.config.strategy.signal;
+function Watching({ trading, followed }: { trading: TradingStatus; followed: string }) {
   const looking = trading.state === "ready" && !trading.positions.some((p) => p.book === "paper");
   const tone = { ready: "bg-up", waiting: "bg-warn", halted: "bg-down", starting: "bg-muted", disarmed: "bg-muted", closed: "bg-muted" }[trading.state];
   return (
@@ -186,7 +209,7 @@ function Watching({ trading }: { trading: TradingStatus }) {
         {looking && <span className={`absolute inline-flex size-full rounded-full ${tone} opacity-60 motion-safe:animate-ping`} />}
         <span className={`relative inline-flex size-2 rounded-full ${tone}`} />
       </span>
-      <span className="truncate">{looking ? `Looking for a signal · ${followed}` : trading.note}</span>
+      <span className="truncate">{looking ? `Watching ${followed}` : trading.note}</span>
     </span>
   );
 }
@@ -222,10 +245,25 @@ function Notices({ trading, result, onDismiss }: { trading: TradingStatus; resul
   );
 }
 
+function ActiveStrategy({ trading, followed }: { trading: TradingStatus; followed: string }) {
+  const { config, signal } = trading;
+  const { strategy, decision } = config;
+  const reading = !strategy.rule && signal?.readings.find((r) => r.id === strategy.signal);
+  return (
+    <Panel title={followed} meta="Current entry trigger">
+      <p className="text-body">{strategy.rule ? ruleById(strategy.rule)?.idea : GUIDE[strategy.signal]?.votes}</p>
+      <dl className="mt-2 grid gap-x-6 gap-y-1 text-body sm:grid-cols-2">
+        {reading && signal && <Field label={`Reading at ${clock(signal.minute + 60_000)}`} value={reading.reading} />}
+        <Field label="Decision API" value={decision.mode === "gate" ? `Gate · minimum score ${decision.minProbability.toFixed(2)}` : decision.mode === "shadow" ? "Records answers only" : "Off"} />
+        <Field label="Maximum hold" value={`${holdMinutesFor(withDefaults(config))} min`} />
+      </dl>
+    </Panel>
+  );
+}
+
 function Now({ trading }: { trading: TradingStatus }) {
   const { signal, contracts, config } = trading;
-  const follow = config.strategy.signal;
-  const followed = SIGNALS.find((s) => s.id === follow)?.name ?? follow;
+  const follow = config.strategy.rule ? null : config.strategy.signal;
   const [guide, setGuide] = useState<SignalId | "overview" | null>(null);
   const horizon = signal?.readings.find((r) => r.today)?.today?.horizon;
   return (
@@ -298,7 +336,7 @@ function Now({ trading }: { trading: TradingStatus }) {
         </DataTable>
       ) : (
         <div className="p-3">
-          <EmptyState>Signals are read at the close of each minute once the session is open. The strategy follows “{followed}”.</EmptyState>
+          <EmptyState>Signals are read at the close of each minute once the session is open.</EmptyState>
         </div>
       )}
       <dl className="grid gap-x-6 gap-y-1 border-t border-line px-3 py-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -480,130 +518,80 @@ function ChangeSinceSale({ change }: { change: number }) {
   return <span className={`ml-1.5 tabular-nums ${tone}`}>({rounded > 0 ? "+" : ""}{rounded})</span>;
 }
 
-function Trades({
-  trades,
-  decisions,
-  prices,
-  showShadow,
-  onShowShadow,
-}: {
-  trades: Trade[];
-  decisions: DecisionRecord[];
-  prices: TradingStatus["prices"];
-  showShadow: boolean;
-  onShowShadow: (show: boolean) => void;
-}) {
+function Trades({ trading }: { trading: TradingStatus }) {
+  const { trades, positions, totals, decisions, prices } = trading;
   const paper = trades.filter((t) => t.book === "paper");
-  const shadowCount = trades.length - paper.length;
+  const shadow = trades.filter((t) => t.book === "shadow");
+  const open = positions.filter((p) => p.book === "shadow");
   return (
-    <Panel
-      title="Trades"
-      meta={`${paper.length} on paper`}
-      action={
-        shadowCount > 0 && (
-          <label className="inline-flex items-center gap-1.5 text-label text-muted" title="Opens a separate panel below with the trades the AI turned down">
-            <input type="checkbox" checked={showShadow} onChange={(e) => onShowShadow(e.target.checked)} />
-            Show {shadowCount} shadow trade{shadowCount === 1 ? "" : "s"}
-          </label>
-        )
-      }
-      flush
-    >
-      {paper.length === 0 ? (
-        <div className="p-3">
-          <EmptyState>{shadowCount > 0 ? "No paper trades yet. Tick Show shadow trades to see the ones the AI turned down." : "No trades yet in this run."}</EmptyState>
-        </div>
-      ) : (
-        <TradesTable trades={paper} decisions={decisions} prices={prices} caption="Closed trades, newest first" />
+    <>
+      <Panel title="Closed paper trades" meta={totals.paper.trades > paper.length ? `Latest ${paper.length} of ${totals.paper.trades}` : undefined} flush>
+        {paper.length ? (
+          <TradesTable trades={paper} decisions={decisions} prices={prices ?? {}} caption="Closed paper trades, newest first" />
+        ) : (
+          <div className="p-3"><EmptyState>No paper trades have closed in this run.</EmptyState></div>
+        )}
+      </Panel>
+      {(totals.shadow.trades > 0 || open.length > 0) && (
+        <Disclosure label={
+          <span>Shadow trades · {totals.shadow.trades} closed{open.length > 0 && ` · ${open.length} open`}
+            {totals.shadow.trades > 0 && <> · <Pnl value={totals.shadow.net} /></>}
+          </span>
+        }>
+          <p className="border-t border-line px-3 py-2 text-label text-muted">
+            The gate declined these entries. The shadow book tracks what they would have earned after charges.
+            {" "}{totals.shadow.wins} of {totals.shadow.trades} closed in profit.
+          </p>
+          {open.length > 0 && <PositionsTable positions={open} decisions={decisions} caption="Open shadow positions" />}
+          {shadow.length > 0 && <TradesTable trades={shadow} decisions={decisions} prices={prices ?? {}} caption="Closed shadow trades, newest first" />}
+        </Disclosure>
       )}
-    </Panel>
+    </>
   );
 }
 
-/** Closed trades of one book. */
 function TradesTable({ trades, decisions, prices, caption }: { trades: Trade[]; decisions: DecisionRecord[]; prices: TradingStatus["prices"]; caption: string }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
   const byId = new Map(decisions.map((d) => [d.id, d]));
   return (
-    <DataTable
-      caption={caption}
-      minWidth="min-w-[62rem]"
-      columns={["Bought", { label: "Sold", align: "left" }, { label: "Contract", align: "left" }, "Qty", "Entry", "Exit", "Now", { label: "Closed by", align: "left" }, "Before charges", "Charges", "Net", "Decision"]}
-    >
+    <DataTable caption={caption} columns={["Contract", { label: "Bought", align: "left" }, { label: "Sold", align: "left" }, { label: "Closed by", align: "left" }, "Net after charges"]}>
       {trades.map((trade) => {
         const decision = trade.decisionId ? byId.get(trade.decisionId) : undefined;
-        const now = prices[trade.contract.feedKey];
+        const quote = prices[trade.contract.feedKey];
+        const shown = expanded === trade.id;
         return (
-          <tr key={`${trade.book}-${trade.id}`}>
-            <Td className="tabular-nums">{clock(trade.openedAt)}</Td>
-            <Td className="tabular-nums">{clock(trade.closedAt)}</Td>
-            <Td>{trade.contract.name}</Td>
-            <Td numeric>{quantity.format(trade.quantity)}</Td>
-            <Td numeric>{price.format(trade.entryPrice)}</Td>
-            <Td numeric>{price.format(trade.exitPrice)}</Td>
-            <Td numeric>
-              {now ? (
-                <span title={`Last traded at ${clock(now.at)}; ${now.price >= trade.exitPrice ? "up" : "down"} ${inr.format(Math.abs(now.price - trade.exitPrice) * trade.quantity)} on this quantity since the sale`}>
-                  {price.format(now.price)}
-                  <ChangeSinceSale change={now.price - trade.exitPrice} />
-                </span>
-              ) : (
-                "—"
-              )}
-            </Td>
-            <Td>{EXIT_REASON[trade.exitReason]}</Td>
-            <Td numeric>
-              <Pnl value={trade.gross} />
-            </Td>
-            <Td numeric>
-              <span title={chargeLines(trade)}>{inr.format(trade.charges.total)}</span>
-            </Td>
-            <Td numeric>
-              <Pnl value={trade.net} />
-            </Td>
-            <Td numeric>{decision?.probability != null ? decision.probability.toFixed(2) : "—"}</Td>
-          </tr>
+          <Fragment key={trade.id}>
+            <tr>
+              <Td>
+                <button type="button" className="py-1 text-left hover:text-accent" aria-expanded={shown} onClick={() => setExpanded(shown ? null : trade.id)}>
+                  <span aria-hidden="true" className="mr-1 text-muted">{shown ? "▾" : "▸"}</span>{trade.contract.name}
+                </button>
+              </Td>
+              <Td className="tabular-nums">{clock(trade.openedAt)}</Td>
+              <Td className="tabular-nums">{clock(trade.closedAt)}</Td>
+              <Td>{EXIT_REASON[trade.exitReason]}</Td>
+              <Td numeric><Pnl value={trade.net} /></Td>
+            </tr>
+            {shown && (
+              <tr>
+                <td colSpan={5} className="bg-raised/40 px-3 py-3">
+                  <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <Field label="Quantity" value={quantity.format(trade.quantity)} />
+                    <Field label="Entry → exit" value={`${price.format(trade.entryPrice)} → ${price.format(trade.exitPrice)}`} />
+                    <Field label="Before charges" value={<Pnl value={trade.gross} />} />
+                    <Field label="Charges" value={<span title={chargeLines(trade)}>{inr.format(trade.charges.total)}</span>} />
+                    {decision && <Field label="Decision API" value={decision.reason} />}
+                    {quote && quote.at > trade.closedAt && (
+                      <Field label={`After sale · ${clock(quote.at)}`} value={<>{price.format(quote.price)}<ChangeSinceSale change={quote.price - trade.exitPrice} /></>} />
+                    )}
+                  </dl>
+                </td>
+              </tr>
+            )}
+          </Fragment>
         );
       })}
     </DataTable>
-  );
-}
-
-/**
- * The shadow book on its own: trades the AI turned down, followed as if taken. Not real money and
- * never counted in the paper totals; kept apart so nobody mistakes them for trades.
- */
-function ShadowBook({ trading }: { trading: TradingStatus }) {
-  const trades = trading.trades.filter((t) => t.book === "shadow");
-  const open = trading.positions.filter((p) => p.book === "shadow");
-  const { shadow } = trading.totals;
-  return (
-    <section className="rounded-sm border border-dashed border-line-strong">
-      <Panel
-        title="Shadow trades: turned down by the AI, not real"
-        meta={
-          <span>
-            {shadow.trades} closed, {shadow.wins} would have won · would have made <Pnl value={shadow.net} /> after charges
-          </span>
-        }
-        flush
-      >
-        <p className="px-3 py-2 text-label text-muted">
-          The AI turned these down, so nothing was bought. They are followed as if taken, to show whether turning them down helped. They don&apos;t count in your totals.
-        </p>
-        {open.length > 0 && (
-          <>
-            <p className="px-3 pt-1 text-label font-medium tracking-wider text-muted uppercase">Still open</p>
-            <PositionsTable positions={open} decisions={trading.decisions} caption="Open shadow positions" />
-          </>
-        )}
-        {trades.length > 0 && (
-          <>
-            {open.length > 0 && <p className="px-3 pt-3 text-label font-medium tracking-wider text-muted uppercase">Closed</p>}
-            <TradesTable trades={trades} decisions={trading.decisions} prices={trading.prices ?? {}} caption="Closed shadow trades, newest first" />
-          </>
-        )}
-      </Panel>
-    </section>
   );
 }
 
@@ -666,9 +654,12 @@ function Decisions({ trading }: { trading: TradingStatus }) {
                     {decision.error ? (
                       <span className="text-warn">Failed: {decision.error}</span>
                     ) : (
-                      <span className={decision.approved ? "text-up" : "text-down"}>{decision.approved ? "Take it" : mode === "gate" ? "Turned down" : "Would turn down"}</span>
+                      <span className={decision.approved ? "text-up" : "text-down"}>{decision.approved ? "Take it" : decision.mode === "gate" ? "Turned down" : "Would turn down"}</span>
                     )}
                     {!decision.error && <span className="text-muted"> · {decision.reason}</span>}
+                    {intent?.outcome === "rejected" && intent.reason && intent.reason !== decision.reason && (
+                      <span className="block text-muted">{intent.reason}</span>
+                    )}
                   </Td>
                   <Td numeric className="text-muted">
                     {decision.cached ? "recorded" : `${decision.latencyMs} ms`}
@@ -914,24 +905,26 @@ function Settings({
    * exit and hold, in percent, as the lab plays it. A trailing stop or hold the previous rule set is
    * undone when the new one doesn't have it.
    */
-  const followRule = (id: string) => {
-    const rule = id ? ruleById(id) : undefined;
+  const selectTrigger = (id: string) => {
+    const signal = SIGNALS.find((s) => s.id === id);
+    const rule = FOLLOWABLE_RULES.find((r) => r.id === id);
+    const exits = rule && ruleById(rule.id)?.exits;
     setDraft((d) => {
       const previous = d.strategy.rule ? ruleById(d.strategy.rule)?.exits : undefined;
-      const e = rule?.exits;
       return {
         ...d,
         strategy: {
           ...d.strategy,
-          rule: rule ? (rule.id as TradingConfig["strategy"]["rule"]) : null,
-          trailStop: e?.trail ?? (previous?.trail ? false : d.strategy.trailStop),
-          holdMinutes: e?.holdMinutes ?? (previous?.holdMinutes !== undefined ? DEFAULT_TRADING_CONFIG.strategy.holdMinutes : d.strategy.holdMinutes),
-          ...(e
+          signal: signal?.id ?? d.strategy.signal,
+          rule: rule?.id ?? null,
+          trailStop: exits?.trail ?? (previous?.trail ? false : d.strategy.trailStop),
+          holdMinutes: exits?.holdMinutes ?? (previous?.holdMinutes !== undefined ? DEFAULT_TRADING_CONFIG.strategy.holdMinutes : d.strategy.holdMinutes),
+          ...(exits
             ? {
                 exitIn: "percent" as const,
-                stopLossPct: e.stopPct ?? d.strategy.stopLossPct,
-                targetPct: e.targetPct ?? d.strategy.targetPct,
-                exitOnOpposite: e.opposite ?? d.strategy.exitOnOpposite,
+                stopLossPct: exits.stopPct ?? d.strategy.stopLossPct,
+                targetPct: exits.targetPct ?? d.strategy.targetPct,
+                exitOnOpposite: exits.opposite ?? d.strategy.exitOnOpposite,
               }
             : {}),
         },
@@ -954,13 +947,17 @@ function Settings({
       <form onSubmit={submit} className="space-y-3">
         <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           <Group title="Buy">
-            <SelectField label="Signal" value={draft.strategy.signal} onChange={(v) => strategy("signal", v)} options={SIGNALS.map((s) => ({ value: s.id, label: withData(s.name, SIGNAL_DATA[s.id]) }))} />
-            <SelectField
-              label="Or lab rule"
-              value={draft.strategy.rule ?? ""}
-              onChange={(v) => followRule(v)}
-              options={[{ value: "", label: "None" }, ...FOLLOWABLE_RULES.map((r) => ({ value: r.id, label: withData(r.name, RULE_DATA[r.id]) }))]}
-            />
+            <label className="flex flex-col gap-1 text-label text-muted">
+              Entry trigger
+              <select className={fieldClass} value={draft.strategy.rule ?? draft.strategy.signal} onChange={(e) => selectTrigger(e.target.value)}>
+                <optgroup label="Signals">
+                  {SIGNALS.map((s) => <option key={s.id} value={s.id}>{withData(s.name, SIGNAL_DATA[s.id])}</option>)}
+                </optgroup>
+                <optgroup label="Decision Lab rules">
+                  {FOLLOWABLE_RULES.map((r) => <option key={r.id} value={r.id}>{withData(r.name, RULE_DATA[r.id])}</option>)}
+                </optgroup>
+              </select>
+            </label>
             <SelectField
               label="Side"
               value={draft.strategy.side}

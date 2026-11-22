@@ -44,6 +44,49 @@ const day = (date: string) => new Date(`${date}T00:00:00Z`).toLocaleDateString("
 const pct = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : "—");
 const points = (n: number) => `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(Math.round(n))}`;
 
+/** The Strategies research view follows the same predictor and grading as Pulse. */
+export function FollowedPredictionRecord({ predictor, name }: { predictor: string; name: string }) {
+  const load = usePredictions();
+  const view = load.state === "ready" ? load.view : null;
+  const row = view?.rows.find((r) => r.id === predictor);
+  const tested = row?.byDay.filter((d) => d.tested) ?? [];
+  const rate = (wins: number, total: number) => total > 0 ? `${wins} of ${total} (${pct(wins, total)})` : "—";
+  return (
+    <Panel title={`${name} prediction record`} meta={view && `${view.horizon}-minute horizon`}>
+      {load.state === "loading" && <EmptyState>Reading recorded sessions…</EmptyState>}
+      {load.state === "error" && <p className="text-body text-down">{load.message}</p>}
+      {view?.build.state === "failed" && <p className="text-body text-down">Grading failed. {view.build.message}</p>}
+      {view?.build.state === "running" && <p className="text-body text-muted">Grading recordings…</p>}
+      {view && (!row || !row.calls) && <EmptyState>No graded predictions for this trigger yet.</EmptyState>}
+      {view && row && row.calls > 0 && (
+        <div className="space-y-3">
+          <p className="text-body">
+            {row.priced > 0 ? <>
+              The signal beat a coin flip after charges on <strong>{row.daysAhead} of {row.daysCalled}</strong> recorded sessions with option prices.
+            </> : "Only direction can be graded until option quotes are available."}
+            {row.daysCalled < ENOUGH_DAYS && ` The evidence threshold is ${ENOUGH_DAYS} live sessions.`}
+          </p>
+          <DataTable caption={`${name} predictions by recorded day`} columns={["Session", "Direction correct", "Option profitable", "Avg net per prediction", "Coin flip, same minutes"]}>
+            {[{ date: null, ...row }, ...tested].map((d) => (
+              <tr key={d.date ?? "total"}>
+                <Td>{d.date ?? "All tested days"}</Td>
+                <Td numeric>{rate(d.right, d.calls)}</Td>
+                <Td numeric>{rate(d.paid, d.priced)}</Td>
+                <Td numeric>{d.perCall === null ? "—" : <Pnl value={d.perCall} />}</Td>
+                <Td numeric>{d.coin === null ? "—" : <Pnl value={d.coin} />}</Td>
+              </tr>
+            ))}
+          </DataTable>
+          <p className="text-label text-muted">
+            Each signal minute is graded before the Decision API gate, using one at-the-money lot held for {view.horizon} minutes. Consecutive predictions can overlap.
+            {row.since && ` Tested from ${day(row.since)}.`}
+          </p>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 /** The bottom line: does anything beat a coin flip, on the days that test it? */
 function verdict(rows: PredictionRow[], days: number, horizon: number): string {
   const coin = rows.find((r) => r.kind === "bar" && r.id === "coin");
