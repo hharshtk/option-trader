@@ -2,8 +2,8 @@
 
 import type { ReactNode } from "react";
 import { useEngineTelemetry, type EngineTelemetry } from "@/components/engine/use-engine-telemetry";
-import { Panel, StatusDot } from "@/components/ui";
-import type { Book, ExitReason, TradingStatus } from "@/lib/engine/trading";
+import { Panel, StatusDot, Tag } from "@/components/ui";
+import { DECISION_DATA, type Book, type DecisionData, type ExitReason, type TradingStatus } from "@/lib/engine/trading";
 import { istTime } from "@/lib/format";
 
 const TOPICS = ["status", "trading"] as const;
@@ -27,6 +27,20 @@ export const EXIT_REASON: Record<ExitReason, string> = {
   manual: "Sold by you",
   halt: "Day stopped",
 };
+
+/** Small tags for the depth and option data a signal or rule reads; nothing when it reads none. */
+export function DataTags({ uses }: { uses?: readonly DecisionData[] }) {
+  if (!uses?.length) return null;
+  return (
+    <>
+      {uses.map((d) => (
+        <span key={d} title={DECISION_DATA[d].title}>
+          <Tag>{DECISION_DATA[d].label}</Tag>
+        </span>
+      ))}
+    </>
+  );
+}
 
 export function BookTag({ book }: { book: Book }) {
   return book === "shadow" ? (

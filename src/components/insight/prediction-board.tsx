@@ -11,11 +11,12 @@ import type { PredictionRow, PredictionView } from "@/lib/decide/predict";
 
 const REFRESH_MS = 60_000;
 /** Fewer days than this and nothing is proven (the constitution's 20 live sessions). */
-const ENOUGH_DAYS = 20;
+export const ENOUGH_DAYS = 20;
 
-type Load = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; view: PredictionView };
+export type Load = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; view: PredictionView };
 
-function usePredictions(): Load {
+/** The scoreboard from the engine, refreshed every minute. */
+export function usePredictions(): Load {
   const [load, setLoad] = useState<Load>({ state: "loading" });
   useEffect(() => {
     let cancelled = false;

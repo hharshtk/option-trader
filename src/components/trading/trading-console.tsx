@@ -1,8 +1,8 @@
 "use client";
 
-// The Strategies page: the engine's paper trading. What it is doing now, the open position, the
-// day's trades after charges, what the decision API said about each entry, the settings, and the
-// runs stored as Parquet. The engine does the trading; this page shows it and sends commands.
+// The Strategies page: the engine's paper trading. Which strategy it follows, what it is doing now,
+// the open position, the day's trades after charges, what the decision API said about each entry,
+// the settings, and the runs stored as Parquet. The engine does the trading; this page shows it and sends commands.
 
 import { Fragment, useCallback, useEffect, useState, useTransition, type FormEvent, type ReactNode } from "react";
 import { controlTrading } from "@/app/(cockpit)/strategies/actions";
@@ -40,17 +40,18 @@ import { ruleById } from "@/lib/decide/rules";
 import { inr, istDateTime, price, quantity } from "@/lib/format";
 import { breakevenSellPrice } from "@/lib/trading/charges";
 import { exitLevels } from "@/lib/trading/exits";
-import { clock, EXIT_REASON, fieldClass, NoTrading, useTrading, Vote } from "./shared";
+import { clock, DataTags, EXIT_REASON, fieldClass, NoTrading, useTrading, Vote } from "./shared";
 import { DecisionLabPanel } from "./decision-lab-panel";
 import { ScalpLabPanel } from "./scalp-lab-panel";
 import { SettingsSummary } from "./settings-summary";
+import { StrategyPicker } from "./strategy-picker";
 import { Arrow, Closeness, GUIDE, InfoButton, Outcome, SignalGuide } from "./signal-guide";
 
 export function TradingConsole() {
   const telemetry = useTrading();
   const trading = telemetry.trading;
   const [result, setResult] = useState<TradingCommandResult | null>(null);
-  const [section, setSection] = useState("run");
+  const [section, setSection] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   // Stable, so the notice's fade timer isn't restarted by every telemetry update.
   const dismiss = useCallback(() => setResult(null), []);
@@ -59,6 +60,9 @@ export function TradingConsole() {
     startTransition(async () => {
       setResult(await controlTrading(command));
     });
+
+  // Opens on the live run while entries are on, otherwise on choosing a strategy.
+  if (trading && section === null) setSection(trading.config.armed ? "run" : "strategy");
 
   if (!trading) {
     return (
@@ -118,14 +122,17 @@ export function TradingConsole() {
 
       <div className="space-y-2 p-2 sm:p-3">
         <Notices trading={trading} result={result} onDismiss={dismiss} />
-        <Tabs defaultValue="run" onValueChange={setSection} className="space-y-3">
+        <Tabs defaultValue={section ?? "strategy"} onValueChange={setSection} className="space-y-3">
           <TabsList aria-label="Strategies" className="flex flex-wrap gap-1 border-b border-line">
-            {Object.entries({ run: "Current run", research: "Signal research", history: "Stored runs", settings: "Settings" }).map(([id, label]) => (
+            {Object.entries({ strategy: "Strategy", run: "Current run", research: "Signal research", history: "Stored runs", settings: "Settings" }).map(([id, label]) => (
               <TabsTab key={id} value={id} className="border-b-2 border-transparent px-3 py-2 text-body text-muted hover:text-fg data-[selected]:border-accent data-[selected]:text-fg">
                 {label}
               </TabsTab>
             ))}
           </TabsList>
+          <TabsPanel value="strategy">
+            {section === "strategy" && <StrategyPicker strategy={withDefaults(config).strategy} pending={pending} onFollow={(next) => send({ action: "config", patch: { strategy: next } })} />}
+          </TabsPanel>
           <TabsPanel value="run" className="space-y-2">
             <Totals trading={trading} />
             <ActiveStrategy trading={trading} followed={followed} />
@@ -354,20 +361,6 @@ function Now({ trading }: { trading: TradingStatus }) {
       <DecisionInputs trading={trading} />
       <SignalGuide open={guide !== null} onClose={() => setGuide(null)} initial={guide ?? "overview"} signal={signal} follow={follow} />
     </Panel>
-  );
-}
-
-/** Small tags for the depth and option data a signal or rule reads; nothing when it reads none. */
-function DataTags({ uses }: { uses?: readonly DecisionData[] }) {
-  if (!uses?.length) return null;
-  return (
-    <>
-      {uses.map((d) => (
-        <span key={d} title={DECISION_DATA[d].title}>
-          <Tag>{DECISION_DATA[d].label}</Tag>
-        </span>
-      ))}
-    </>
   );
 }
 
@@ -840,11 +833,6 @@ function ModeSwitch({ scalping, onChange }: { scalping: boolean; onChange: (scal
   );
 }
 
-/** A picker label with the depth and option data it reads, as "Order book lean · depth". */
-function withData(name: string, uses?: readonly DecisionData[]): string {
-  return uses?.length ? `${name} · ${uses.map((d) => DECISION_DATA[d].label.toLowerCase()).join(", ")}` : name;
-}
-
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
     <fieldset className="min-w-0 rounded-sm border border-line p-2.5">
@@ -900,37 +888,6 @@ function Settings({
   // Starting and stopping entries is the header button's job, not this form's.
   const dirty = JSON.stringify({ ...draft, armed: null }) !== JSON.stringify({ ...saved, armed: null });
   const strategy = <K extends keyof TradingConfig["strategy"]>(key: K, value: TradingConfig["strategy"][K]) => setDraft((d) => ({ ...d, strategy: { ...d.strategy, [key]: value } }));
-  /**
-   * Follows a decision lab rule (or none), taking its own stop, target, trailing stop, opposite-vote
-   * exit and hold, in percent, as the lab plays it. A trailing stop or hold the previous rule set is
-   * undone when the new one doesn't have it.
-   */
-  const selectTrigger = (id: string) => {
-    const signal = SIGNALS.find((s) => s.id === id);
-    const rule = FOLLOWABLE_RULES.find((r) => r.id === id);
-    const exits = rule && ruleById(rule.id)?.exits;
-    setDraft((d) => {
-      const previous = d.strategy.rule ? ruleById(d.strategy.rule)?.exits : undefined;
-      return {
-        ...d,
-        strategy: {
-          ...d.strategy,
-          signal: signal?.id ?? d.strategy.signal,
-          rule: rule?.id ?? null,
-          trailStop: exits?.trail ?? (previous?.trail ? false : d.strategy.trailStop),
-          holdMinutes: exits?.holdMinutes ?? (previous?.holdMinutes !== undefined ? DEFAULT_TRADING_CONFIG.strategy.holdMinutes : d.strategy.holdMinutes),
-          ...(exits
-            ? {
-                exitIn: "percent" as const,
-                stopLossPct: exits.stopPct ?? d.strategy.stopLossPct,
-                targetPct: exits.targetPct ?? d.strategy.targetPct,
-                exitOnOpposite: exits.opposite ?? d.strategy.exitOnOpposite,
-              }
-            : {}),
-        },
-      };
-    });
-  };
   const risk = <K extends keyof TradingConfig["risk"]>(key: K, value: TradingConfig["risk"][K]) => setDraft((d) => ({ ...d, risk: { ...d.risk, [key]: value } }));
   const fills = <K extends keyof TradingConfig["fills"]>(key: K, value: TradingConfig["fills"][K]) => setDraft((d) => ({ ...d, fills: { ...d.fills, [key]: value } }));
   const decision = <K extends keyof TradingConfig["decision"]>(key: K, value: TradingConfig["decision"][K]) => setDraft((d) => ({ ...d, decision: { ...d.decision, [key]: value } }));
@@ -947,17 +904,6 @@ function Settings({
       <form onSubmit={submit} className="space-y-3">
         <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           <Group title="Buy">
-            <label className="flex flex-col gap-1 text-label text-muted">
-              Entry trigger
-              <select className={fieldClass} value={draft.strategy.rule ?? draft.strategy.signal} onChange={(e) => selectTrigger(e.target.value)}>
-                <optgroup label="Signals">
-                  {SIGNALS.map((s) => <option key={s.id} value={s.id}>{withData(s.name, SIGNAL_DATA[s.id])}</option>)}
-                </optgroup>
-                <optgroup label="Decision Lab rules">
-                  {FOLLOWABLE_RULES.map((r) => <option key={r.id} value={r.id}>{withData(r.name, RULE_DATA[r.id])}</option>)}
-                </optgroup>
-              </select>
-            </label>
             <SelectField
               label="Side"
               value={draft.strategy.side}
