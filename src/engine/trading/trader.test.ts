@@ -18,6 +18,8 @@ import { buildContractBook } from "./contracts.ts";
 import type { DecisionAnswer, DecisionProvider } from "./decision.ts";
 import { createTradingStore } from "./store.ts";
 import { createTrader, type Candle, type ReplayPosition, type Trader } from "./trader.ts";
+import type { LiveBroker, PlaceRequest } from "./dhan-broker.ts";
+import { createLiveDesk } from "./live-desk.ts";
 
 const DATE = "2026-11-16";
 const OPEN = Date.UTC(2026, 10, 16, 3, 45); // 09:15 IST
@@ -115,7 +117,47 @@ interface Harness {
   close(): Promise<void>;
 }
 
-async function harness(config: { strategy?: object; decision?: object; risk?: object } = {}, extras: { moveProfile?: MoveProfile | null } = {}): Promise<Harness> {
+/** A stand-in for Dhan's order API: buys and sales fill at their limit, a stop rests. Every request is kept. */
+function fakeDhan() {
+  const placed: PlaceRequest[] = [];
+  const orders = new Map<string, { request: PlaceRequest; status: "PENDING" | "TRADED" | "CANCELLED"; filled: number }>();
+  const held = new Map<string, number>();
+  const broker: LiveBroker = {
+    async place(request) {
+      placed.push(request);
+      const orderId = `D${placed.length}`;
+      const fills = request.type !== "STOP_LOSS";
+      orders.set(orderId, { request, status: fills ? "TRADED" : "PENDING", filled: fills ? request.quantity : 0 });
+      if (fills) held.set(request.securityId, (held.get(request.securityId) ?? 0) + (request.side === "BUY" ? 1 : -1) * request.quantity);
+      return { orderId, status: fills ? "TRADED" : "PENDING" };
+    },
+    async order(orderId) {
+      const o = orders.get(orderId)!;
+      return { orderId, status: o.status, filledQty: o.filled, averagePrice: o.filled ? (o.request.price ?? 100) : null, message: null };
+    },
+    async orderByCorrelation() {
+      return null;
+    },
+    async cancel(orderId) {
+      const o = orders.get(orderId);
+      if (o?.status === "PENDING") o.status = "CANCELLED";
+    },
+    async positions() {
+      return [...held].map(([securityId, netQty]) => ({ securityId, exchangeSegment: "NSE_FNO", productType: "INTRADAY", tradingSymbol: securityId, netQty }));
+    },
+    setLossExit: async () => "ACTIVE",
+    killSwitch: async () => "INACTIVE",
+    balance: async () => 50_000,
+    whitelistedIp: async () => "140.245.240.9",
+    exitAll: async () => "SUCCESS",
+  };
+  return { broker, placed, held };
+}
+
+async function harness(
+  config: { strategy?: object; decision?: object; risk?: object } = {},
+  extras: { moveProfile?: MoveProfile | null; live?: LiveBroker } = {},
+): Promise<Harness> {
   const root = await mkdtemp(path.join(tmpdir(), "trader-test-"));
   const book = contracts();
 
@@ -160,6 +202,9 @@ async function harness(config: { strategy?: object; decision?: object; risk?: ob
       },
       publish: (update) => void published.push(update),
       ...(extras.moveProfile !== undefined ? { loadMoveProfile: async () => extras.moveProfile! } : {}),
+      ...(extras.live
+        ? { live: (hooks: { onLossLimit: (reason: string) => void; onChange: () => void }) => createLiveDesk({ notAllowed: null, directory: path.join(root, "trading"), broker: extras.live!, now: () => wall, log: quiet, ...hooks }) }
+        : {}),
     });
     return {
       trader,
@@ -680,6 +725,65 @@ test("volatility exits measure the typical move from recent days at this time of
     assert.ok(planned.move > 30 && planned.move <= 45, `move ${planned.move}`);
     assert.ok(status.events.some((e) => /from 30\.0 at this time over the last 20 days/.test(e.message)));
   } finally {
+    await h.close();
+  }
+});
+
+test("live: a paper round trip on the live run is bought, protected and sold for real at Dhan, one lot", async () => {
+  const dhan = fakeDhan();
+  const h = await harness({ strategy: { lots: 2 } }, { live: dhan.broker });
+  try {
+    await h.tickAt(OPEN - 10 * MIN);
+    const on = await h.trader.command({ action: "live-on", date: DATE });
+    assert.ok(on.ok, on.message);
+    const at = await toSignal(h);
+    // The paper entry goes out to Dhan at once, before the paper fill: one lot, whatever the paper lots.
+    assert.equal(dhan.placed.length, 1);
+    assert.deepEqual(
+      [dhan.placed[0].side, dhan.placed[0].type, dhan.placed[0].validity, dhan.placed[0].securityId, dhan.placed[0].quantity],
+      ["BUY", "LIMIT", "IOC", String(CALL_25900), LOT],
+    );
+    // The paper buy fills; Dhan's stop follows at the paper stop's 20% distance.
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), at + 400);
+    await h.tickAt(at + 1_000);
+    await h.tickAt(at + 2_000);
+    const stop = dhan.placed.find((r) => r.type === "STOP_LOSS");
+    assert.ok(stop, "a stop rests at Dhan");
+    assert.equal(stop.quantity, LOT);
+    // The paper target sells: Dhan's stop is cancelled, then one lot is sold.
+    h.feed(optionQuote(CALL_25900, 131, 130.9, 131.1), at + 60_000);
+    h.feed(optionQuote(CALL_25900, 131, 130.9, 131.1), at + 60_400);
+    for (let t = 61_000; t <= 64_000; t += 1_000) await h.tickAt(at + t);
+    const sales = dhan.placed.filter((r) => r.side === "SELL" && r.type !== "STOP_LOSS");
+    assert.equal(sales.length, 1);
+    assert.equal(sales[0].quantity, LOT);
+    assert.equal(dhan.held.get(String(CALL_25900)), 0);
+    const live = h.trader.status().live!;
+    assert.equal(live.positions[0].state, "closed");
+    assert.equal(live.positions[0].closeReason, "the paper target");
+    assert.equal(h.trader.status().trades[0].quantity, 2 * LOT, "the paper book keeps its own lots");
+    assert.equal(h.trader.live()?.on, true);
+  } finally {
+    await h.trader.stop();
+    await h.close();
+  }
+});
+
+test("live: a replay never reaches Dhan, and live can't be switched on for it", async () => {
+  const dhan = fakeDhan();
+  const h = await harness({}, { live: dhan.broker });
+  try {
+    h.state.replay = { date: DATE, at: OPEN - 10 * MIN, jumps: 0, speed: 1, ended: false };
+    await h.tickAt(OPEN - 10 * MIN);
+    const on = await h.trader.command({ action: "live-on", date: DATE });
+    assert.equal(on.ok, false);
+    const at = await toSignal(h);
+    h.feed(optionQuote(CALL_25900, 100.05, 100, 100.1), at + 400);
+    await h.tickAt(at + 1_000);
+    assert.equal(h.trader.status().positions.length, 1, "the replay trades on paper");
+    assert.equal(dhan.placed.length, 0);
+  } finally {
+    await h.trader.stop();
     await h.close();
   }
 });

@@ -4,8 +4,8 @@ import { isSignedIn } from "@/lib/auth";
 import { DEFAULT_TRADING_CONFIG, mergeTradingConfig, type TradingCommand, type TradingCommandResult } from "@/lib/engine/trading";
 import { engineConfig, engineFetch } from "@/lib/engine/web";
 
-// Commands for the engine's paper trading: start and stop, sell one position or everything, stop for the day,
-// change the settings. Server Functions are reachable by direct POST, so this checks the session
+// Commands for the engine's trading: start and stop, sell one position or everything, stop for the day,
+// change the settings, and switch the live pilot on or off for the day. Server Functions are reachable by direct POST, so this checks the session
 // and the shape of the input; the engine checks the values again.
 
 const SIMPLE = new Set(["arm", "disarm", "flatten", "halt", "resume"]);
@@ -24,8 +24,14 @@ export async function controlTrading(command: TradingCommand): Promise<TradingCo
   } else if (command.action === "sell") {
     if (typeof command.positionId !== "string" || !/^p\d{1,9}$/.test(command.positionId)) return { ok: false, message: "That trading request isn't valid." };
     body = { action: "sell", positionId: command.positionId };
-  } else if (SIMPLE.has(command.action)) {
+  } else if (command.action === "live-on") {
+    // The date the page showed: the engine switches live on only for today's live run.
+    if (typeof command.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(command.date)) return { ok: false, message: "That trading request isn't valid." };
+    body = { action: "live-on", date: command.date };
+  } else if (command.action === "live-off" || command.action === "live-exit-all") {
     body = { action: command.action };
+  } else if (SIMPLE.has(command.action)) {
+    body = { action: command.action as "arm" | "disarm" | "flatten" | "halt" | "resume" };
   } else {
     return { ok: false, message: "That trading request isn't valid." };
   }
@@ -39,6 +45,9 @@ export async function controlTrading(command: TradingCommand): Promise<TradingCo
       // An engine older than the page: nothing was done, so say why rather than "unknown command".
       if (!result.ok && body.action === "sell" && /unknown trading command/i.test(result.message)) {
         return { ok: false, message: "Nothing was sold: the engine is running older code that can't sell one position. Restart it, or use Sell open positions." };
+      }
+      if (!result.ok && body.action.startsWith("live") && /unknown trading command/i.test(result.message)) {
+        return { ok: false, message: "Nothing was done: the engine is running older code without live trading. Restart it on the new code." };
       }
       return result;
     }

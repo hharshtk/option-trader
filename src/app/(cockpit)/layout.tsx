@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { MarketHeader } from "@/components/shell/market-header";
 import { Sidebar } from "@/components/shell/sidebar";
 import { TradingHaltBanner } from "@/components/shell/trading-halt-banner";
+import { TradingLiveBanner } from "@/components/shell/trading-live-banner";
 
 export default function CockpitLayout({ children }: { children: ReactNode }) {
   return (
@@ -14,6 +15,7 @@ export default function CockpitLayout({ children }: { children: ReactNode }) {
       </a>
       <MarketHeader />
       <TradingHaltBanner />
+      <TradingLiveBanner />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
         <main id="main" tabIndex={-1} className="min-w-0 flex-1 overflow-y-auto outline-none">

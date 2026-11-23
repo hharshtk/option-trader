@@ -20,6 +20,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - To set up or move the server, follow [docs/server-setup.md](docs/server-setup.md) step by step. It lists which steps need the person and which change what the internet can reach.
 - How the engine works: [docs/engine.md](docs/engine.md). What is planned: [docs/engine-plan.md](docs/engine-plan.md).
 - What the Pulse page computes (verdict, attribution, Signal lab, option replay): [docs/pulse.md](docs/pulse.md).
-- How the engine trades (paper trading, the decision API gate, charges, Parquet tables on S3): [docs/trading.md](docs/trading.md). Live orders are not built; nothing may place an order with Dhan until that document's go-live steps are met.
+- How the engine trades (paper trading, the decision API gate, charges, Parquet tables on S3): [docs/trading.md](docs/trading.md). Live orders exist only as the one-lot pilot the owner allowed on 22 Nov 2026 ([constitution §6](docs/constitution.md#6-going-live), [trading.md](docs/trading.md#live-pilot)); nothing else may place an order with Dhan until that document's go-live steps are met, and the pilot's limits are never loosened.
 - What data there is for research (minute history, recordings) and what to watch out for: [docs/research.md](docs/research.md).
 - Storage rule: anything that needs a database is a Parquet file in the file store (S3), read and written with DuckDB through [src/lib/db/parquet-store.ts](src/lib/db/parquet-store.ts). No SQLite, no DuckDB database file.

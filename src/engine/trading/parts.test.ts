@@ -191,7 +191,7 @@ test("settings: a patch changes only what it names, and bad values are refused w
   assert.match(bad.message, /Lots must be a whole number from 1 to 50/);
   assert.match(bad.message, /Signal must be one of/);
   assert.match(bad.message, /Entries must start before they end/);
-  assert.match(bad.message, /Only paper trading is built/);
+  assert.match(bad.message, /The settings are always paper/, "live is never a saved setting");
   assert.equal(mergeTradingConfig(DEFAULT_TRADING_CONFIG, "nope").ok, false);
   // Unknown fields are ignored, not stored.
   const extra = mergeTradingConfig(DEFAULT_TRADING_CONFIG, { strategy: { leverage: 10 }, secret: 1 });

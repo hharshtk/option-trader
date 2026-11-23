@@ -37,6 +37,8 @@ import { createDecisionProviders } from "./trading/decision.ts";
 import { createCandleSource, createContractSource } from "./trading/sources.ts";
 import { createTradingStore } from "./trading/store.ts";
 import { createTrader } from "./trading/trader.ts";
+import { createDhanBroker } from "./trading/dhan-broker.ts";
+import { createLiveDesk } from "./trading/live-desk.ts";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const STATUS_INTERVAL_MS = 1_000;
@@ -193,6 +195,17 @@ const trader = createTrader({
   }),
   publish: (status) => telemetry.publish("trading", status, status.marketTime),
   loadMoveProfile: (date) => loadMoveProfile(parquet, date),
+  // The live pilot. Only the main engine may place orders: development and test engines share the Dhan account.
+  live: (hooks) =>
+    createLiveDesk({
+      notAllowed: config.port === 3100 ? null : `Live orders are placed only by the main engine (port 3100); this one is on port ${config.port}`,
+      directory: tradingDirectory,
+      broker: createDhanBroker(),
+      now: clock.now,
+      log: logs.logger("trading.live"),
+      table: { store: parquet, namespace: tradingNamespace },
+      ...hooks,
+    }),
 });
 
 // The research recorder: futures, a wide option window, 20-level depth and option chain snapshots
@@ -316,6 +329,7 @@ function status(): EngineStatus {
     replayBlocked: feeds.replayBlocked(),
     recorder: recorder.status(),
     tradingHalt: trader.halted(),
+    tradingLive: trader.live(),
   };
 }
 

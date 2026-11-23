@@ -27,6 +27,7 @@ Decided: the prediction window is 15 minutes (19 Nov 2026; 30 can be added later
 
 | What | Why it matters |
 |---|---|
+| Before the first live day: whitelist `140.245.240.9` in Dhan Web, add money, renew the token, set the daily loss limit, push and restart prod | Dhan refuses orders without the whitelist, and the live pilot runs only on the prod engine on this code. See [trading.md](trading.md#live-pilot) |
 | Back up the journal to S3 | The disk holds about 11 more trading days at about 5 GB a day (58 GB free on 19 Nov 2026). Order books and chains can't be downloaded again. The owner is doing this as a separate exercise |
 | Restart the dev engine | It runs the code below only after a restart |
 | Push to prod when ready | Prod runs older code: no decision lab, no prediction scoreboard, no one-position Sell |
@@ -37,6 +38,7 @@ Newest first.
 
 | Date | What | Where |
 |---|---|---|
+| 22 Nov 2026 | Live pilot: one real lot at Dhan copying the paper book, switched on for one day at a time on Strategies, a stop at Dhan, Dhan's P&L exit at the daily loss limit, checks against Dhan's positions; only the main engine places orders. Ahead of the go-live gate, by the constitution's amendment | [trading.md](trading.md#live-pilot), [constitution.md](constitution.md#6-going-live) |
 | 22 Nov 2026 | Strategies page: a Decision Lab tab, the lab in one plain table (every strategy by day in rupees after charges, against random trades, played with the trader's own settings, no switches). Second step in simplifying the page | [trading.md](trading.md#using-it) |
 | 22 Nov 2026 | Strategies page: a Strategy tab to pick what the trader follows, every signal and Decision Lab rule with its graded record; the picker leaves Settings. First step in simplifying the page | [trading.md](trading.md#using-it) |
 | 19 Nov 2026 | Prediction scoreboard: outcomes and calls stored per day, `GET /v1/predictions`, Pulse page panel, `npm run decide` prints it | [predictions.md](predictions.md) |

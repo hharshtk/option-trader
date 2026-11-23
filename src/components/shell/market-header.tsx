@@ -13,6 +13,7 @@ import {
 import { getProfile } from "@/lib/dhan";
 import { indexInstrument } from "@/lib/live/instruments";
 import { TokenExpiry } from "./freshness";
+import { TradingMode } from "./trading-mode";
 import { AccountMenu, BrokerStatus, MarketDataStatus, ThemeToggle } from "./header-controls";
 
 export function MarketHeader() {
@@ -40,6 +41,7 @@ async function HeaderStatus() {
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
+      <TradingMode />
       <BrokerStatus
         connected={profile.ok}
         clientId={clientId}

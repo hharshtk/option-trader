@@ -19,9 +19,10 @@ How the engine trades: what is built, how to run it, and how each number is comp
 13. [Runs and storage](#runs-and-storage)
 14. [Replays](#replays)
 15. [Control API](#control-api)
-16. [Before live orders](#before-live-orders)
-17. [Code layout](#code-layout)
-18. [Testing and changing it](#testing-and-changing-it)
+16. [Live pilot](#live-pilot)
+17. [Before live orders](#before-live-orders)
+18. [Code layout](#code-layout)
+19. [Testing and changing it](#testing-and-changing-it)
 
 ## In one paragraph
 
@@ -40,13 +41,14 @@ The engine paper-trades NIFTY options. At the close of every minute it reads the
 | NIFTY options around the money subscribed in Full mode and journaled | Built |
 | Runs stored as Parquet (S3 when configured), read back with DuckDB | Built |
 | Strategies and Activity pages | Built |
-| Live orders through Dhan | Not built. See [Before live orders](#before-live-orders) |
+| Live pilot: one real lot at Dhan copying the paper book, switched on for one day at a time | Built 22 Nov 2026, ahead of the go-live gate by the [constitution's amendment](constitution.md#6-going-live). See [Live pilot](#live-pilot) |
+| Live orders beyond the pilot | Not built. See [Before live orders](#before-live-orders) |
 | Several positions at once (**Positions at once**, default 1) | Built |
 | Futures, option selling, spreads | Not built |
 | Scalp lab: second-by-second triggers on NIFTY's future, scored after charges, never traded | Built. See [Scalp lab](#scalp-lab) |
 | Decision lab: every decision rule scored over every recorded day, after costs, never traded | Built. See [Decision lab](#decision-lab) |
 
-Nothing here can reach Dhan's order API: there is no code that places an order.
+Only the [live pilot](#live-pilot) reaches Dhan's order API, and only on the main engine (port 3100) on a day it is switched on.
 
 ## Using it
 
@@ -421,23 +423,102 @@ Added to the engine's control API ([engine.md](engine.md#control-api)); the web 
 
 | Endpoint | Returns |
 |---|---|
-| `GET /v1/trading` | `TradingStatus`: state, settings, run, contracts, signals, positions, trades, orders, proposals, decisions, log, totals |
-| `POST /v1/trading` | A command: `{ action: "arm" }`, `"disarm"`, `"flatten"`, `{ action: "sell", positionId }` (one paper position), `"halt"`, `"resume"`, or `{ action: "config", patch }`. Answers `{ ok, message }` |
+| `GET /v1/trading` | `TradingStatus`: state, settings, run, contracts, signals, positions, trades, orders, proposals, decisions, log, totals, and `live`: the live pilot's state, real positions with their orders at Dhan, totals and log |
+| `POST /v1/trading` | A command: `{ action: "arm" }`, `"disarm"`, `"flatten"`, `{ action: "sell", positionId }` (one paper position), `"halt"`, `"resume"`, `{ action: "config", patch }`, or the live pilot's `{ action: "live-on", date }` (today's date, which the page sends), `"live-off"` and `"live-exit-all"`. Answers `{ ok, message }` |
 | `GET /v1/trading/decision?id=` | What was sent to the decision API for one of the current run's decisions: `{ id, model, questions, state }`. The Strategies page shows it under **Sent** in the Decision API table |
 | `GET /v1/trading/history?run=` | Stored runs, newest first, read from Parquet; with `run`, that run's trades |
 | Telemetry topic `trading` | The status about once a second while anything changes. The lists (trades, orders, proposals, decisions, log) are included only when they changed; a page reads `GET /v1/trading` once for the rest |
 
-Types are in [trading.ts](../src/lib/engine/trading.ts).
+Types are in [trading.ts](../src/lib/engine/trading.ts) and, for the live pilot, [live.ts](../src/lib/engine/live.ts). The engine's status (`GET /v1/status`) carries `tradingLive` while live is on or real money is in play, for the bar across every page.
+
+## Live pilot
+
+Real orders with Dhan for one lot, copying the paper book, allowed by the [constitution's amendment of 22 Nov 2026](constitution.md#6-going-live) before the go-live gate is met. In [live-desk.ts](../src/engine/trading/live-desk.ts), with Dhan's API in [dhan-broker.ts](../src/engine/trading/dhan-broker.ts).
+
+**In short:** the paper book still decides. On a day you switch live on, the live desk copies the paper book's entries and exits with one real lot at Dhan, one position at a time. Paper keeps running beside it, so each real trade can be compared with its paper twin.
+
+### Before the first live day
+
+1. **Whitelist the server's IP, `140.245.240.9`, with Dhan** (Dhan Web, API settings). Dhan refuses every order from any other address, and a whitelisted IP can't be changed for 7 days. The address is ephemeral: it stays while this VM exists, but a rebuilt VM gets a new one, and live trading then waits until that is whitelisted.
+2. **Add money to the Dhan account.** One lot (65) of an at-the-money option costs about ₹6,500 to ₹10,000.
+3. **Renew the Dhan access token** on the Settings page. It lasts 24 hours.
+4. **Set the daily loss limit** (Settings, Limits). It becomes Dhan's P&L exit when live is switched on.
+5. **Push, and restart the prod engine** on this code. Vercel deploys the page from the push.
+
+### Each live day
+
+1. From 08:55 (the live run starts 20 minutes before the open), open **Strategies**, press **Trade live today** and confirm. The engine checks that Dhan's kill switch is off, sets Dhan's P&L exit at the daily loss limit with the kill switch, and reads the cash and the whitelisted IP. If the P&L exit can't be set, live stays off.
+2. **Start paper trading** must be on as well: the live desk copies only paper entries.
+3. Watch the **Live trading** panel at the top of Strategies, and the bar across every page. The mode button at the top left of every page says which mode is in force: **Paper** (blue) while nothing is sent to Dhan, **Live** (solid red, with a pulsing dot) while real orders follow the paper book, **Live off** (amber) while live is off but a real position is still held. It opens Strategies; it switches nothing itself.
+4. Live is off again the next day.
+
+### What it does
+
+| The paper book | The live desk at Dhan |
+|---|---|
+| Opens a position on the paper book (never the shadow book) | Buys one lot of the same contract at once: a limit order 1% above the ask (at least 3 ticks), immediate-or-cancel. If nothing trades at that price, nothing is held |
+| Its buy fills | Places a stop-loss order (SL-L) at Dhan for the lot: the trigger keeps the paper stop's distance below the real fill price, the limit is 10% below the trigger. Without a paper stop, 30% below |
+| Sells for any reason (stop, target, hold time, opposite signal, square-off, Sell, Stop for the day), or the position disappears | Cancels Dhan's stop and waits for Dhan to confirm, reads Dhan's positions, and sells what both Dhan and its own orders show held: a limit 2% below the bid, then 5%, then 10%, each cancelled if unfilled after 4 seconds, then at market |
+| Holds a second position | Not copied: one real position at a time |
+
+- **Product** INTRADAY on NSE F&O. Dhan squares off anything still held at its own cut-off.
+- **Order states** are read from Dhan every second (the resting stop every 3 seconds). An order whose answer was lost (a timeout, a network error) is looked up by its correlation id, never sent again; after 20 seconds without a record at Dhan it counts as not placed.
+- **Engine restarts:** every change goes to `data/engine/trading/live/<date>.jsonl`. A restarted engine reads it back and carries on with the position and Dhan's stop. Nothing is sold while the live run is still starting.
+- **Replays** never reach Dhan. Starting one ends the live run, and the desk sells what it holds.
+- **Charges** are worked out per executed order, as for paper. A sale split over several orders pays ₹20 brokerage on each.
+- **Losses:** the day's real result, closed and open, counts against the daily loss limit. At the limit the engine stops for the day, which sells everything, and live goes off. Dhan's P&L exit is the backstop if the engine is down.
+
+### When it switches itself off
+
+Live goes off for the rest of the day, and never back on by itself, when:
+
+- Dhan refuses or rejects a buy (not enough money, IP not whitelisted, kill switch on, price band).
+- Dhan's positions differ from the engine's orders in a contract it traded today, on two checks a minute apart.
+- The day's real loss reaches the daily loss limit.
+- A call fails because the token or the IP isn't accepted.
+
+A real position held when live goes off is still sold with its paper position. You can switch live on again the same day.
+
+### What it never does
+
+- **Sell more than is held.** It sells the smaller of what its own orders and Dhan's positions show. If Dhan shows nothing (sold in the Dhan app, or by Dhan's P&L exit), it sells nothing and raises an alert.
+- **Sell while Dhan's stop is still open,** which could sell twice. A stop that won't cancel within 15 seconds raises an alert instead.
+- **Sell alongside Dhan's exit-all.** After **Exit everything at Dhan** it only waits for Dhan to sell.
+- **Place orders from another engine.** Only the main engine (port 3100) may; development and test engines show why not.
+
+### Buttons
+
+| Button | Does |
+|---|---|
+| Trade live today | Switches live on for today, after the checks above |
+| Turn live off | No new real orders. A real position held is still sold with its paper position |
+| Exit everything at Dhan | Dhan's own exit-all (`DELETE /v2/positions`): sells every position and cancels every open order in the account, including ones opened in the Dhan app. Live goes off |
+
+The panel shows the real P&L after charges, each real position with Dhan's stop, every order sent to Dhan with Dhan's answer, and the live log. An alert in red needs a look in the Dhan app.
+
+### Records
+
+| Where | Holds |
+|---|---|
+| `data/engine/trading/live/<date>.jsonl` | Every change: live switched on or off, each real position with its orders, the log |
+| `trading/<namespace>/live-orders/<date>.parquet` | One row per order sent to Dhan, with its fill and the position's result, written when a position closes |
+
+### Not done yet
+
+- Order states come from polling, not Dhan's order-update WebSocket.
+- Dhan's kill switch hasn't been tested on its own; Dhan's P&L exit turns it on.
+- A daily loss limit changed after live is on reaches Dhan only when live is switched off and on again.
+- Real and paper fills are shown side by side only on the Strategies page; no report compares them over days yet.
 
 ## Before live orders
 
-Live orders are a separate step (E8 in the [engine plan](engine-plan.md#e8-live-orders)), and not a switch in this code. What it needs:
+Live orders beyond the [pilot](#live-pilot) are a separate step (E8 in the [engine plan](engine-plan.md#e8-live-orders)). What they need, and where the pilot stands on each:
 
-1. **Paper results first.** The go-live gate in the engine plan: weeks of live-feed paper runs, positive after charges, and the same days replayed giving the same trades.
-2. **A static IP whitelisted with Dhan.** Dhan refuses orders from any other address, and the whitelist can change only once every 7 days. The VM's IP is still ephemeral.
-3. **A Dhan adapter** next to [paper-broker.ts](../src/engine/trading/paper-broker.ts): place and cancel with a correlation id, fills from the order-update WebSocket, reconciliation against Dhan's positions.
-4. **Broker-side protection:** exits as Super Orders, `/pnlExit` set, `/killswitch` tested.
-5. **Depth checked** against the market (see [Paper fills](#paper-fills)), since paper fills are only as good as the quotes.
+1. **Paper results first.** The go-live gate in the engine plan: weeks of live-feed paper runs, positive after charges, and the same days replayed giving the same trades. Not met: the pilot runs ahead of it by the owner's choice.
+2. **A static IP whitelisted with Dhan.** Dhan refuses orders from any other address, and the whitelist can change only once every 7 days. The pilot uses the VM's ephemeral IP; a reserved one is still to come.
+3. **A Dhan adapter** next to [paper-broker.ts](../src/engine/trading/paper-broker.ts): place and cancel with a correlation id, fills from the order-update WebSocket, reconciliation against Dhan's positions. Built for the pilot, polling for fills instead of the WebSocket.
+4. **Broker-side protection:** exits as Super Orders, `/pnlExit` set, `/killswitch` tested. The pilot rests a stop-loss order at Dhan and sets `/pnlExit` with the kill switch; the kill switch isn't tested on its own.
+5. **Depth checked** against the market (see [Paper fills](#paper-fills)), since paper fills are only as good as the quotes. Each real order records the engine's bid and ask when it was sent, beside Dhan's fill.
 
 ## Code layout
 
@@ -445,6 +526,7 @@ Live orders are a separate step (E8 in the [engine plan](engine-plan.md#e8-live-
 src/lib/trading/charges.ts            Dhan's charges, shared by engine and web
 src/lib/trading/exits.ts              stop and target prices, in % or in rupees after charges (scalping)
 src/lib/engine/trading.ts             types and settings shared by engine and web
+src/lib/engine/live.ts                the live pilot's types, shared by engine and web
 src/lib/db/parquet-store.ts           Parquet tables in the file store, through DuckDB
 src/engine/trading/
   trader.ts                           runs, proposals, orders, exits, limits, status, commands
@@ -456,6 +538,8 @@ src/engine/trading/
   sources.ts                          instrument file download and Dhan candles
   run-log.ts                          the run's local log and reading it back
   store.ts                            the Parquet tables
+  live-desk.ts                        the live pilot: real orders copying the paper book, its checks and its local log
+  dhan-broker.ts                      Dhan's order API for the live desk: place, look up, cancel, positions, P&L exit
   scalp-lab.ts                        fast triggers on the future, scored after charges, never traded
   scalp-lab-cli.ts                    npm run scalp:lab: scores a recorded day
 src/lib/decide/
@@ -478,7 +562,7 @@ The engine's feed passes every frame, with its market time, to `trader.onFrame()
 
 ## Testing and changing it
 
-`npm run test:engine` covers the trader end to end on fakes ([trader.test.ts](../src/engine/trading/trader.test.ts)) its parts ([parts.test.ts](../src/engine/trading/parts.test.ts)) and the decision API's context ([decision-state.test.ts](../src/engine/trading/decision-state.test.ts)); `node --test src/lib/trading/*.test.ts src/lib/db/*.test.ts` covers charges and the Parquet store. No test calls Dhan, OpenRouter or S3.
+`npm run test:engine` covers the trader end to end on fakes ([trader.test.ts](../src/engine/trading/trader.test.ts)), the live desk against a fake Dhan ([live-desk.test.ts](../src/engine/trading/live-desk.test.ts)), its parts ([parts.test.ts](../src/engine/trading/parts.test.ts)) and the decision API's context ([decision-state.test.ts](../src/engine/trading/decision-state.test.ts)); `node --test src/lib/trading/*.test.ts src/lib/db/*.test.ts` covers charges and the Parquet store. No test calls Dhan, OpenRouter or S3.
 
 To run a whole day against the real services without touching either running engine, start a third engine on a copy of a journal:
 

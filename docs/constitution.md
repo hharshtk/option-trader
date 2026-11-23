@@ -35,7 +35,7 @@ Replay plays a recorded day through the same loop, to check and debug it. The de
 - **Not a collection of knobs.** A setting is added only when the loop can't run without it, never just to explore.
 - **Not a tuning machine.** Nothing is fitted to past days to make a result look good.
 - **Long options only.** It buys calls and puts. Option selling, spreads and futures trading stay out until an amendment adds them.
-- **Not live trading, yet.** See [Going live](#6-going-live).
+- **Not live trading, beyond a one-lot pilot.** See [Going live](#6-going-live).
 
 ## 4. Principles
 
@@ -66,6 +66,16 @@ When a request fails a check, say which check and ask. The owner may still decid
 
 No code places an order with Dhan until every check of the go-live gate holds and the owner signs off: see [engine-plan.md](engine-plan.md#go-live-gate) and [trading.md](trading.md#before-live-orders). Live is never the default.
 
+**The one-lot pilot** is the one exception: the owner chose it on 22 Nov 2026, before the gate is met, knowing no prediction has proven itself yet. Its limits hold for as long as it runs and are never loosened to make a result look better:
+
+- One lot and one position at a time, NIFTY options bought (long only), copying the paper book's entries and exits. The paper book keeps running beside it.
+- Switched on by the owner on the web for one day at a time. It is off again the next day.
+- Only the main engine (port 3100) places orders.
+- A stop-loss order rests at Dhan for every real position, and Dhan's P&L exit with its kill switch is set at the daily loss limit before the first order.
+- It switches itself off, and never back on by itself, on a refused order, a difference between Dhan's positions and the engine's orders, or the day's loss limit.
+
+More lots, more positions at once, or trading without the paper book still wait for the full gate. The pilot is judged like paper: in rupees after charges, trade by trade against the paper book. How it works: [trading.md](trading.md#live-pilot).
+
 ## 7. House rules
 
 - **Storage.** Anything that needs a database is a Parquet file in the file store (S3), read and written with DuckDB through [parquet-store.ts](../src/lib/db/parquet-store.ts). No SQLite, and no DuckDB database file.
@@ -79,3 +89,4 @@ Only the owner changes this document. Each amendment records what changed, when 
 | Date | Change | Why |
 |---|---|---|
 | 19 Nov 2026 | Written | A date-range backtester was proposed and rejected as drift from live prediction, the second such proposal after the research center and strategy store were parked on 18 Nov 2026 |
+| 22 Nov 2026 | §3 and §6: a one-lot live pilot, allowed before the go-live gate, with fixed limits | The owner chose to trade real money from 23 Nov 2026 and accepted the risk, knowing the gate isn't met: 4 live paper sessions of the 20 it asks for, nothing yet ahead of a coin flip after charges, Dhan's P&L exit and kill switch not set |

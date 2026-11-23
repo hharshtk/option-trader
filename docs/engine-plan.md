@@ -390,6 +390,8 @@ Architecture phase 6.
 ### E8: live orders
 
 Architecture phase 7. Built only after E7's gate is met.
+
+**Exception, 22 Nov 2026:** the owner amended the constitution for a one-lot pilot ahead of the gate ([constitution §6](constitution.md#6-going-live)). What it built and how it differs from the list below (stop-loss orders instead of Super Orders, polling instead of the order-update WebSocket, the kill switch reached through `/pnlExit` and not tested on its own): [trading.md](trading.md#live-pilot).
 - **Dhan adapter.** Place, modify and cancel through the `order` rate-limit bucket, with a correlation id on every order. Exits as broker-side Super Orders.
 - **Order updates** from the order-update WebSocket, REST as fallback. A reconciler checks orders and positions at start and every minute.
 - **Broker-side limits** set before the first order: `/pnlExit` with the daily loss limit, and `/killswitch` tested.

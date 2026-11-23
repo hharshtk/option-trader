@@ -1,6 +1,6 @@
 "use client";
 
-// The Strategies page: the engine's paper trading. Which strategy it follows, what it is doing now,
+// The Strategies page: the engine's paper trading, and the live pilot's real orders above it. Which strategy it follows, what it is doing now,
 // the open position, the day's trades after charges, what the decision API said about each entry,
 // the settings, and the runs stored as Parquet. The engine does the trading; this page shows it and sends commands.
 
@@ -42,6 +42,7 @@ import { breakevenSellPrice } from "@/lib/trading/charges";
 import { exitLevels } from "@/lib/trading/exits";
 import { clock, DataTags, EXIT_REASON, fieldClass, NoTrading, useTrading, Vote } from "./shared";
 import { DecisionLabPanel } from "./decision-lab-panel";
+import { LivePanel } from "./live-panel";
 import { LabTab } from "./lab-tab";
 import { ScalpLabPanel } from "./scalp-lab-panel";
 import { SettingsSummary } from "./settings-summary";
@@ -86,7 +87,7 @@ export function TradingConsole() {
         title="Strategies"
         meta={
           <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-            <Tag>Paper</Tag>
+            {trading.live?.on ? <span className="rounded-sm bg-down px-1 text-[0.625rem] leading-4 font-semibold tracking-wide text-white uppercase">Live + paper</span> : <Tag>Paper</Tag>}
             <ScalpingBadge config={config} />
             <span>{trading.source === "replay" ? `Replay of ${run?.date ?? "a recorded day"}` : "Live market"}</span>
             <span className="tabular-nums">{clock(trading.marketTime)} IST</span>
@@ -123,6 +124,7 @@ export function TradingConsole() {
 
       <div className="space-y-2 p-2 sm:p-3">
         <Notices trading={trading} result={result} onDismiss={dismiss} />
+        <LivePanel trading={trading} pending={pending} send={send} />
         <Tabs defaultValue={section ?? "strategy"} onValueChange={setSection} className="space-y-3">
           <TabsList aria-label="Strategies" className="flex flex-wrap gap-1 border-b border-line">
             {Object.entries({ strategy: "Strategy", lab: "Decision Lab", run: "Current run", research: "Signal research", history: "Stored runs", settings: "Settings" }).map(([id, label]) => (

@@ -470,6 +470,8 @@ export interface EngineStatus {
   recorder?: RecorderStatus;
   /** Set while paper trading is stopped for the day (the daily loss limit, losses in a row, or by hand), with why and when. */
   tradingHalt?: { reason: string; at: number; source: "live" | "replay" } | null;
+  /** Set while live trading is on, or real positions are held, or something at Dhan needs a look. Absent from older engines. */
+  tradingLive?: { on: boolean; date: string; holding: number; net: number; alert: string | null } | null;
 }
 
 /**

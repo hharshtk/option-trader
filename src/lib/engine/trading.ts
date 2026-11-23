@@ -3,6 +3,7 @@
 // (`POST /v1/trading`). Plain TypeScript, so both sides can load it.
 
 import type { Charges } from "../trading/charges.ts";
+import type { LiveCommand, LiveStatus } from "./live.ts";
 
 /** Which signal from the Pulse signal lab the strategy follows. */
 export type SignalId = "breadth" | "lead" | "momentum" | "flow" | "buildup" | "writers" | "book20" | "agree" | "confirmed";
@@ -90,7 +91,10 @@ export const DECISION_PROVIDERS: readonly { id: DecisionProviderId; name: string
 export interface TradingConfig {
   /** New entries are taken only while armed. Exits always run. */
   armed: boolean;
-  /** Paper fills are simulated. Live orders are not built yet. */
+  /**
+   * Always "paper": this book's fills are simulated. Real orders are a separate switch, for one day
+   * at a time on the Strategies page (the live pilot, live.ts), never a saved setting.
+   */
   mode: "paper";
   /** Keep NIFTY options around the money subscribed in Full mode, so every session records them. */
   recordOptions: boolean;
@@ -321,7 +325,7 @@ export function mergeTradingConfig(base: TradingConfig, patch: unknown): { ok: t
   apply(next, top, "armed", bool, "Armed");
   apply(next, top, "recordOptions", bool, "Record options");
   apply(next, top, "windowStrikes", (v, n) => number(v, n, 1, 25, true), "Strikes each side");
-  if (top.mode !== undefined && top.mode !== "paper") problems.push("Only paper trading is built; live orders come later");
+  if (top.mode !== undefined && top.mode !== "paper") problems.push("The settings are always paper: live trading is switched on for one day at a time on the Strategies page");
 
   const strategy = section("strategy");
   if (strategy) {
@@ -706,6 +710,8 @@ export interface TradingStatus {
   prices: Record<string, { price: number; at: number }>;
   /** The scalp lab: fast triggers scored after charges, never traded. Absent from an older engine. */
   scalpLab?: ScalpLabStatus;
+  /** The live pilot: real orders with Dhan following this paper book. Absent from an older engine. */
+  live?: LiveStatus;
 }
 
 export type ScalpTriggerId = "burst" | "fade" | "lean" | "baseline";
@@ -768,7 +774,8 @@ export type TradingCommand =
   /** Stop trading for the day and sell open positions; `resume` lifts it. */
   | { action: "halt" }
   | { action: "resume" }
-  | { action: "config"; patch: unknown };
+  | { action: "config"; patch: unknown }
+  | LiveCommand;
 
 export interface TradingCommandResult {
   ok: boolean;

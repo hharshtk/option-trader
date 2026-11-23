@@ -71,6 +71,8 @@ import type { TradingStore } from "./store.ts";
 import { createScalpLab } from "./scalp-lab.ts";
 import { NIFTY_CONSTITUENTS, readSignal } from "./strategy.ts";
 import type { IndexFuture } from "../recording/futures.ts";
+import type { LiveCommand } from "../../lib/engine/live.ts";
+import type { DeskContext, LiveDesk, PaperView } from "./live-desk.ts";
 
 const NIFTY_KEY = `IDX_I:${INDEX.NIFTY.securityId}`;
 const SEGMENT = "NSE_FNO";
@@ -143,6 +145,11 @@ export interface TraderOptions {
   loadMoveProfile?: (date: string) => Promise<MoveProfile | null>;
   /** Sends the status to the web: the lists only when they changed since the last call. */
   publish: (update: TradingUpdate) => void;
+  /**
+   * The live desk, for the one-lot pilot: real orders with Dhan that follow the paper book while live
+   * is switched on for the day. Absent in tests of the paper book alone.
+   */
+  live?: (hooks: { onLossLimit: (reason: string) => void; onChange: () => void }) => LiveDesk;
 }
 
 export interface Trader {
@@ -155,6 +162,8 @@ export interface Trader {
   status(): TradingStatus;
   /** Why trading is stopped for the day, if it is: cheap enough for the engine's status every second. */
   halted(): { reason: string; at: number; source: "live" | "replay" } | null;
+  /** Live trading's one line for every page: null while it is off and nothing real is held. */
+  live(): ReturnType<LiveDesk["summary"]>;
   command(body: unknown): Promise<TradingCommandResult>;
   history(run: string | null): Promise<TradingHistory>;
   /** What was sent to the decision API for one of the current run's decisions, or null when there is no such decision. */
@@ -253,6 +262,17 @@ export function createTrader(options: TraderOptions): Trader {
   const touch = () => {
     revision += 1;
   };
+
+  // Real orders follow the paper book while live is on. The day's live loss limit stops the day, as the paper one does.
+  const live =
+    options.live?.({
+      onLossLimit: (reason) => {
+        const active = run;
+        if (active && !active.halt) halt(active, reason);
+        touch();
+      },
+      onChange: touch,
+    }) ?? null;
 
   // --- Records ---------------------------------------------------------------------------------
 
@@ -575,6 +595,8 @@ export function createTrader(options: TraderOptions): Trader {
 
   /** Sells what is open at the last known prices and closes the run. */
   async function endRun(active: ActiveRun, reason: string, flatten: boolean) {
+    // Real positions never outlive the live run that bought them.
+    if (active.info.source === "live") live?.runEnded(reason);
     if (flatten) {
       for (const position of [...active.positions]) {
         if (position.status === "opening") continue;
@@ -669,6 +691,7 @@ export function createTrader(options: TraderOptions): Trader {
     active.orders.push(order);
     record(active, { kind: "order", order });
     record(active, { kind: "position", position });
+    if (position.book === "paper") syncLive();
     return order;
   }
 
@@ -1186,6 +1209,7 @@ export function createTrader(options: TraderOptions): Trader {
     settle(book === "paper" ? "taken" : "shadowed", book === "paper" ? null : active.decisions.find((d) => d.id === intent.decisionId)?.reason ?? null);
     record(active, { kind: "order", order });
     subscribe(active);
+    if (book === "paper") syncLive();
     // Against a candle there is no later tick to wait for: fill at the close just seen.
     if (latest.candleOpen !== null) applyFill(active, fillOrder(order, latest, marketTime, config.fills));
   }
@@ -1256,6 +1280,51 @@ export function createTrader(options: TraderOptions): Trader {
   }
 
   // --- Status ----------------------------------------------------------------------------------
+
+  // --- Live orders -----------------------------------------------------------------------------
+
+  const SALE_REASON: Record<ExitReason, string> = {
+    stop: "the paper stop",
+    trail: "the paper trailing stop",
+    target: "the paper target",
+    time: "the hold time is over",
+    opposite: "an opposite signal",
+    "square-off": "square-off",
+    manual: "sold by you",
+    halt: "trading stopped for the day",
+  };
+
+  function paperView(active: ActiveRun, position: Position): PaperView {
+    const sale = position.status === "closing" ? active.orders.findLast((o) => o.positionId === position.id && o.side === "SELL" && o.status === "pending") : undefined;
+    return {
+      id: position.id,
+      status: position.status,
+      contract: position.contract,
+      stopFraction: position.status !== "opening" && position.stopPrice !== null && position.entryPrice > 0 ? (position.entryPrice - position.stopPrice) / position.entryPrice : null,
+      exitReason: position.status !== "closing" ? null : sale && sale.reason !== "entry" ? SALE_REASON[sale.reason] : "sold on paper",
+    };
+  }
+
+  /** What the live desk follows: today's live run's paper book, once its contracts are loaded. */
+  function deskContext(): DeskContext {
+    const active = run;
+    const today = calendar.istDate(now());
+    const ready = active !== null && !changing && active.ready && active.info.source === "live" && options.replay() === null && active.info.date === today;
+    return {
+      date: today,
+      runId: active?.info.id ?? null,
+      ready,
+      positions: ready && active ? active.positions.filter((p) => p.book === "paper").map((p) => paperView(active, p)) : [],
+      quote: (key) => market.get(key),
+      marketTime: marketTime || now(),
+      lossLimit: config.risk.maxDailyLoss,
+    };
+  }
+
+  /** Tells the live desk at once that the paper book opened or started selling a position. */
+  function syncLive() {
+    if (live) live.update(deskContext());
+  }
 
   function contractsStatus(active: ActiveRun | null): ContractsStatus {
     if (!active) return { fileDate: null, stale: false, expiry: null, daysToExpiry: null, lotSize: null, atmStrike: null, subscribed: 0, problem: null };
@@ -1345,12 +1414,15 @@ export function createTrader(options: TraderOptions): Trader {
       aiCheckData: AI_CHECK_DATA,
       prices,
       scalpLab: lab.status(),
+      ...(live ? { live: live.status() } : {}),
     };
   }
 
   function reportHealth() {
     const active = run;
-    if (active?.saveError) health.set("trading", "degraded", `Tables not saved: ${active.saveError}`);
+    const liveAlert = live?.alert();
+    if (liveAlert) health.set("trading", "degraded", `Live: ${liveAlert}`);
+    else if (active?.saveError) health.set("trading", "degraded", `Tables not saved: ${active.saveError}`);
     else if (active?.halt) health.set("trading", "degraded", `Stopped for the day: ${active.halt.reason}`);
     else if (active && config.armed && active.ready && (!active.book || !active.expiry)) health.set("trading", "degraded", active.contractsProblem ?? "No option contracts");
     else if (config.armed && config.decision.mode !== "off" && !decisions[config.decision.provider].ready) {
@@ -1408,6 +1480,7 @@ export function createTrader(options: TraderOptions): Trader {
       }
     }
 
+    live?.update(deskContext());
     reportHealth();
     const wall = now();
     if (revision !== publishedRevision || wall - publishedAt >= PUBLISH_EVERY_MS || (run?.positions.length ?? 0) > 0) {
@@ -1508,6 +1581,20 @@ export function createTrader(options: TraderOptions): Trader {
         touch();
         return { ok: true, message: "Settings saved. Open positions keep the stop and target they were opened with." };
       }
+      case "live-on":
+      case "live-off":
+      case "live-exit-all": {
+        if (!live) return { ok: false, message: "This engine has no live desk." };
+        if (request.action === "live-on" && (typeof request.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(request.date))) {
+          return { ok: false, message: "That live trading request isn't valid." };
+        }
+        const result = await live.command(request as unknown as LiveCommand, deskContext());
+        // The desk copies paper entries only: with entries off nothing is bought.
+        if (result.ok && request.action === "live-on" && !config.armed) result.message += " Entries are off: press Start paper trading too, or nothing is bought.";
+        if (result.ok && active) event(active, "risk", `Live: ${result.message}`);
+        touch();
+        return result;
+      }
       default:
         return { ok: false, message: "Unknown trading command." };
     }
@@ -1536,6 +1623,7 @@ export function createTrader(options: TraderOptions): Trader {
     tick,
     status,
     halted: () => (run?.halt ? { ...run.halt, source: run.info.source } : null),
+    live: () => live?.summary() ?? null,
     command,
     history: (id) => store.history(id),
     decisionRequest(id) {
@@ -1545,6 +1633,8 @@ export function createTrader(options: TraderOptions): Trader {
     },
     async stop() {
       await settle();
+      // Real positions stay at Dhan with their stop resting; a restarted engine carries on with them.
+      await live?.stop();
       const active = run;
       if (!active) return;
       active.info = { ...active.info, endedAt: now() };
@@ -1555,6 +1645,9 @@ export function createTrader(options: TraderOptions): Trader {
       await active.log.close();
       run = null;
     },
-    idle: settle,
+    async idle() {
+      await settle();
+      await live?.idle();
+    },
   };
 }
