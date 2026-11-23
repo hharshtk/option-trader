@@ -176,8 +176,10 @@ export function createDhanBroker(): LiveBroker {
       call(async () => {
         // Dhan's table says floats, its example sends strings: try the first, fall back to the second.
         // The profit side is set out of reach: the pilot exits on losses only.
+        // Dhan's docs leave dhanClientId out of this body, but without it Dhan answers DH-905 "client ID is required".
+        const dhanClientId = await clientId();
         const send = (profitValue: number | string, lossValue: number | string) =>
-          dhanRequest<unknown>("POST", "/pnlExit", { body: { profitValue, lossValue, productType: ["INTRADAY"], enableKillSwitch: true } });
+          dhanRequest<unknown>("POST", "/pnlExit", { body: { dhanClientId, profitValue, lossValue, productType: ["INTRADAY"], enableKillSwitch: true } });
         let answer: unknown;
         try {
           answer = await send(10_000_000, loss);
