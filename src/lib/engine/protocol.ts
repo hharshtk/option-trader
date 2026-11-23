@@ -466,6 +466,7 @@ export interface EngineStatus {
   replay?: ReplayStatus | null;
   /** Why a replay can't start now (a session is open or opens within 30 minutes); null when it can. */
   replayBlocked?: string | null;
+  ofiReplay?: boolean;
   /** Absent from engines older than the recorder. */
   recorder?: RecorderStatus;
   /** Set while paper trading is stopped for the day (the daily loss limit, losses in a row, or by hand), with why and when. */

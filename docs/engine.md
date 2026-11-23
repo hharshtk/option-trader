@@ -323,6 +323,8 @@ Full explanation: [journal.md](journal.md). In short: every raw WebSocket frame,
 
 For working on the app while the market is closed: the engine plays a recorded day back through a stand-in for Dhan's WebSocket, so every page shows that day's prices at their recorded pace. The feed opens the stand-in exactly as it opens Dhan, sends it the same subscribe requests and receives the same binary frames, so the hub, quote streams, Live Feed page and everything built on them run unchanged.
 
+**Compare 5-level OFI.** On Engine → Overview → Feed source, choose a recorded day and click **Compare 5-level OFI**. The background comparison reads that day's journals and grades breadth alone and breadth with OFI on the same opportunities. It shows after-cost rupees for a 15-minute hold, trades taken, coverage, and what breadth earned on each group of OFI skips. Open **Execution delays** to see the sensitivity. Comparisons start outside the market recording window. [Frozen experiment](nifty-futures-ofi-experiment-2026-11-23.md)
+
 **Switching.** On the Engine page, Overview → Feed source: pick a day, a start time and a speed, then Start replay. While replaying, the same panel has play/pause, speeds ×1 to ×300, a scrubber, Jump to a time, and Back to live. The header shows a **Replay** tag next to the Engine dot on every page, and the Engine page a banner. Or start the engine straight into a replay:
 
 ```bash

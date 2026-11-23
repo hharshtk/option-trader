@@ -17,7 +17,7 @@ Make every recorded minute count as a graded prediction, add the recorded data t
 | Step | What | State |
 |---|---|---|
 | 1 | **Grade every minute.** Every signal, rule and baseline graded on every minute of every recorded day, 15 minutes later, in rupees from the recorded option prices after charges, against a coin flip at the same minutes. On the Pulse page | Built 19 Nov 2026. [predictions.md](predictions.md) |
-| 2 | **Read the ignored data.** New readings in each minute's record, each fixed on the day it's written and graded from the next day: option buyers against sellers near the money (every option trade is recorded; only open interest is read), changes in the order book within the minute (big orders appearing or pulled; today one snapshot a minute is read), whether BANKNIFTY moves first (recorded, unread), and per-strike shifts in open interest and volatility from the chain | Next |
+| 2 | **Read the ignored data.** New readings in each minute's record, each fixed on the day it's written and graded from the next day: option buyers against sellers near the money (every option trade is recorded; only open interest is read), changes in the order book within the minute (big orders appearing or pulled; today one snapshot a minute is read), whether BANKNIFTY moves first (recorded, unread), and per-strike shifts in open interest and volatility from the chain | [Five-level futures OFI](nifty-futures-ofi-experiment-2026-11-23.md) can be compared on one recorded day from the Engine page. Forward shadow grading is next. |
 | 3 | **The decision API every 5 minutes.** Asked which way NIFTY goes in the next 15 minutes, by how much and how sure it is, with the richer context; its answers graded on the same scoreboard. Liquid, about 75 answers a day | Next, alongside step 2 |
 | 4 | **Trade only on what's proven.** After 20 sessions, the trader follows the predictor that beat the baselines after costs, at the confidence where it's reliable | After 20 sessions |
 
@@ -38,6 +38,7 @@ Newest first.
 
 | Date | What | Where |
 |---|---|---|
+| 23 Nov 2026 | Recorded-day comparison of Breadth thrust with five-level futures OFI, using the frozen 15-minute experiment | [Engine replay](engine.md#replay) |
 | 22 Nov 2026 | Live pilot: one real lot at Dhan copying the paper book, switched on for one day at a time on Strategies, a stop at Dhan, Dhan's P&L exit at the daily loss limit, checks against Dhan's positions; only the main engine places orders. Ahead of the go-live gate, by the constitution's amendment | [trading.md](trading.md#live-pilot), [constitution.md](constitution.md#6-going-live) |
 | 22 Nov 2026 | Strategies page: a Decision Lab tab, the lab in one plain table (every strategy by day in rupees after charges, against random trades, played with the trader's own settings, no switches). Second step in simplifying the page | [trading.md](trading.md#using-it) |
 | 22 Nov 2026 | Strategies page: a Strategy tab to pick what the trader follows, every signal and Decision Lab rule with its graded record; the picker leaves Settings. First step in simplifying the page | [trading.md](trading.md#using-it) |

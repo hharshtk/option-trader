@@ -29,6 +29,7 @@ import { INDEX } from "../lib/dhan/instruments.ts";
 import { createDepthFeed } from "./recording/depth-feed.ts";
 import { chainView, createLiveSideData, depthView } from "./replay/side-data.ts";
 import { createDecisionJob } from "./decide/job.ts";
+import { createOfiJob } from "./replay/ofi-job.ts";
 import { createDecisionLab } from "./decide/lab.ts";
 import { loadMoveProfile } from "./trading/move-history.ts";
 import { createFuturesSource } from "./recording/futures.ts";
@@ -247,6 +248,9 @@ const decisions = createDecisionJob({
   root: ROOT,
   dataDir: config.dataDir,
 });
+const ofiReplay = createOfiJob({
+  directory: path.join(config.dataDir, "journal"), calendar, now: clock.now, blocked: () => feeds.replayBlocked(),
+});
 
 const recorder = createRecorder({
   log: recorderLog,
@@ -327,6 +331,7 @@ function status(): EngineStatus {
     process: processStats,
     replay: feeds.replayStatus(),
     replayBlocked: feeds.replayBlocked(),
+    ofiReplay: true,
     recorder: recorder.status(),
     tradingHalt: trader.halted(),
     tradingLive: trader.live(),
@@ -348,6 +353,7 @@ const server = createControlServer({
     trader.tick();
     return result;
   },
+  ofiReplay,
   // During a replay, the replayed day reads as far as the replay has reached (and is the default).
   journalSession: (date) => {
     const day = date ?? feeds.replayDate() ?? calendar.istDate(clock.now());
@@ -424,6 +430,7 @@ async function start() {
       trader.tick();
       recorder.tick();
       decisions.tick();
+      ofiReplay.tick();
       metrics.gauge("api.clients", server.clients);
       telemetry.publish("status", status());
     }, STATUS_INTERVAL_MS),
@@ -451,6 +458,7 @@ async function stop(reason: string, code = 0) {
   await trader.stop().catch((error: unknown) => log.error("trading did not stop cleanly", { error: String(error) }));
   recorder.shutdown();
   decisions.shutdown();
+  ofiReplay.shutdown();
   feeds.shutdown();
   journal.control("engine-stop", { reason }, clock.now());
   await Promise.all([journal.close(), depthJournal.close(), chainJournal.close()]);

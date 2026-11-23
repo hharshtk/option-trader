@@ -30,7 +30,7 @@ function roundToTick(price: number, tick: number, side: "BUY" | "SELL") {
 }
 
 /** The price `order` fills at against `quote`. */
-export function fillPrice(order: Pick<Order, "side" | "reason" | "trigger" | "contract">, quote: MarketQuote, fills: TradingConfig["fills"]): Fill {
+export function fillPrice(order: Pick<Order, "side" | "reason" | "trigger"> & { contract: Pick<Order["contract"], "tickSize"> }, quote: MarketQuote, fills: TradingConfig["fills"]): Fill {
   const tick = order.contract.tickSize;
   const buy = order.side === "BUY";
   let price: number;
