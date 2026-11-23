@@ -96,9 +96,11 @@ export function readOrder(value: unknown): BrokerOrder {
 }
 
 // The errors that mean the account can't place orders right now, whatever is sent.
-const FATAL = /static ip|whitelist|kill ?switch|invalid token|token.*expired|not authori[sz]ed|access token|DH-901|DH-902|blocked/i;
+// "Invalid IP" (DH-905) is Dhan's answer when the IP isn't whitelisted, or the token predates the whitelist.
+const FATAL = /static ip|whitelist|invalid ip|kill ?switch|invalid token|token.*expired|not authori[sz]ed|access token|DH-901|DH-902|blocked/i;
 
-function brokerError(error: unknown): BrokerError {
+/** Dhan's failure as the live desk sees it: whether a placement may have gone through, and whether to stop for the day. */
+export function brokerError(error: unknown): BrokerError {
   if (error instanceof BrokerError) return error;
   if (error instanceof DhanConfigError) return new BrokerError(error.message, { unknown: false, fatal: true });
   if (error instanceof DhanApiError) {

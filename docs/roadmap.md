@@ -27,7 +27,7 @@ Decided: the prediction window is 15 minutes (19 Nov 2026; 30 can be added later
 
 | What | Why it matters |
 |---|---|
-| Before the first live day: whitelist `140.245.240.9` in Dhan Web, add money, renew the token, set the daily loss limit, push and restart prod | Dhan refuses orders without the whitelist, and the live pilot runs only on the prod engine on this code. See [trading.md](trading.md#live-pilot) |
+| Before the first live day: whitelist `140.245.240.9` in Dhan Web, add money, renew the token (after the whitelist, or Dhan answers "Invalid IP"), set the daily loss limit, push and restart prod | Dhan refuses orders without the whitelist, and the live pilot runs only on the prod engine on this code. See [trading.md](trading.md#live-pilot) |
 | Back up the journal to S3 | The disk holds about 11 more trading days at about 5 GB a day (58 GB free on 19 Nov 2026). Order books and chains can't be downloaded again. The owner is doing this as a separate exercise |
 | Restart the dev engine | It runs the code below only after a restart |
 | Push to prod when ready | Prod runs older code: no decision lab, no prediction scoreboard, no one-position Sell |

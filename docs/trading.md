@@ -441,13 +441,13 @@ Real orders with Dhan for one lot, copying the paper book, allowed by the [const
 
 1. **Whitelist the server's IP, `140.245.240.9`, with Dhan** (Dhan Web, API settings). Dhan refuses every order from any other address, and a whitelisted IP can't be changed for 7 days. The address is ephemeral: it stays while this VM exists, but a rebuilt VM gets a new one, and live trading then waits until that is whitelisted.
 2. **Add money to the Dhan account.** One lot (65) of an at-the-money option costs about ₹6,500 to ₹10,000.
-3. **Renew the Dhan access token** on the Settings page. It lasts 24 hours.
+3. **Renew the Dhan access token** on the Settings page. It lasts 24 hours. Generate it after the IP is whitelisted: with a token from before, Dhan answers "Invalid IP" (DH-905) even though its own IP check says orders are allowed. That is what kept live off on 23 Nov 2026.
 4. **Set the daily loss limit** (Settings, Limits). It becomes Dhan's P&L exit when live is switched on.
 5. **Push, and restart the prod engine** on this code. Vercel deploys the page from the push.
 
 ### Each live day
 
-1. From 08:55 (the live run starts 20 minutes before the open), open **Strategies**, press **Trade live today** and confirm. The engine checks that Dhan's kill switch is off, sets Dhan's P&L exit at the daily loss limit with the kill switch, and reads the cash and the whitelisted IP. If the P&L exit can't be set, live stays off.
+1. From 08:55 (the live run starts 20 minutes before the open), open **Strategies**, press **Trade live today** and confirm. The engine checks that Dhan's kill switch is off, sets Dhan's P&L exit at the daily loss limit with the kill switch, and reads the cash and the whitelisted IP. If the P&L exit can't be set, live stays off. A refusal, with Dhan's reason, stays in the Live trading panel's log and the engine log.
 2. Taking trades is switched on with it, if it was off: the live desk copies only paper entries, so without them nothing would be bought. **Stop taking trades** later stops new trades on paper and at Dhan alike; **Turn live off** stops only the real ones.
 3. Watch the **Live trading** panel at the top of Strategies, and the bar across every page. The mode button at the top left of every page says which mode is in force: **Paper** (blue) while nothing is sent to Dhan, **Live** (solid red, with a pulsing dot) while real orders follow the paper book, **Live off** (amber) while live is off but a real position is still held. It opens Strategies; it switches nothing itself.
 4. Live is off again the next day.
@@ -475,7 +475,7 @@ Live goes off for the rest of the day, and never back on by itself, when:
 - Dhan refuses or rejects a buy (not enough money, IP not whitelisted, kill switch on, price band).
 - Dhan's positions differ from the engine's orders in a contract it traded today, on two checks a minute apart.
 - The day's real loss reaches the daily loss limit.
-- A call fails because the token or the IP isn't accepted.
+- A call fails because the token or the IP isn't accepted (Dhan's "Invalid IP" included).
 
 A real position held when live goes off is still sold with its paper position. You can switch live on again the same day.
 

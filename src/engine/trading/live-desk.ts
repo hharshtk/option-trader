@@ -872,6 +872,45 @@ export function createLiveDesk(options: LiveDeskOptions): LiveDesk {
     return d.positions.findLast((p) => p.alert !== null)?.alert ?? d.alert;
   }
 
+  /** "Trade live today": the checks, then Dhan's kill switch and P&L exit, then live is on. */
+  async function switchOn(d: Day | null, date: string, ctx: DeskContext): Promise<TradingCommandResult> {
+    if (notAllowed) return { ok: false, message: notAllowed };
+    if (!d) return { ok: false, message: "The live desk is still opening today's records. Try again in a moment." };
+    if (date !== ctx.date) return { ok: false, message: `That was for ${date}, but today is ${ctx.date}. Reload the page.` };
+    if (!ctx.ready) return { ok: false, message: "Live can be switched on once today's live run has started (20 minutes before the open) and loaded its contracts." };
+    if (d.on) return { ok: true, message: "Live trading is already on today." };
+    if (switching) return { ok: false, message: "Live trading is already being switched on." };
+    switching = true;
+    try {
+      let killSwitch: string;
+      try {
+        killSwitch = (await broker.killSwitch()).toUpperCase();
+      } catch (error) {
+        return { ok: false, message: `Live stays off: Dhan's kill switch couldn't be read (${error instanceof Error ? error.message : String(error)}).` };
+      }
+      if (killSwitch === "ACTIVATE" || killSwitch === "ACTIVE") return { ok: false, message: "Live stays off: Dhan's kill switch is on, so the account can't trade today." };
+      let pnlExit: string;
+      try {
+        pnlExit = await broker.setLossExit(ctx.lossLimit);
+      } catch (error) {
+        return { ok: false, message: `Live stays off: Dhan's P&L exit couldn't be set (${error instanceof Error ? error.message : String(error)}).` };
+      }
+      const [balance, ip] = await Promise.all([broker.balance().catch(() => null), broker.whitelistedIp().catch(() => null)]);
+      Object.assign(d, { on: true, since: now(), offReason: null, lossLimit: ctx.lossLimit, checks: { pnlExit, balance, ip }, lossHit: false, mismatches: 0, alert: null });
+      write(d, { kind: "on", at: now(), lossLimit: ctx.lossLimit, checks: d.checks });
+      event(
+        d,
+        "info",
+        `Live trading on for ${ctx.date}: each paper entry also buys one lot at Dhan, one position at a time. Dhan's P&L exit set at a loss of ${rupees(ctx.lossLimit)} with the kill switch (${pnlExit})${balance !== null ? `; ${rupees(balance)} available` : ""}`,
+      );
+      if (!ip) event(d, "warn", "Dhan shows no whitelisted IP for this account: orders will be refused until this server's IP is whitelisted in Dhan Web");
+      kick();
+      return { ok: true, message: `Live trading is on for today. Dhan's P&L exit is set at a loss of ${rupees(ctx.lossLimit)}.${ip ? "" : " Dhan shows no whitelisted IP yet: orders will be refused until it does."}` };
+    } finally {
+      switching = false;
+    }
+  }
+
   return {
     update(ctx) {
       context = ctx;
@@ -930,41 +969,13 @@ export function createLiveDesk(options: LiveDeskOptions): LiveDesk {
       const d = day && day.date === ctx.date ? day : null;
       switch (command.action) {
         case "live-on": {
-          if (notAllowed) return { ok: false, message: notAllowed };
-          if (!d) return { ok: false, message: "The live desk is still opening today's records. Try again in a moment." };
-          if (command.date !== ctx.date) return { ok: false, message: `That was for ${command.date}, but today is ${ctx.date}. Reload the page.` };
-          if (!ctx.ready) return { ok: false, message: "Live can be switched on once today's live run has started (20 minutes before the open) and loaded its contracts." };
-          if (d.on) return { ok: true, message: "Live trading is already on today." };
-          if (switching) return { ok: false, message: "Live trading is already being switched on." };
-          switching = true;
-          try {
-            let killSwitch: string;
-            try {
-              killSwitch = (await broker.killSwitch()).toUpperCase();
-            } catch (error) {
-              return { ok: false, message: `Live stays off: Dhan's kill switch couldn't be read (${error instanceof Error ? error.message : String(error)}).` };
-            }
-            if (killSwitch === "ACTIVATE" || killSwitch === "ACTIVE") return { ok: false, message: "Live stays off: Dhan's kill switch is on, so the account can't trade today." };
-            let pnlExit: string;
-            try {
-              pnlExit = await broker.setLossExit(ctx.lossLimit);
-            } catch (error) {
-              return { ok: false, message: `Live stays off: Dhan's P&L exit couldn't be set (${error instanceof Error ? error.message : String(error)}).` };
-            }
-            const [balance, ip] = await Promise.all([broker.balance().catch(() => null), broker.whitelistedIp().catch(() => null)]);
-            Object.assign(d, { on: true, since: now(), offReason: null, lossLimit: ctx.lossLimit, checks: { pnlExit, balance, ip }, lossHit: false, mismatches: 0, alert: null });
-            write(d, { kind: "on", at: now(), lossLimit: ctx.lossLimit, checks: d.checks });
-            event(
-              d,
-              "info",
-              `Live trading on for ${ctx.date}: each paper entry also buys one lot at Dhan, one position at a time. Dhan's P&L exit set at a loss of ${rupees(ctx.lossLimit)} with the kill switch (${pnlExit})${balance !== null ? `; ${rupees(balance)} available` : ""}`,
-            );
-            if (!ip) event(d, "warn", "Dhan shows no whitelisted IP for this account: orders will be refused until this server's IP is whitelisted in Dhan Web");
-            kick();
-            return { ok: true, message: `Live trading is on for today. Dhan's P&L exit is set at a loss of ${rupees(ctx.lossLimit)}.${ip ? "" : " Dhan shows no whitelisted IP yet: orders will be refused until it does."}` };
-          } finally {
-            switching = false;
+          const result = await switchOn(d, command.date, ctx);
+          // A refusal otherwise reaches only the page that asked; kept here, Dhan's answer can be read later.
+          if (!result.ok) {
+            if (d) event(d, "warn", `Not switched on: ${result.message}`);
+            else log.warn(`live: not switched on: ${result.message}`);
           }
+          return result;
         }
         case "live-off": {
           if (!d?.on) return { ok: true, message: "Live trading is already off." };

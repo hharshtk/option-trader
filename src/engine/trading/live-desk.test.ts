@@ -35,6 +35,8 @@ function fakeDhan() {
     orders,
     held,
     killSwitchState: "INACTIVE",
+    /** Set to make Dhan refuse the P&L exit, as it does when the token predates the IP whitelist. */
+    lossExitError: null as BrokerError | null,
     /** By default a buy fills 0.10 above the ask it was priced from, a stop rests, and a sale fills at its limit. */
     onPlace(request: PlaceRequest): Placement {
       if (request.type === "STOP_LOSS") return { status: "PENDING" };
@@ -91,6 +93,7 @@ function fakeDhan() {
     },
     async setLossExit(loss) {
       calls.push(`pnlExit ${loss}`);
+      if (fake.lossExitError) throw fake.lossExitError;
       return "ACTIVE: P&L based exit configured successfully";
     },
     async killSwitch() {
@@ -209,6 +212,24 @@ test("switching on checks the kill switch, sets Dhan's P&L exit, and only for to
     assert.equal((await s.desk.command({ action: "live-off" }, s.context([]))).ok, true);
     assert.equal(s.desk.status().on, false);
     assert.equal(s.desk.status().offReason, "Switched off by you");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a refused switch-on is kept in the live log with Dhan's answer, not only shown on the page", async () => {
+  const s = await setup();
+  try {
+    s.dhan.lossExitError = new BrokerError("Invalid IP (DH-905)", { unknown: false, fatal: true });
+    const refused = await s.desk.command({ action: "live-on", date: DATE }, s.context([]));
+    assert.equal(refused.ok, false);
+    assert.equal(s.desk.status().on, false);
+    assert.equal(s.desk.status().events[0].level, "warn");
+    assert.match(s.desk.status().events[0].message, /^Not switched on: Live stays off: Dhan's P&L exit couldn't be set \(Invalid IP \(DH-905\)\)/);
+    // Still there after a restart: it is in today's file.
+    await s.desk.stop();
+    const again = await setup({ directory: s.directory, broker: s.broker });
+    assert.ok(again.desk.status().events.some((e) => /^Not switched on: .*Invalid IP/.test(e.message)));
   } finally {
     await s.cleanup();
   }
