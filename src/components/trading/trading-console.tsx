@@ -117,8 +117,16 @@ export function TradingConsole() {
           className={`${buttonClass} ${config.armed ? "" : "border-accent text-accent"}`}
           disabled={pending}
           onClick={() => send({ action: config.armed ? "disarm" : "arm" })}
+          title={
+            config.armed
+              ? `No new trades${trading.live?.on ? ", on paper or at Dhan" : ""}; open positions keep their exits`
+              : trading.live?.on
+                ? "Each entry goes to the paper book and one lot to Dhan"
+                : "Entries go to the paper book only; nothing is sent to Dhan"
+          }
         >
-          {config.armed ? "Turn entries off" : "Start paper trading"}
+          {config.armed ? "Stop taking trades" : "Start taking trades"}
+          <span className="text-label font-normal opacity-75">{trading.live?.on ? "paper + live" : "paper"}</span>
         </button>
       </PageHeader>
 

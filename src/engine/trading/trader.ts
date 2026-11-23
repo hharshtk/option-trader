@@ -1531,7 +1531,9 @@ export function createTrader(options: TraderOptions): Trader {
           subscribe(active);
         }
         touch();
-        return { ok: true, message: armed ? "Paper trading is on. Entries are taken when the signal fires." : "Trading is off. Open positions keep their exits." };
+        const liveOn = live?.status().on ?? false;
+        if (armed) return { ok: true, message: liveOn ? "Taking trades: each entry goes to the paper book and one lot to Dhan." : "Taking trades on paper. Entries are taken when the signal fires." };
+        return { ok: true, message: liveOn ? "No new trades, on paper or at Dhan. Open positions keep their exits." : "No new trades. Open positions keep their exits." };
       }
       case "sell": {
         // One position, sold by you: paper only, so the shadow book stays a record of what the gate turned down.
@@ -1589,8 +1591,16 @@ export function createTrader(options: TraderOptions): Trader {
           return { ok: false, message: "That live trading request isn't valid." };
         }
         const result = await live.command(request as unknown as LiveCommand, deskContext());
-        // The desk copies paper entries only: with entries off nothing is bought.
-        if (result.ok && request.action === "live-on" && !config.armed) result.message += " Entries are off: press Start paper trading too, or nothing is bought.";
+        // The desk copies paper entries only, so going live switches taking trades on too: one step, not two.
+        if (result.ok && request.action === "live-on" && !config.armed) {
+          config = { ...config, armed: true };
+          await saveConfig();
+          if (active) {
+            event(active, "config", "Trading switched on with live: entries will be taken");
+            subscribe(active);
+          }
+          result.message += " Taking trades is switched on too.";
+        }
         if (result.ok && active) event(active, "risk", `Live: ${result.message}`);
         touch();
         return result;

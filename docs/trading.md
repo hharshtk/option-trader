@@ -56,14 +56,14 @@ Only the [live pilot](#live-pilot) reaches Dhan's order API, and only on the mai
 
 1. Restart the engine so it runs this code (`npm run engine`, or the systemd service).
 2. Open **Strategies**. Its tabs are **Strategy**, **Decision Lab**, **Current run**, **Signal research**, **Stored runs** and **Settings**; the page opens on Current run while entries are on, otherwise on Strategy. **Strategy** lists everything the trader can follow, the Pulse signals and the Decision Lab rules, each with what it does, the depth or option data it reads, and its record on the [prediction scoreboard](predictions.md) (rupees a call ahead of a coin flip at the same minutes, and on how many tested days). **Follow** saves the choice at once; it applies from the next trade. **Decision Lab** is the [decision lab](#decision-lab) in one table: every strategy's result on each recorded day in rupees after charges, its total, and on how many days it beat random trades, played the way the trader is set up (the lab's hold nearest yours, your exit style and cost check), with random trades as the bar and a one-line bottom line on top. Beside the buttons a small indicator says what trading is doing ("Looking for a signal" with a live dot while it waits for the followed one). The **Signals** table shows each signal's reading at the last minute close, the line it must cross and how close it is, how it has done today at your hold time, and when it last fired and what NIFTY did next. The ⓘ beside a signal opens a guide with a tab per signal: what it watches, when it votes, why it stays silent, a right and a wrong example from 18 November 2026, its live record today and its past year. **Open positions** appear above **Trades**, in the same columns, only while something is open.
-3. Press **Start paper trading**. Entries are off until you do; the choice is kept across restarts.
+3. Press **Start taking trades**. Entries are off until you do; the choice is kept across restarts. The button's hint says where new trades go: **paper**, or **paper + live** while the [live pilot](#live-pilot) is on.
 4. Watch **Strategies** for positions and P&L, and **Activity** for the log, the proposals and the orders.
 
 To try it with the market closed, start a replay on the Engine page (or `npm run engine:replay -- --date 2026-11-16 --speed 60`). Trading starts a new run on the replayed day and trades it as it plays.
 
 | Button | Does |
 |---|---|
-| Start paper trading / Turn entries off | Arms or disarms entries. Open positions keep their exits either way |
+| Start taking trades / Stop taking trades | Arms or disarms entries, on paper and, while live is on, at Dhan. Open positions keep their exits either way |
 | Sell open position(s) | Sells everything that is open now |
 | Sell (on a row of **Open positions**) | Sells that one position at the next quote, to take a profit or cut a loss by hand. The others keep their stops, targets and hold times. The trade shows as "Sold by you" |
 | Stop for the day | Sells what is open and takes no more entries until you press Resume or the next day starts |
@@ -448,7 +448,7 @@ Real orders with Dhan for one lot, copying the paper book, allowed by the [const
 ### Each live day
 
 1. From 08:55 (the live run starts 20 minutes before the open), open **Strategies**, press **Trade live today** and confirm. The engine checks that Dhan's kill switch is off, sets Dhan's P&L exit at the daily loss limit with the kill switch, and reads the cash and the whitelisted IP. If the P&L exit can't be set, live stays off.
-2. **Start paper trading** must be on as well: the live desk copies only paper entries.
+2. Taking trades is switched on with it, if it was off: the live desk copies only paper entries, so without them nothing would be bought. **Stop taking trades** later stops new trades on paper and at Dhan alike; **Turn live off** stops only the real ones.
 3. Watch the **Live trading** panel at the top of Strategies, and the bar across every page. The mode button at the top left of every page says which mode is in force: **Paper** (blue) while nothing is sent to Dhan, **Live** (solid red, with a pulsing dot) while real orders follow the paper book, **Live off** (amber) while live is off but a real position is still held. It opens Strategies; it switches nothing itself.
 4. Live is off again the next day.
 

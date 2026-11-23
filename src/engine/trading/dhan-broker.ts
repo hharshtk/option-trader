@@ -198,7 +198,8 @@ export function createDhanBroker(): LiveBroker {
     async whitelistedIp() {
       try {
         const answer = first(await dhanRequest<unknown>("GET", "/ip/getIP"));
-        const ips = [answer.primaryIP, answer.secondaryIP].filter((v) => typeof v === "string" && v.trim() !== "");
+        // Dhan answers "NA" for a slot that isn't set.
+        const ips = [answer.primaryIP, answer.secondaryIP].filter((v) => typeof v === "string" && v.trim() !== "" && v.trim().toUpperCase() !== "NA");
         return ips.length > 0 ? ips.join(", ") : null;
       } catch {
         return null;

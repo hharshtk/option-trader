@@ -28,6 +28,7 @@ export function LivePanel({ trading, pending, send }: { trading: TradingStatus; 
       `Trade with real money today, ${today}?`,
       `Each paper entry will also buy one lot of the same NIFTY option at Dhan, one position at a time, with a stop-loss order resting at Dhan. Real positions are sold when their paper positions are.`,
       `Dhan's P&L exit is set at a loss of ${inr.format(lossLimit)} (the daily loss limit in Settings) with Dhan's kill switch.`,
+      ...(trading.config.armed ? [] : ["Taking trades is switched on too, so the next signal trades."]),
       `No strategy has passed the go-live gate yet. Losses are real money.`,
     ].join("\n\n");
     if (window.confirm(message)) send({ action: "live-on", date: today });

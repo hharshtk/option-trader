@@ -734,8 +734,14 @@ test("live: a paper round trip on the live run is bought, protected and sold for
   const h = await harness({ strategy: { lots: 2 } }, { live: dhan.broker });
   try {
     await h.tickAt(OPEN - 10 * MIN);
+    // With taking trades off, going live switches it on: the desk only copies paper entries.
+    await h.trader.command({ action: "disarm" });
     const on = await h.trader.command({ action: "live-on", date: DATE });
     assert.ok(on.ok, on.message);
+    assert.match(on.message, /Taking trades is switched on too/);
+    assert.equal(h.trader.status().config.armed, true);
+    assert.match((await h.trader.command({ action: "disarm" })).message, /on paper or at Dhan/);
+    assert.match((await h.trader.command({ action: "arm" })).message, /one lot to Dhan/);
     const at = await toSignal(h);
     // The paper entry goes out to Dhan at once, before the paper fill: one lot, whatever the paper lots.
     assert.equal(dhan.placed.length, 1);
