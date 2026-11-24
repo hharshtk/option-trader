@@ -47,3 +47,25 @@ test("an asynchronous crossed book breaks the consecutive pair", () => {
   book.observe(59_200, [side("bid", 99, 200), side("ask", 100, 120)]);
   assert.deepEqual(book.score(60_000), { value: 0, reason: "flat" });
 });
+
+test("taking a reading leaves the state as it was", () => {
+  // Queue changes, a quiet side, a crossed book and a recovery, read between frames or not.
+  const frames: [number, DepthPacket[]][] = [];
+  for (let at = 1_000; at <= 50_000; at += 700) frames.push([at, [side("bid", 100, 200 + (at % 3_000) / 100), side("ask", 101, 120)]]);
+  frames.push([50_500, [side("ask", 100, 120)]], [51_000, [side("bid", 99, 210), side("ask", 101, 130)]]);
+  for (let at = 54_000; at <= 130_000; at += 900) frames.push([at, [side("bid", 100 + (at % 2_000) / 1_000, 220), side("ask", 102, 110 + (at % 5_000) / 100)]]);
+  const plain = createSnapshotOfi();
+  const read = createSnapshotOfi();
+  const readings: string[] = [];
+  for (const [at, packets] of frames) {
+    read.score(at - 1);
+    read.observe(at, packets);
+    plain.observe(at, packets);
+    readings.push(JSON.stringify([read.score(at + 400), plain.score(at + 400)]));
+  }
+  for (const pair of readings) {
+    const [a, b] = JSON.parse(pair);
+    assert.deepEqual(a, b);
+  }
+  assert.ok(readings.some((pair) => pair.includes('"ok"')));
+});

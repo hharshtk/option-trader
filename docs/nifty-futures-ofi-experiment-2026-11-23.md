@@ -131,3 +131,13 @@ charges          ₹71.3301789755 before display rounding
 4. **Apply the frozen holdout date.** Begin with completed recorded sessions on or after 25 November 2026 that were unseen when this rule was fixed. Keep day totals, original and priced opportunity counts, trades filled, coverage, and the A counterfactual for disagreement, missing/stale book, warm-up, and flat. Carry all six delays forward. A code change that alters decision semantics creates a new version with a fresh unseen start. [Constitution](constitution.md#4-principles)
 
 **Research decision.** Keep collecting five-level evidence first. Review the paired 300 ms result across at least 20 unseen live sessions and check how much of any lift comes from directional disagreements with valid books. The 20-level extension and option break-even filter are separate experiments. Any future change to the trading policy also needs the constitution's benchmarks, paper evidence, and go-live requirements. [Constitution](constitution.md#6-going-live) · [Option break-even research](hft-options-research-2026-11-23.md#3-parity-based-iv-and-the-long-option-break-even-move)
+
+## Implementation status
+
+**Built 23 November 2026 as the signal Breadth + 5-level OFI (`ofi`).** One reader serves the comparison and the journal session, which Pulse, the trader, replay and the decision lab read, so live and replayed days give the same per-minute reading. The reader runs the reducer over the depth file in receive order. It applies the session's engine starts, stops and global or suspend gaps at their times and takes each reading 1.5 s after the minute closes. A live minute's reading is final once the file holds a later record. The trader follows the signal on paper with its own exits. The scoreboard counts it from 25 November 2026. [Reader](../src/engine/journal/depth-ofi.ts) · [Signal](../src/lib/insight/pulse.ts)
+
+Checked against the seen days before grading new ones:
+
+- The session series equals the comparison's own reading at all 344 cutoffs from 09:16:01.5 to 14:59:01.5 on 18 and 23 November.
+- The 23 November daily row and the four regression cases above reproduce exactly. So do the counts by gate outcome on 18 November.
+- The decision lab's minute-by-minute table, which has no lookahead, gives the same votes as the end-of-day session at every minute on 23 November.

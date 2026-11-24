@@ -39,6 +39,8 @@ function readingsAt(pulse: Pulse, t: number): Pick<SignalReadingLine, "id" | "na
       const longs = price.filter((r) => r.vote > 0).length;
       const shorts = price.filter((r) => r.vote < 0).length;
       reading = vote === 0 ? `${longs} long, ${shorts} short` : `${vote > 0 ? longs : shorts} of ${price.length} ${vote > 0 ? "long" : "short"}`;
+    } else if (s.id === "ofi") {
+      reading = point.ofi;
     } else {
       reading = vote === 0 ? "not confirmed" : single.filter((r) => r.vote === vote).map((r) => r.name).join(" + ");
     }

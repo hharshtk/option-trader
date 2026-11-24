@@ -60,7 +60,7 @@ export async function buildDayTable(directory: string, date: string, calendar: S
       // The file ends before this minute (an unfinished day): nothing more to build. A gap inside
       // the day (an engine restart) just carries on.
       if (lastFrameAt < session.open + t * MINUTE_MS && source.size() - cursor.offset < 24) break;
-      const day = series.apply(aggregator.summary({ builtAt: position, readMs: 0, bytes: cursor.offset }), position);
+      const day = await series.apply(aggregator.summary({ builtAt: position, readMs: 0, bytes: cursor.offset }), position);
       const pulse = computePulse(day, NIFTY_CONSTITUENTS);
       const state = pulse && minuteState(pulse, session.open + t * MINUTE_MS);
       if (!state) continue;

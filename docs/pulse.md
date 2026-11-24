@@ -119,7 +119,7 @@ The straddle prices the move to expiry; a move over 15 minutes is that times √
 
 ## Signal lab
 
-Seven candidate signals, each a fixed rule read at the end of every minute from data up to that minute (no look-ahead), and two that combine them:
+Seven candidate signals, each a fixed rule read at the end of every minute from data up to that minute (no look-ahead), and three that combine them:
 
 | Signal | Reads | Fires long / short when |
 |---|---|---|
@@ -132,8 +132,9 @@ Seven candidate signals, each a fixed rule read at the end of every minute from 
 | Order book lean | The future's 20-level book | The quantity waiting on the 20 best bids outweighs the 20 best asks by 20% or more of both (60% or more bids) / the asks outweigh the bids |
 | Two or more agree (combined) | | At least two of the three price signals point the same way, net |
 | Confirmed by futures and options (combined) | | The price signals that fired all point one way, at least one of order flow, OI build-up and option writers agrees, and none of them disagrees. Order book lean doesn't count, so adding it changed no firing |
+| Breadth + 5-level OFI (combined) | Breadth thrust and the future's book, five levels | Breadth thrust fires and the future's five-level order-flow imbalance over the minute before, read 1.5 s after the close (`derivatives.ofi`), points the same way. No reading (a side over 2 s old, under 45 s of book since an interruption), a flat one, or one the other way: no vote. The rule frozen on 23 November 2026 ([experiment](nifty-futures-ofi-experiment-2026-11-23.md)) |
 
-**What the record says.** Over 257 days to 17 November 2026 the three price signals and Two or more agree were right 49–51% of the time and averaged under a point a trade before costs, against about 3.9 points of costs for an option trade (the parked research study, branch `research-and-strategy-store`). The futures and options signals read data recorded only from 18 November 2026; their thresholds were set that morning so each fires on about a quarter of minutes, and they are untested. Judge them on the days that follow. Order book lean, scored on 18 November at a 10-minute hold: 33 firings, 17 right, +10.9 NIFTY points in all before costs, against about 3.9 points of costs a trade.
+**What the record says.** Over 257 days to 17 November 2026 the three price signals and Two or more agree were right 49–51% of the time and averaged under a point a trade before costs, against about 3.9 points of costs for an option trade (the parked research study, branch `research-and-strategy-store`). The futures and options signals read data recorded only from 18 November 2026; their thresholds were set that morning so each fires on about a quarter of minutes, and they are untested. Judge them on the days that follow. Order book lean, scored on 18 November at a 10-minute hold: 33 firings, 17 right, +10.9 NIFTY points in all before costs, against about 3.9 points of costs a trade. Breadth + 5-level OFI was written with 18 to 23 November seen: there, with a 15-minute hold, breadth alone made ₹273 a vote after charges and breadth checked by the OFI ₹384, counting skipped votes as ₹0, with two of the four days giving nearly all of it. The scoreboard grades it only from 25 November 2026.
 
 **No signal reads the closing auction.** From 15:15 stock prices stop and NIFTY holds still until the auction price lands near 15:28 ([research.md](research.md#things-the-data-taught-us)). Signals read nothing from 15:15, and an outcome must end by 15:14.
 

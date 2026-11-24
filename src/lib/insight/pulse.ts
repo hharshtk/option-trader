@@ -6,7 +6,7 @@
 // browser today and in the engine on live, replay and backtest later. Nothing here looks ahead:
 // each minute's signal uses only closes up to that minute; outcomes are scored afterwards.
 
-import type { JournalSession, SessionInstrument } from "../engine/protocol.ts";
+import type { JournalSession, OfiStatus, SessionInstrument } from "../engine/protocol.ts";
 import { derivativesSnapshot, derivativesView, type DerivativesSnapshot } from "./derivatives.ts";
 
 export interface PulseConstituent {
@@ -102,6 +102,8 @@ export interface PulsePoint {
   values: (number | null)[];
   /** Each combined signal's vote, in `signals` order. */
   combined: (-1 | 0 | 1)[];
+  /** Breadth + 5-level OFI's reading: breadth's vote and the OFI it was checked against. */
+  ofi: string;
   /** Long minus short among the single signals. */
   composite: number;
 }
@@ -166,6 +168,14 @@ export const HORIZONS = [1, 3, 5, 10, 15] as const;
  */
 export const AUCTION_MINUTE = 360;
 const VIX_KEY = "IDX_I:21";
+/** Why Breadth + 5-level OFI had no OFI to check breadth against. */
+const OFI_ABSENT: Record<Exclude<OfiStatus, "ok">, string> = {
+  flat: "OFI flat",
+  missing: "no futures book",
+  stale: "futures book over 2 s old",
+  invalid: "futures book broken",
+  warmup: "under 45 s of futures book",
+};
 /** The single signals "Two or more agree" counts. */
 export const PRICE_SIGNALS = ["breadth", "lead", "momentum"] as const;
 const MIN_FIT_MINUTES = 45;
@@ -448,7 +458,27 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
     const backing = derivativesIndex.map((i) => votes[i]);
     return backing.includes(side) && !backing.includes(-side as -1 | 1) ? side : 0;
   };
-  const combinedVotes = (t: number): (-1 | 0 | 1)[] => [agreeVote(t), confirmedVote(t)];
+  // Breadth thrust confirmed by the near-month future's five-level OFI, the rule frozen on
+  // 23 November 2026 (docs/nifty-futures-ofi-experiment-2026-11-23.md): breadth's vote when the OFI
+  // read 1.5 s after the minute closed points the same way. No reading, a flat one or one the
+  // other way: no vote.
+  const breadth = definitions.findIndex((d) => d.id === "breadth");
+  const ofiVote = (t: number): -1 | 0 | 1 => {
+    const vote = singleVote(t)[breadth];
+    const ofi = view?.ofi(t);
+    return vote !== 0 && ofi?.status === "ok" && Math.sign(ofi.value!) === vote ? vote : 0;
+  };
+  const ofiReading = (t: number): string => {
+    const value = readAt(definitions[breadth], t);
+    if (value === null || singleVote(t)[breadth] === 0) return "breadth silent";
+    const said = `breadth ${value > 0 ? "+" : ""}${value}`;
+    if (!view?.data.ofi) return `${said}, no depth file`;
+    const ofi = view.ofi(t);
+    if (!ofi) return `${said}, OFI not read yet`;
+    if (ofi.status !== "ok") return `${said}, ${OFI_ABSENT[ofi.status]}`;
+    return `${said}, OFI ${ofi.value! > 0 ? "+" : ""}${ofi.value!.toFixed(1)}${ofiVote(t) === 0 ? " against" : ""}`;
+  };
+  const combinedVotes = (t: number): (-1 | 0 | 1)[] => [agreeVote(t), confirmedVote(t), ofiVote(t)];
   const score = (vote: (t: number) => -1 | 0 | 1) => HORIZONS.map((h) => scoreSignal(vote, h));
 
   // Only minutes whose outcome is complete count, and after each firing the next horizon is
@@ -494,7 +524,7 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
       stats: score((t) => singleVote(t)[i]),
     };
   });
-  const [agreeNow, confirmedNow] = combinedVotes(now);
+  const [agreeNow, confirmedNow, ofiNow] = combinedVotes(now);
   const priceSignals = signals.filter((x) => x.group === "price");
   signals.push({
     id: "agree",
@@ -522,6 +552,18 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
         : `${confirmedNow > 0 ? "long" : "short"}: ${signals.filter((x) => x.kind === "single" && (x.group === "price" || confirming.has(x.id)) && x.vote === confirmedNow).map((x) => x.name).join(", ")}`,
     vote: confirmedNow,
     stats: score(confirmedVote),
+  });
+  signals.push({
+    id: "ofi",
+    name: "Breadth + 5-level OFI",
+    rule: "Breadth thrust fires and the five-level order-flow imbalance of NIFTY's near-month future, over the minute before 1.5 s after the close, points the same way: follow breadth",
+    kind: "combined",
+    group: null,
+    threshold: null,
+    value: view?.ofi(now)?.value ?? null,
+    display: ofiReading(now),
+    vote: ofiNow,
+    stats: score(ofiVote),
   });
 
   const baselines: Baseline[] = HORIZONS.map((h) => {
@@ -620,6 +662,7 @@ export function computePulse(session: JournalSession, constituents: readonly Pul
       readings,
       values: values.map((v) => (v === null ? null : Number(v.toPrecision(4)))),
       combined: combinedVotes(t),
+      ofi: ofiReading(t),
       composite: votes.reduce<number>((a, v) => a + v, 0),
     };
   });

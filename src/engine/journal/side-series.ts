@@ -1,13 +1,14 @@
 // Adds the side files to a journal session: the near-month future's 20-level book and the
 // nearest expiry's option chain, read at each minute's end, as `derivatives.book` and
-// `derivatives.chain`. The same code runs on the live day (files still growing) and on a
+// `derivatives.chain`, and the future's five-level OFI read 1.5 s after it, as `derivatives.ofi`. The same code runs on the live day (files still growing) and on a
 // replayed day (cut at the replay's position), so Pulse, trading and the decision API see the
 // same numbers either way. A finished minute is read once and kept.
 
-import type { JournalSession, SessionBook, SessionChain } from "../../lib/engine/protocol.ts";
+import type { JournalSession, SessionBook, SessionChain, SessionOfi } from "../../lib/engine/protocol.ts";
 import { readChain, type ChainReading } from "../../lib/insight/chain.ts";
 import { tradingMinutesToExpiry } from "../../lib/insight/derivatives.ts";
 import type { SideFiles } from "../replay/side-data.ts";
+import type { OfiEvent } from "./depth-ofi.ts";
 
 const MINUTE_MS = 60_000;
 /** The underlying whose chain the session carries. */
@@ -22,8 +23,8 @@ interface BookMinute {
 }
 
 export interface SideSeries {
-  /** The session with `derivatives.book` and `derivatives.chain` added, as of `position` (Infinity: everything so far). */
-  apply(session: JournalSession, position: number): JournalSession;
+  /** The session with `derivatives.book`, `.chain` and `.ofi` added, as of `position` (Infinity: everything so far). */
+  apply(session: JournalSession, position: number): Promise<JournalSession>;
 }
 
 export function createSideSeries(files: () => SideFiles | null): SideSeries {
@@ -138,15 +139,36 @@ export function createSideSeries(files: () => SideFiles | null): SideSeries {
     return any ? out : null;
   }
 
+  async function ofiSeries(session: JournalSession, key: string, position: number): Promise<SessionOfi | null> {
+    const ofi = files()?.ofi;
+    if (!ofi || !session.session) return null;
+    // Live, the position is Infinity: readings are taken up to now.
+    const until = Math.min(position, session.builtAt);
+    const readings = await ofi.readings({ open: session.session.open, key, events: interruptions(session) }, session.minutes.length, until);
+    if (!readings.some((r) => r)) return null;
+    return { key, value: readings.map((r) => r?.value ?? null), status: readings.map((r) => r?.reason ?? null) };
+  }
+
   return {
-    apply(session, position) {
+    async apply(session, position) {
       if (!files() || !session.session) return session;
       const derivatives = session.derivatives ?? { future: null, options: null };
       const key = derivatives.future?.key;
       const book = key ? bookSeries(session, key, position) : null;
       const chain = chainSeries(session, position);
-      if (!book && !chain && !session.derivatives) return session;
-      return { ...session, derivatives: { ...derivatives, book, chain } };
+      const ofi = key ? await ofiSeries(session, key, position) : null;
+      if (!book && !chain && !ofi && !session.derivatives) return session;
+      return { ...session, derivatives: { ...derivatives, book, chain, ofi } };
     },
   };
+}
+
+/** What in the main journal interrupts the OFI: each engine start and stop, and each gap of the whole feed or of the engine. */
+function interruptions(session: JournalSession): OfiEvent[] {
+  const times = [
+    ...session.runs.flatMap((run) => (run.stoppedAt === null ? [run.startedAt] : [run.startedAt, run.stoppedAt])),
+    // A gap is recorded when it ends.
+    ...session.gaps.filter((gap) => gap.connection === 0 || gap.reason === "suspend").map((gap) => gap.to),
+  ];
+  return times.filter(Number.isFinite).sort((a, b) => a - b).map((at) => ({ at }));
 }

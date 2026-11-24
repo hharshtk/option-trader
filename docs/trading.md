@@ -61,6 +61,8 @@ Only the [live pilot](#live-pilot) reaches Dhan's order API, and only on the mai
 
 To try it with the market closed, start a replay on the Engine page (or `npm run engine:replay -- --date 2026-11-16 --speed 60`). Trading starts a new run on the replayed day and trades it as it plays.
 
+**Breadth + 5-level OFI.** Follow it in the Signals table of **Strategies → Strategy** to trade it on paper: it buys on Breadth thrust only when the future's five-level OFI points the same way, read from the depth file the same way live, in a replay and in the decision lab. The trader's own exits apply (the experiment held 15 minutes with no stop or target). At the top of the same tab, click **Compare 5-level OFI** to compare the day being replayed. You can also pick a recorded day here before starting playback. The comparison grades breadth alone and breadth with OFI on the same opportunities, with a 15-minute hold and the shared option fees. Open **Execution delays** to see the sensitivity. Comparisons start outside the market recording window. [Frozen experiment](nifty-futures-ofi-experiment-2026-11-23.md)
+
 | Button | Does |
 |---|---|
 | Start taking trades / Stop taking trades | Arms or disarms entries, on paper and, while live is on, at Dhan. Open positions keep their exits either way |
@@ -83,7 +85,7 @@ minute close (+1.5 s) ──► Pulse signals ──► sell on an opposite sign
                                                            └─► turned down ──► buy on the shadow book
 ```
 
-- **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Futures order flow, Futures OI build-up, Option writers, Order book lean, Two or more agree, Confirmed by futures and options ([pulse.md](pulse.md#signal-lab)). None has shown an edge after costs: the price signals were coin flips over a year, and the futures and options ones have days, not years, of data.
+- **Signals** come from `computePulse()` on the day's journal, the same call the Pulse page makes, read 1.5 seconds after each minute closes. The strategy follows one of: Breadth thrust, Basket leads index, 15-minute momentum, Futures order flow, Futures OI build-up, Option writers, Order book lean, Two or more agree, Confirmed by futures and options, Breadth + 5-level OFI ([pulse.md](pulse.md#signal-lab)). None has shown an edge after costs: the price signals were coin flips over a year, and the futures and options ones have days, not years, of data.
 - **Positions at once** (default 1) caps how many positions the paper book holds together. A signal that fires while that many are open is ignored. With more than one allowed, a signal that stays on buys again once **Wait after a trade** has passed since the last buy. The cooldown counts from buys as well as sells, so the engine doesn't buy every minute. Each position keeps its own stop, target and hold time. **Most premium a trade** applies to each position, so the most premium at risk is that limit times **Positions at once**. The daily loss limit counts every open position.
 - **Proposals** are recorded once they pass the quiet checks, with the reason when they aren't traded.
 - **Exits** are the engine's own and never wait for the decision API. In the Standard style each trade's stop and target are, by default, worked out when it is proposed from how much NIFTY is moving (see [Volatility exits](#volatility-exits)); the decision API is told them.

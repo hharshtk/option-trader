@@ -90,20 +90,30 @@ export function createSnapshotOfi() {
     validUntil = Math.min(bid.at, ask.at) + MAX_AGE_MS;
   }
 
+  /**
+   * The reading as of `at` (no earlier than the last frame observed). It leaves the state as it
+   * is: the next observe() catches up the same way, so a reading can be taken at a cutoff while
+   * later frames are still to come.
+   */
   function score(at: number): OfiReading {
-    advance(at);
+    if (Object.values(sides).some((side) => at - side.at > MAX_AGE_MS)) return { value: null, reason: "stale" };
     if (validUntil === null) return { value: null, reason: sides.bid && sides.ask ? "invalid" : reason };
-    const covered = intervals.reduce((ms, interval) => ms + interval.to - Math.max(interval.from, at - WINDOW_MS), 0);
-    if (covered < MIN_COVERAGE_MS || !snapshots.some((snapshot) => snapshot.flow)) return { value: null, reason: "warmup" };
+    const from = at - WINDOW_MS;
+    // Valid time since the last frame counts up to `at`, as advance() would add it.
+    const to = Math.min(at, validUntil);
+    const pending = to > lastAt ? to - Math.max(lastAt, from) : 0;
+    const covered = intervals.reduce((ms, interval) => (interval.to > from ? ms + interval.to - Math.max(interval.from, from) : ms), pending);
+    const recent = snapshots.filter((snapshot) => snapshot.at > from);
+    if (covered < MIN_COVERAGE_MS || !recent.some((snapshot) => snapshot.flow)) return { value: null, reason: "warmup" };
     const totals = Array<number>(LEVELS).fill(0);
     const depth = Array<number>(LEVELS).fill(0);
-    for (const snapshot of snapshots) {
+    for (const snapshot of recent) {
       for (let i = 0; i < LEVELS; i++) {
         totals[i] += snapshot.flow?.[i] ?? 0;
         depth[i] += snapshot.depth[i];
       }
     }
-    const value = totals.reduce((sum, flow, i) => sum + flow / (depth[i] / snapshots.length) / (i + 1), 0);
+    const value = totals.reduce((sum, flow, i) => sum + flow / (depth[i] / recent.length) / (i + 1), 0);
     return { value, reason: Math.abs(value) <= 1e-12 ? "flat" : "ok" };
   }
 

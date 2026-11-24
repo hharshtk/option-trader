@@ -2,11 +2,44 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { startOfiComparison } from "@/app/(cockpit)/engine/actions";
-import { buttonClass, DataTable, Pnl, Td } from "@/components/ui";
+import { replayDay } from "@/components/engine/replay-format";
+import { buttonClass, DataTable, Panel, Pnl, Td } from "@/components/ui";
 import type { OfiReplayComparison, OfiReplayStatus } from "@/lib/engine/ofi";
-import { replayDay } from "./replay-format";
+import type { EngineStatus } from "@/lib/engine/protocol";
+import { fieldClass } from "./shared";
 
-export function OfiComparison({ date }: { date: string }) {
+export function OfiComparison({ engine }: { engine: EngineStatus | null }) {
+  const [day, setDay] = useState("");
+  const replayDate = engine?.replay?.date;
+  const days = engine?.journalDays ?? [];
+  const date = replayDate ?? (days.find((recording) => recording.date === day)?.date ?? days[0]?.date);
+
+  return (
+    <Panel title="Breadth + 5-level OFI" meta="Replay comparison">
+      {engine?.ofiReplay && date ? (
+        <div className="space-y-2">
+          {replayDate ? (
+            <p className="text-label text-muted">Replay of {replayDay(replayDate)}</p>
+          ) : (
+            <label className="flex items-center gap-2 text-label text-muted">
+              Recorded day
+              <select value={date} className={fieldClass} onChange={(event) => setDay(event.target.value)}>
+                {days.map((recording) => <option key={recording.date} value={recording.date}>{replayDay(recording.date)}</option>)}
+              </select>
+            </label>
+          )}
+          <RunComparison key={date} date={date} />
+        </div>
+      ) : (
+        <p className="text-muted">
+          {!engine ? "Waiting for engine status…" : !engine.ofiReplay ? "Update the engine to run the OFI comparison." : "There are no recorded days to compare."}
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+function RunComparison({ date }: { date: string }) {
   const [status, setStatus] = useState<OfiReplayStatus>({ state: "idle" });
   const [pending, startTransition] = useTransition();
   const running = status.state === "running";
@@ -48,7 +81,7 @@ export function OfiComparison({ date }: { date: string }) {
   }
 
   return (
-    <div className="mt-4 space-y-2 border-t border-line pt-3">
+    <div className="space-y-2">
       <button type="button" className={buttonClass} disabled={pending || running} onClick={compare}>
         {pending || running ? "Comparing…" : "Compare 5-level OFI"}
       </button>

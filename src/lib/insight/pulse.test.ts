@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { JournalSession, SessionInstrument } from "../engine/protocol.ts";
+import type { JournalSession, OfiStatus, SessionInstrument } from "../engine/protocol.ts";
 import { AUCTION_MINUTE, computePulse, ridge, wilson } from "./pulse.ts";
 
 const OPEN = Date.UTC(2026, 10, 16, 3, 45);
@@ -162,7 +162,7 @@ test("futures and options signals read the derivatives; confirmed needs them to 
   assert.equal(vote("confirmed"), 1);
   assert.equal(backed.signals.find((s) => s.id === "flow")!.display, "buyers 80% in 5 min");
   // The combined votes are in the series too, for the trader.
-  assert.deepEqual(backed.series.at(-1)!.combined, [0, 1]);
+  assert.deepEqual(backed.series.at(-1)!.combined, [0, 1, 0]);
 
   // Call writers adding against a rising market: one futures-and-options signal disagrees, so nothing is confirmed.
   const against = computePulse(trending("calls"), [])!;
@@ -188,4 +188,38 @@ test("a day recorded without futures and options gives those signals no reading"
   assert.equal(pulse.derivatives, null);
   for (const id of ["flow", "buildup", "writers", "book20", "confirmed"]) assert.equal(pulse.signals.find((s) => s.id === id)!.vote, 0);
   assert.equal(pulse.signals.find((s) => s.id === "flow")!.display, "—");
+});
+
+test("Breadth + 5-level OFI follows breadth only when the minute's OFI points the same way", () => {
+  // Eight stocks at their reference until 09:25, then all up: breadth thrust fires long from 09:25 to 09:29.
+  const n = 20;
+  const stocks = Array.from({ length: 8 }, (_, i) => instrument(`NSE_EQ:${i + 1}`, 100, Array.from({ length: n }, (_, t) => (t >= 10 ? 101 : 100))));
+  const index = Array.from({ length: n }, (_, t) => 25_000 + t);
+  const day: JournalSession = {
+    ...session(n),
+    instruments: [instrument("IDX_I:13", 25_000, index, { mode: "ticker" }), ...stocks],
+    derivatives: {
+      future: null,
+      options: null,
+      ofi: {
+        key: "NSE_FNO:1",
+        value: index.map((_, t) => ({ 10: 5, 11: -3, 13: 0 })[t] ?? null),
+        status: index.map((_, t): OfiStatus | null => ({ 10: "ok", 11: "ok", 12: "warmup", 13: "flat" } as const)[t] ?? (t < 14 ? "stale" : null)),
+      },
+    },
+  };
+  const owned = stocks.map((s) => ({ key: s.key, symbol: s.key, sector: "One", prior: 1 }));
+  const pulse = computePulse(day, owned)!;
+  const at = (t: number) => [pulse.series[t].combined[2], pulse.series[t].ofi];
+  assert.deepEqual(at(9), [0, "breadth silent"]);
+  assert.deepEqual(at(10), [1, "breadth +8, OFI +5.0"]);
+  assert.deepEqual(at(11), [0, "breadth +8, OFI -3.0 against"]);
+  assert.deepEqual(at(12), [0, "breadth +8, under 45 s of futures book"]);
+  assert.deepEqual(at(13), [0, "breadth +8, OFI flat"]);
+  assert.deepEqual(at(14), [0, "breadth +8, OFI not read yet"]);
+  assert.equal(pulse.signals.find((s) => s.id === "ofi")!.kind, "combined");
+
+  // Without a depth file it never votes.
+  const plain = computePulse({ ...day, derivatives: undefined }, owned)!;
+  assert.deepEqual([plain.series[10].combined[2], plain.series[10].ofi], [0, "breadth +8, no depth file"]);
 });

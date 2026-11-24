@@ -7,10 +7,12 @@
 import { ENOUGH_DAYS, usePredictions } from "@/components/insight/prediction-board";
 import { buttonClass, DataTable, Panel, Pnl, Td } from "@/components/ui";
 import { DEFAULT_TRADING_CONFIG, FOLLOWABLE_RULES, RULE_DATA, SIGNAL_DATA, SIGNALS, type DecisionData, type TradingConfig } from "@/lib/engine/trading";
+import type { EngineStatus } from "@/lib/engine/protocol";
 import type { PredictionRow } from "@/lib/decide/predict";
 import { ruleById } from "@/lib/decide/rules";
 import { DataTags } from "./shared";
 import { GUIDE } from "./signal-guide";
+import { OfiComparison } from "./ofi-comparison";
 
 type Strategy = TradingConfig["strategy"];
 
@@ -54,7 +56,7 @@ export function followStrategy(current: Strategy, id: string): Strategy {
   };
 }
 
-export function StrategyPicker({ strategy, pending, onFollow }: { strategy: Strategy; pending: boolean; onFollow: (next: Strategy) => void }) {
+export function StrategyPicker({ engine, strategy, pending, onFollow }: { engine: EngineStatus | null; strategy: Strategy; pending: boolean; onFollow: (next: Strategy) => void }) {
   const load = usePredictions();
   const view = load.state === "ready" ? load.view : null;
   const rows = new Map(view?.rows.map((r) => [r.id, r]));
@@ -99,6 +101,7 @@ export function StrategyPicker({ strategy, pending, onFollow }: { strategy: Stra
 
   return (
     <div className="space-y-2">
+      <OfiComparison engine={engine} />
       <Panel title="Signals" meta="Pulse signals: a long vote buys a call, a short vote a put" flush>
         {table("Signals the trader can follow", SIGNAL_CHOICES)}
       </Panel>

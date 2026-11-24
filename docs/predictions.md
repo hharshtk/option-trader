@@ -55,7 +55,7 @@ What to keep in mind:
 
 - **Minutes next to each other are one idea counted several times.** A signal that votes for 10 minutes in a row is graded 10 times on overlapping outcomes. Judge it by its days, not by its count of calls.
 - **An up day flatters every call.** That's why each predictor is compared with the coin flip at its own minutes, and why the day's move is shown.
-- **Rules count only from the day that tests them** (their "tested from" date). Days they were written with show dimmed in Day by day.
+- **Rules count only from the day that tests them** (their "tested from" date), and so does a signal written with days already seen: Breadth + 5-level OFI from 25 November 2026. Days they were written with show dimmed in Day by day.
 - **Proof takes 20 sessions** ([constitution](constitution.md#4-principles)). Before that, the scoreboard shows where to look, not what works.
 
 ## Where it runs and what it stores

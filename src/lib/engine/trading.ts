@@ -6,7 +6,7 @@ import type { Charges } from "../trading/charges.ts";
 import type { LiveCommand, LiveStatus } from "./live.ts";
 
 /** Which signal from the Pulse signal lab the strategy follows. */
-export type SignalId = "breadth" | "lead" | "momentum" | "flow" | "buildup" | "writers" | "book20" | "agree" | "confirmed";
+export type SignalId = "breadth" | "lead" | "momentum" | "flow" | "buildup" | "writers" | "book20" | "agree" | "confirmed" | "ofi";
 
 /** How a signal did over a year of minute history, before costs: the base rate the decision API is told. */
 export interface SignalRecord {
@@ -20,7 +20,11 @@ export interface SignalRecord {
   pointsPerTrade: number;
 }
 
-export const SIGNALS: readonly { id: SignalId; name: string; kind: "single" | "combined"; pastYear: SignalRecord | null }[] = [
+/**
+ * The followable signals. `since`: the first day that tests a signal written with earlier days
+ * seen; the prediction scoreboard grades it from then on (constitution §4.4).
+ */
+export const SIGNALS: readonly { id: SignalId; name: string; kind: "single" | "combined"; pastYear: SignalRecord | null; since?: string }[] = [
   // From the first research study (17 November 2026, branch research-and-strategy-store): 257 days,
   // 3 Nov 2025 to 17 Nov 2026, entries 09:25 to 14:45, 10-minute hold. An option trade costs about 3.9 points.
   { id: "breadth", name: "Breadth thrust", kind: "single", pastYear: { span: "257 days to 17 Nov 2026", holdMinutes: 10, trades: 2832, winRate: 0.498, pointsPerTrade: 0.3 } },
@@ -33,6 +37,9 @@ export const SIGNALS: readonly { id: SignalId; name: string; kind: "single" | "c
   { id: "book20", name: "Order book lean", kind: "single", pastYear: null },
   { id: "agree", name: "Two or more agree", kind: "combined", pastYear: { span: "257 days to 17 Nov 2026", holdMinutes: 10, trades: 1433, winRate: 0.49, pointsPerTrade: -0.1 } },
   { id: "confirmed", name: "Confirmed by futures and options", kind: "combined", pastYear: null },
+  // Frozen on 23 November 2026 after four recorded days (docs/nifty-futures-ofi-experiment-2026-11-23.md);
+  // 24 November is a holiday, so 25 November is the first unseen session.
+  { id: "ofi", name: "Breadth + 5-level OFI", kind: "combined", pastYear: null, since: "2026-11-25" },
 ];
 
 /**
@@ -68,6 +75,7 @@ export const SIGNAL_DATA: Partial<Record<SignalId, readonly DecisionData[]>> = {
   book20: ["depth"],
   // Needs a futures or options signal to agree, Option writers among them.
   confirmed: ["options"],
+  ofi: ["depth"],
 };
 
 /** The same for the followable rules (lib/decide/rules.ts). Fade at the walls falls back to the recorded strikes without a chain. */

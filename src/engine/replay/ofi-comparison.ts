@@ -6,17 +6,17 @@ import { minuteState } from "../../lib/decide/state.ts";
 import type { OfiReplayComparison, OfiReplayDelay } from "../../lib/engine/ofi.ts";
 import { DEFAULT_TRADING_CONFIG } from "../../lib/engine/trading.ts";
 import { computePulse } from "../../lib/insight/pulse.ts";
-import { parseDepthFrame } from "../../lib/live/feed/depth-packets.ts";
-import { parseFrame, parseInstrumentKey } from "../../lib/live/feed/packets.ts";
+import { parseFrame } from "../../lib/live/feed/packets.ts";
 import { paise, roundTripCharges } from "../../lib/trading/charges.ts";
 import { READ_DELAY_MS } from "../decide/day-table.ts";
 import { createRecordCursor, fileSource } from "../journal/byte-source.ts";
+import { createDepthOfiReader, type OfiEvent } from "../journal/depth-ofi.ts";
 import type { JournalRecord } from "../journal/format.ts";
 import { createDayAggregator } from "../journal/session-reader.ts";
 import { createSessionCalendar, type Session } from "../market/session-calendar.ts";
 import { fillPrice } from "../trading/paper-broker.ts";
 import { NIFTY_CONSTITUENTS } from "../trading/strategy.ts";
-import { createSnapshotOfi, type OfiReading } from "./snapshot-ofi.ts";
+import type { OfiReading } from "./snapshot-ofi.ts";
 
 const MINUTE_MS = 60_000;
 const MAX_QUOTE_AGE_MS = 2_000;
@@ -28,7 +28,7 @@ const BREADTH = PREDICTORS.find((predictor) => predictor.id === "signal:breadth"
 const FILLS = { ...DEFAULT_TRADING_CONFIG.fills, slippage: 0.05 };
 const RUN_BOUNDARY = new Set(["file-open", "engine-start", "engine-stop", "replay-start", "replay-stop"]);
 
-type FutureEvent = { at: number; key?: string | null };
+type FutureEvent = OfiEvent;
 type Option = Pick<MinuteQuote, "key" | "strike" | "type" | "lotSize"> & { expiry: string; tickSize: number };
 type Quote = MinuteQuote & { at: number; connection: number; askQty: number; bidQty: number };
 type Fill = { entry: number | null; net: number | null };
@@ -185,40 +185,13 @@ async function replayBreadth(file: string, session: Session, calendar: ReturnTyp
 
 async function replayDepth(file: string, open: number, events: FutureEvent[], opportunities: Opportunity[]) {
   const source = fileSource(file);
-  const cursor = createRecordCursor(source);
-  const ofi = createSnapshotOfi();
+  const reader = createDepthOfiReader(source, open);
   const readings: OfiReading[] = [];
   events.sort((a, b) => a.at - b.at);
-  let eventIndex = 0;
-  let lastAt = open;
-  let instrument: ReturnType<typeof parseInstrumentKey> = null;
-
-  function applyMainControls(until: number) {
-    while (eventIndex < events.length && events[eventIndex].at <= until) {
-      const { key } = events[eventIndex++];
-      if (key !== undefined) instrument = key ? parseInstrumentKey(key) : null;
-      ofi.reset();
-    }
-  }
-
-  function add({ recvTs: at, control, frame }: JournalRecord) {
-    if (at < open) return;
-    if (at < lastAt) return ofi.reset();
-    lastAt = at;
-    applyMainControls(at);
-    if (control && ["file-open", "state", "gap"].includes(control.kind)) return ofi.reset();
-    if (!frame || !instrument) return;
-    const packets = parseDepthFrame(frame, instrument);
-    if (packets.some((packet) => packet.kind === "disconnect")) return ofi.reset();
-    const depth = packets.filter((packet) => packet.kind === "depth");
-    if (depth.length) ofi.observe(at, depth);
-  }
-
   try {
     for (const { cutoff } of opportunities) {
-      await cursor.advance(cutoff, add);
-      applyMainControls(cutoff);
-      readings.push(ofi.score(cutoff));
+      await reader.advance(cutoff, events);
+      readings.push(reader.score(cutoff));
     }
   } finally {
     source.close();

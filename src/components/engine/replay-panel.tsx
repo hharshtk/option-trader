@@ -11,7 +11,6 @@ import {
   type ReplayStatus,
 } from "@/lib/engine/protocol";
 import { istDateTime, istTime, quantity } from "@/lib/format";
-import { OfiComparison } from "./ofi-comparison";
 import { replayDay } from "./replay-format";
 
 const fieldClass = "h-7 rounded-sm border border-line-strong bg-canvas px-2 text-body focus-visible:border-accent disabled:opacity-60";
@@ -68,7 +67,6 @@ function StartForm({
   const [speed, setSpeed] = useState(1);
   const blocked = status.replayBlocked ?? null;
   const days = status.journalDays;
-  const comparisonDate = date || days[0]?.date;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -115,7 +113,6 @@ function StartForm({
           ? `Not now: ${blocked}. Replay is off from 30 minutes before a session until it closes, so the engine records the market.`
           : "Leave From empty to start at 09:00 on a trading day, or at the first frame on any other day."}
       </p>
-      {status.ofiReplay && comparisonDate && <OfiComparison key={comparisonDate} date={comparisonDate} />}
     </form>
   );
 }
