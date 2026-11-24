@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useReducer } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import type { FeedHealth } from "@/lib/live/feed/monitor";
 import type {
   EngineStatus,
@@ -99,119 +99,176 @@ function reduce(state: EngineTelemetry, action: Action): EngineTelemetry {
   }
 }
 
-/** Streams the engine's telemetry through the signed-in proxy. One EventSource per caller. */
-export function useEngineTelemetry(topics: readonly TelemetryTopic[]): EngineTelemetry {
-  const [state, dispatch] = useReducer(reduce, INITIAL);
-  const topicKey = topics.join(",");
+// One telemetry stream per topic set, shared by every component in the tab that asks for it.
+// The dev server speaks HTTP/1.1, where a browser opens at most six connections to one
+// origin; one EventSource per component held all six, so page navigations queued forever.
+interface Channel {
+  state: EngineTelemetry;
+  listeners: Set<() => void>;
+  close: () => void;
+  closeTimer?: ReturnType<typeof setTimeout>;
+}
 
-  useEffect(() => {
-    let source: EventSource | null = null;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let lastSeq = 0;
-    let disposed = false;
-    // Log lines arrive in bursts (the backlog on connect); batch them into one render.
-    let pendingLogs: LogEntry[] = [];
-    let flushScheduled = false;
+// Keep a stream open briefly after its last component unmounts, so a remount (a navigation
+// to a page with the same component, or StrictMode's double mount) reuses it.
+const CLOSE_DELAY_MS = 2_000;
 
-    // The trading stream sends its lists only when they change. A tab that joins between
-    // changes, or missed one, reads the whole status once.
-    let heldLists: number | null = null;
-    let loadingTrading = false;
-    async function loadTrading() {
-      if (loadingTrading || disposed) return;
-      loadingTrading = true;
-      try {
-        const response = await fetch(`${BASE}/trading`, { cache: "no-store" });
-        if (response.ok && !disposed) {
-          const full = (await response.json()) as TradingStatus;
-          heldLists = full.listsRevision;
-          dispatch({ type: "trading", update: full });
-        }
-      } catch {
-        // The next message tries again.
-      } finally {
-        loadingTrading = false;
-      }
-    }
+const channels = new Map<string, Channel>();
 
-    const flushLogs = () => {
-      flushScheduled = false;
-      if (pendingLogs.length === 0) return;
-      dispatch({ type: "logs", entries: pendingLogs });
-      pendingLogs = [];
-    };
+function openChannel(topicKey: string): Channel {
+  let source: EventSource | null = null;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let lastSeq = 0;
+  let disposed = false;
+  // Log lines arrive in bursts (the backlog on connect); batch them into one render.
+  let pendingLogs: LogEntry[] = [];
+  let flushScheduled = false;
 
-    const read = <T,>(event: Event) => {
-      const message = JSON.parse((event as MessageEvent<string>).data) as TelemetryMessage;
-      lastSeq = Math.max(lastSeq, message.seq);
-      return message.data as T;
-    };
-
-    // EventSource can't see the HTTP status, so ask the proxy why the stream failed.
-    async function diagnose() {
-      try {
-        const response = await fetch(`${BASE}/status`, { cache: "no-store" });
-        if (response.ok) return { link: "offline" as const, error: "Telemetry stream dropped", retryMs: RETRY_MS };
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        if (response.status === 501) return { link: "unconfigured" as const, error: body.error ?? null, retryMs: SLOW_RETRY_MS };
-        if (response.status === 401) return { link: "offline" as const, error: "Signed out", retryMs: SLOW_RETRY_MS };
-        return { link: "offline" as const, error: body.error ?? `Engine returned HTTP ${response.status}`, retryMs: RETRY_MS };
-      } catch {
-        return { link: "offline" as const, error: "Web server unreachable", retryMs: RETRY_MS };
-      }
-    }
-
-    function connect() {
-      if (disposed) return;
-      // A new EventSource doesn't resend Last-Event-ID, so pass the last seq explicitly.
-      source = new EventSource(`${BASE}/telemetry?topics=${topicKey}${lastSeq ? `&since=${lastSeq}` : ""}`);
-      source.addEventListener("hello", (event) => {
-        const hello = JSON.parse((event as MessageEvent<string>).data) as TelemetryHello;
-        // The engine restarted with a lower seq: forget ours so nothing is skipped next time.
-        if (hello.seq < lastSeq) lastSeq = 0;
-        dispatch({ type: "link", link: "open" });
-      });
-      source.addEventListener("status", (event) =>
-        dispatch({ type: "status", status: read<EngineStatus>(event), at: Date.now() }),
-      );
-      source.addEventListener("metrics", (event) => dispatch({ type: "metrics", metrics: read<MetricsSnapshot>(event) }));
-      source.addEventListener("feed", (event) => dispatch({ type: "feed", feed: read<FeedHealth>(event) }));
-      source.addEventListener("trading", (event) => {
-        const update = read<TradingUpdate>(event);
-        dispatch({ type: "trading", update });
-        if (update.trades) heldLists = update.listsRevision;
-        else if (update.listsRevision !== heldLists) void loadTrading();
-      });
-      source.addEventListener("log", (event) => {
-        pendingLogs.push(read<LogEntry>(event));
-        if (!flushScheduled) {
-          flushScheduled = true;
-          requestAnimationFrame(flushLogs);
-        }
-      });
-      source.addEventListener("gap", (event) =>
-        dispatch({ type: "gap", dropped: (JSON.parse((event as MessageEvent<string>).data) as TelemetryGap).dropped }),
-      );
-      source.addEventListener("error", () => {
-        if (source?.readyState !== EventSource.CLOSED) return dispatch({ type: "link", link: "connecting" });
-        source = null;
-        void diagnose().then(({ link, error, retryMs }) => {
-          if (disposed) return;
-          dispatch({ type: "link", link, error });
-          retry = setTimeout(connect, retryMs);
-        });
-      });
-    }
-
-    connect();
-    return () => {
+  const channel: Channel = {
+    state: INITIAL,
+    listeners: new Set(),
+    close() {
       disposed = true;
       clearTimeout(retry);
       source?.close();
-    };
-  }, [topicKey]);
+      source = null;
+    },
+  };
 
-  return state;
+  const dispatch = (action: Action) => {
+    if (disposed) return;
+    channel.state = reduce(channel.state, action);
+    for (const listener of channel.listeners) listener();
+  };
+
+  // The trading stream sends its lists only when they change. A tab that joins between
+  // changes, or missed one, reads the whole status once.
+  let heldLists: number | null = null;
+  let loadingTrading = false;
+  async function loadTrading() {
+    if (loadingTrading || disposed) return;
+    loadingTrading = true;
+    try {
+      const response = await fetch(`${BASE}/trading`, { cache: "no-store" });
+      if (response.ok && !disposed) {
+        const full = (await response.json()) as TradingStatus;
+        heldLists = full.listsRevision;
+        dispatch({ type: "trading", update: full });
+      }
+    } catch {
+      // The next message tries again.
+    } finally {
+      loadingTrading = false;
+    }
+  }
+
+  const flushLogs = () => {
+    flushScheduled = false;
+    if (pendingLogs.length === 0) return;
+    dispatch({ type: "logs", entries: pendingLogs });
+    pendingLogs = [];
+  };
+
+  const read = <T,>(event: Event) => {
+    const message = JSON.parse((event as MessageEvent<string>).data) as TelemetryMessage;
+    lastSeq = Math.max(lastSeq, message.seq);
+    return message.data as T;
+  };
+
+  // EventSource can't see the HTTP status, so ask the proxy why the stream failed.
+  async function diagnose() {
+    try {
+      const response = await fetch(`${BASE}/status`, { cache: "no-store" });
+      if (response.ok) return { link: "offline" as const, error: "Telemetry stream dropped", retryMs: RETRY_MS };
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      if (response.status === 501) return { link: "unconfigured" as const, error: body.error ?? null, retryMs: SLOW_RETRY_MS };
+      if (response.status === 401) return { link: "offline" as const, error: "Signed out", retryMs: SLOW_RETRY_MS };
+      return { link: "offline" as const, error: body.error ?? `Engine returned HTTP ${response.status}`, retryMs: RETRY_MS };
+    } catch {
+      return { link: "offline" as const, error: "Web server unreachable", retryMs: RETRY_MS };
+    }
+  }
+
+  function connect() {
+    if (disposed) return;
+    // A new EventSource doesn't resend Last-Event-ID, so pass the last seq explicitly.
+    const stream = new EventSource(`${BASE}/telemetry?topics=${topicKey}${lastSeq ? `&since=${lastSeq}` : ""}`);
+    source = stream;
+    stream.addEventListener("hello", (event) => {
+      const hello = JSON.parse((event as MessageEvent<string>).data) as TelemetryHello;
+      // The engine restarted with a lower seq: forget ours so nothing is skipped next time.
+      if (hello.seq < lastSeq) lastSeq = 0;
+      dispatch({ type: "link", link: "open" });
+    });
+    stream.addEventListener("status", (event) =>
+      dispatch({ type: "status", status: read<EngineStatus>(event), at: Date.now() }),
+    );
+    stream.addEventListener("metrics", (event) => dispatch({ type: "metrics", metrics: read<MetricsSnapshot>(event) }));
+    stream.addEventListener("feed", (event) => dispatch({ type: "feed", feed: read<FeedHealth>(event) }));
+    stream.addEventListener("trading", (event) => {
+      const update = read<TradingUpdate>(event);
+      dispatch({ type: "trading", update });
+      if (update.trades) heldLists = update.listsRevision;
+      else if (update.listsRevision !== heldLists) void loadTrading();
+    });
+    stream.addEventListener("log", (event) => {
+      pendingLogs.push(read<LogEntry>(event));
+      if (!flushScheduled) {
+        flushScheduled = true;
+        requestAnimationFrame(flushLogs);
+      }
+    });
+    stream.addEventListener("gap", (event) =>
+      dispatch({ type: "gap", dropped: (JSON.parse((event as MessageEvent<string>).data) as TelemetryGap).dropped }),
+    );
+    stream.addEventListener("error", () => {
+      if (source !== stream) return;
+      if (stream.readyState !== EventSource.CLOSED) return dispatch({ type: "link", link: "connecting" });
+      source = null;
+      void diagnose().then(({ link, error, retryMs }) => {
+        if (disposed) return;
+        dispatch({ type: "link", link, error });
+        retry = setTimeout(connect, retryMs);
+      });
+    });
+  }
+
+  connect();
+  return channel;
+}
+
+function subscribeChannel(topicKey: string, listener: () => void) {
+  let channel = channels.get(topicKey);
+  if (!channel) {
+    channel = openChannel(topicKey);
+    channels.set(topicKey, channel);
+  }
+  clearTimeout(channel.closeTimer);
+  channel.listeners.add(listener);
+
+  const subscribed = channel;
+  return () => {
+    subscribed.listeners.delete(listener);
+    if (subscribed.listeners.size > 0) return;
+    subscribed.closeTimer = setTimeout(() => {
+      if (subscribed.listeners.size > 0 || channels.get(topicKey) !== subscribed) return;
+      subscribed.close();
+      channels.delete(topicKey);
+    }, CLOSE_DELAY_MS);
+  };
+}
+
+const serverSnapshot = () => INITIAL;
+
+/**
+ * Streams the engine's telemetry through the signed-in proxy. Components asking for the same
+ * topics share one EventSource per tab.
+ */
+export function useEngineTelemetry(topics: readonly TelemetryTopic[]): EngineTelemetry {
+  const topicKey = topics.join(",");
+  const subscribe = useCallback((listener: () => void) => subscribeChannel(topicKey, listener), [topicKey]);
+  const snapshot = useCallback(() => channels.get(topicKey)?.state ?? INITIAL, [topicKey]);
+  return useSyncExternalStore(subscribe, snapshot, serverSnapshot);
 }
 
 /** True when the stream is open but no status arrived for a while: the engine is hung or gone. */
