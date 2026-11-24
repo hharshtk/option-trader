@@ -44,7 +44,7 @@ export function createReplaySession(recording: Recording, calendar: SessionCalen
       busy = work.catch(() => {});
       await work;
       const summary = aggregator.summary({ builtAt: position, readMs: 0, bytes: cursor.offset });
-      const day = series.apply(summary, position);
+      const day = await series.apply(summary, position);
       return { ...day, readMs: Math.round((performance.now() - started) * 10) / 10 };
     },
   };

@@ -142,7 +142,7 @@ export function TradingConsole() {
             ))}
           </TabsList>
           <TabsPanel value="strategy">
-            {section === "strategy" && <StrategyPicker strategy={withDefaults(config).strategy} pending={pending} onFollow={(next) => send({ action: "config", patch: { strategy: next } })} />}
+            {section === "strategy" && <StrategyPicker engine={telemetry.status} strategy={withDefaults(config).strategy} pending={pending} onFollow={(next) => send({ action: "config", patch: { strategy: next } })} />}
           </TabsPanel>
           <TabsPanel value="lab">{section === "lab" && <LabTab config={withDefaults(config)} followed={strategyId} />}</TabsPanel>
           <TabsPanel value="run" className="space-y-2">

@@ -62,6 +62,10 @@ function setup() {
     chain: (underlying, expiry) => ({ source: "live", at: 42, underlying, expiries: expiry ? [expiry] : [], snapshot: null }),
     decide: async () => ({ days: [], holds: [5], rows: [], rules: [], costCheckFactor: 3, moveMinutes: 10, assumptions: { stopPct: 20, targetPct: 30, stopMoves: 1, targetMoves: 2, opposite: true, slippage: 0.05, entries: "", squareOff: "" }, exitModes: ["fixed"], fields: [], build: { state: "idle", at: null, message: null } }),
     predictions: async () => ({ horizon: 15, days: [], rows: [], build: { state: "idle", at: null, message: null } }),
+    ofiReplay: {
+      start: (date) => date ? { state: "running", date } : { state: "failed", message: "Choose a day" },
+      status: () => ({ state: "idle" }),
+    },
   });
   return { server, telemetry, logs, feed, tick: (ms: number) => (clock += ms) };
 }
@@ -125,6 +129,16 @@ test("control API", { timeout: 15_000 }, async (t) => {
   await t.test("serves status and 404s unknown routes", async () => {
     assert.deepEqual(await (await get("/v1/status")).json(), { protocol: PROTOCOL_VERSION, overall: "ok" });
     assert.equal((await get("/v1/nope")).status, 404);
+  });
+
+  await t.test("starts a recorded-day OFI comparison and serves its status", async () => {
+    const path = "/v1/replay/ofi?date=2026-11-23";
+    assert.equal((await fetch(`http://127.0.0.1:${PORT}${path}`)).status, 401);
+    assert.deepEqual(await (await get(path)).json(), { state: "idle" });
+    const started = await fetch(`http://127.0.0.1:${PORT}${path}`, {
+      method: "POST", headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    assert.deepEqual(await started.json(), { state: "running", date: "2026-11-23" });
   });
 
   await t.test("serves 20-level books and option chains, checking what is asked", async () => {

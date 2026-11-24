@@ -1,6 +1,7 @@
 "use server";
 
 import { isSignedIn } from "@/lib/auth";
+import type { OfiReplayStatus } from "@/lib/engine/ofi";
 import { REPLAY_MAX_SPEED, REPLAY_MIN_SPEED, type ReplayCommand, type ReplayCommandResult } from "@/lib/engine/protocol";
 import { engineConfig, engineFetch } from "@/lib/engine/web";
 
@@ -43,5 +44,19 @@ export async function controlReplay(command: ReplayCommand): Promise<ReplayComma
     return result ?? { ok: false, message: `The engine returned HTTP ${response.status}.` };
   } catch (error) {
     return { ok: false, message: (error as Error).message };
+  }
+}
+
+export async function startOfiComparison(date: string): Promise<OfiReplayStatus> {
+  if (!(await isSignedIn())) return { state: "failed", message: "Your session has ended. Sign in again." };
+  if (typeof date !== "string" || !DATE.test(date)) return { state: "failed", message: "Choose a recorded NSE trading day." };
+  const engine = engineConfig();
+  if (!engine) return { state: "failed", message: "Engine not configured: set ENGINE_URL and ENGINE_TOKEN." };
+  try {
+    const response = await engineFetch(engine, `/v1/replay/ofi?date=${encodeURIComponent(date)}`, { method: "POST" });
+    if (!response.ok) return { state: "failed", message: `The engine returned HTTP ${response.status}.` };
+    return await response.json() as OfiReplayStatus;
+  } catch (error) {
+    return { state: "failed", message: (error as Error).message };
   }
 }

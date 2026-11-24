@@ -85,6 +85,8 @@ const files = (depth: Buffer, chain: Buffer): SideFiles => {
   const f: SideFiles = {
     depth: createDepthIndex(bufferSource(depth)),
     chain: createChainIndex(bufferSource(chain)),
+    // Read in depth-ofi.test.ts.
+    ofi: null,
     problems: [],
     refresh: async () => {
       await f.depth!.refresh();
@@ -173,7 +175,7 @@ describe("side series in the session", () => {
     const f = files(depthFile(), chainFile());
     await f.refresh();
     const series = createSideSeries(() => f);
-    const day = series.apply(session(3), OPEN + 150_000);
+    const day = await series.apply(session(3), OPEN + 150_000);
     const book = day.derivatives!.book!;
     // Minute ends 09:15:59 (frame at 40 s) and 09:16:59 (100 s); 09:17 stops at the position (140 s).
     assert.deepEqual(book.bidQty, [600, 1200, 1600]);
@@ -188,10 +190,10 @@ describe("side series in the session", () => {
     assert.deepEqual(chain.callOiChange, [270, 420, 870]);
     assert.deepEqual(chain.nextStraddle.map((v) => v !== null), [false, true, true]);
     // Before the 09:17 snapshot: minute 09:17 still reads 09:16's.
-    assert.deepEqual(series.apply(session(3), OPEN + 124_000).derivatives!.chain!.spot, [25_300, 25_350, 25_350]);
+    assert.deepEqual((await series.apply(session(3), OPEN + 124_000)).derivatives!.chain!.spot, [25_300, 25_350, 25_350]);
     // A day without side files is left alone.
     const plain = session(2);
-    assert.equal(createSideSeries(() => null).apply(plain, Infinity), plain);
+    assert.equal(await createSideSeries(() => null).apply(plain, Infinity), plain);
   });
 });
 

@@ -54,9 +54,10 @@ export function depthSubscribeMessages(instruments: readonly Instrument[]): stri
 }
 
 /** Accepts a frame's ArrayBuffer, or a view such as a Buffer read from the journal. */
-export function parseDepthFrame(frame: ArrayBuffer | ArrayBufferView): DepthPacket[] {
+export function parseDepthFrame(frame: ArrayBuffer | ArrayBufferView, instrument?: Instrument): DepthPacket[] {
   const view = ArrayBuffer.isView(frame) ? new DataView(frame.buffer, frame.byteOffset, frame.byteLength) : new DataView(frame);
   const packets: DepthPacket[] = [];
+  const securityId = instrument ? Number(instrument.securityId) : null;
   let offset = 0;
 
   while (offset + HEADER_BYTES <= view.byteLength) {
@@ -71,7 +72,10 @@ export function parseDepthFrame(frame: ArrayBuffer | ArrayBufferView): DepthPack
       }
       break;
     }
-    packets.push(readPacket(view, offset, code, length));
+    if (!instrument || code === RESPONSE.disconnect || (
+      (code === RESPONSE.bid || code === RESPONSE.ask) && view.getInt32(offset + 4, true) === securityId &&
+      segmentByCode(view.getUint8(offset + 3)) === instrument.segment
+    )) packets.push(readPacket(view, offset, code, length));
     offset += length;
   }
   return packets;

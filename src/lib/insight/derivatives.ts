@@ -11,7 +11,7 @@
 //
 // Pure and deterministic like pulse.ts: data in, numbers out, nothing read past minute `t`.
 
-import type { JournalSession, SessionDerivatives, SessionStrike } from "../engine/protocol.ts";
+import type { JournalSession, OfiStatus, SessionDerivatives, SessionStrike } from "../engine/protocol.ts";
 
 const MINUTE_MS = 60_000;
 /** Trading minutes in a session, 09:15 to 15:30. */
@@ -33,11 +33,13 @@ export interface DerivativesView {
   writers(t: number, h: number): { calls: number; puts: number; share: number } | null;
   /** The near-month future's 20-level book at minute `t`: (bids − asks) / (bids + asks) by quantity and by orders, and the spread in points. */
   book20(t: number): { imbalance: number; orders: number | null; spread: number | null } | null;
+  /** The near-month future's five-level OFI read 1.5 s after minute `t` closed; null before that reading, or without a depth file. */
+  ofi(t: number): { value: number | null; status: OfiStatus } | null;
 }
 
 export function derivativesView(session: JournalSession): DerivativesView | null {
   const data = session.derivatives;
-  if (!data || (!data.future && !data.options && !data.book && !data.chain)) return null;
+  if (!data || (!data.future && !data.options && !data.book && !data.chain && !data.ofi)) return null;
   const f = data.future;
   const o = data.options;
   // Running totals, so a reading over any window is two lookups.
@@ -87,6 +89,10 @@ export function derivativesView(session: JournalSession): DerivativesView | null
       const bo = b.bidOrders[t];
       const ao = b.askOrders[t];
       return { imbalance: (bid - ask) / (bid + ask), orders: bo != null && ao != null && bo + ao > 0 ? (bo - ao) / (bo + ao) : null, spread: b.spread[t] };
+    },
+    ofi(t) {
+      const status = data.ofi?.status[t];
+      return status ? { value: data.ofi!.value[t] ?? null, status } : null;
     },
   };
 }

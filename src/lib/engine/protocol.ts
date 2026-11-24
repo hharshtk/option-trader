@@ -169,6 +169,23 @@ export interface SessionDerivatives {
   book?: SessionBook | null;
   /** Option chain readings, from the day's `.chain` file. Absent for days without one. */
   chain?: SessionChain | null;
+  /** The near-month future's five-level order-flow imbalance, from the day's `.depth` file. Absent for days without one. */
+  ofi?: SessionOfi | null;
+}
+
+/** "ok" or "flat" with a reading; otherwise why there is none: no book, a side over 2 s old, a broken book, or under 45 s of book since an interruption. */
+export type OfiStatus = "ok" | "flat" | "missing" | "stale" | "invalid" | "warmup";
+
+/**
+ * The frozen five-level OFI (docs/nifty-futures-ofi-experiment-2026-11-23.md) of the near-month
+ * future over the minute before each reading, read 1.5 s after each minute closes, when the trader
+ * reads its signals (aligned with `minutes`). Both are null for a minute whose reading hasn't come.
+ */
+export interface SessionOfi {
+  key: string;
+  /** Positive: the bids' queues grew against the asks'. Null when there is no reading. */
+  value: (number | null)[];
+  status: (OfiStatus | null)[];
 }
 
 /** The near-month future's 20-level book at each minute's end (aligned with `minutes`); null before it has one. */
@@ -466,6 +483,7 @@ export interface EngineStatus {
   replay?: ReplayStatus | null;
   /** Why a replay can't start now (a session is open or opens within 30 minutes); null when it can. */
   replayBlocked?: string | null;
+  ofiReplay?: boolean;
   /** Absent from engines older than the recorder. */
   recorder?: RecorderStatus;
   /** Set while paper trading is stopped for the day (the daily loss limit, losses in a row, or by hand), with why and when. */

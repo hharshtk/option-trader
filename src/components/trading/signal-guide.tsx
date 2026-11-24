@@ -134,6 +134,22 @@ export const GUIDE: Record<SignalId, Guide> = {
     right: { time: "09:30", vote: -1, reading: "Breadth thrust −16, futures sellers 71%", from: 25293.95, to: 25266.5 },
     wrong: { time: "13:09", vote: -1, reading: "15-minute momentum −0.14%, futures sellers 83%, OI build-up", from: 25152.2, to: 25194 },
   },
+  ofi: {
+    group: "Combined",
+    line: "breadth + OFI agree",
+    watches:
+      "Breadth thrust, and the five best bids and asks of NIFTY's near-month future over the last minute: whether the buyers' queues grew against the sellers' (the order-flow imbalance, OFI). It is read 1.5 seconds after each minute closes.",
+    votes: "When Breadth thrust fires and the OFI points the same way, it votes breadth's way.",
+    idea: "Breadth says the stocks are moving together; the OFI says whether the futures book leans the same way right now. On 18 to 23 November, with a 15-minute hold, breadth alone made ₹273 a vote after charges and breadth checked by the OFI ₹384, counting the votes it skipped as ₹0. Two of those days gave nearly all of it, and they were seen while writing it, so it is graded only from 25 November.",
+    silent: [
+      "Breadth thrust didn't fire.",
+      "The OFI pointed the other way, or was flat.",
+      "Under 45 seconds of usable futures book in the last minute: a side not updated for over 2 seconds, a restart or a reconnect starts it over. About a third of breadth's votes are like this.",
+      "Days before 18 November 2026, and any day without a depth file.",
+    ],
+    right: { time: "10:15", vote: -1, reading: "breadth −9, OFI −30.0", from: 25285.25, to: 25247.05 },
+    wrong: { time: "09:44", vote: -1, reading: "breadth −11, OFI −14.0", from: 25244.7, to: 25291.55 },
+  },
 };
 
 const signedPoints = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(1)}`;

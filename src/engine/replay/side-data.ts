@@ -7,6 +7,7 @@ import path from "node:path";
 import type { BookLevel, ChainSnapshot, ChainView, DepthBook, DepthView } from "../../lib/engine/protocol.ts";
 import { parseDepthFrame } from "../../lib/live/feed/depth-packets.ts";
 import { fileSource } from "../journal/byte-source.ts";
+import { createDepthOfi, type DepthOfi } from "../journal/depth-ofi.ts";
 import { createChainIndex, createDepthIndex, liveLevels, toChainSnapshot, type ChainIndex, type DepthIndex } from "../journal/side-index.ts";
 
 export interface Contract {
@@ -83,6 +84,8 @@ export function createLiveSideData(now: () => number): LiveSideData {
 export interface SideFiles {
   depth: DepthIndex | null;
   chain: ChainIndex | null;
+  /** The near-month future's five-level OFI at each minute, from the depth file. */
+  ofi: DepthOfi | null;
   /** Why a file couldn't be used, for the log. */
   problems: string[];
   /** Indexes what was written since the last call: for today's files, still growing. */
@@ -93,17 +96,21 @@ export interface SideFiles {
 /** Opens and indexes the day's `.depth` and `.chain` files. A missing file is no problem. */
 export async function loadSideFiles(directory: string, date: string): Promise<SideFiles> {
   const problems: string[] = [];
-  const open = <T extends { refresh(): Promise<void>; close(): void }>(suffix: string, create: (source: ReturnType<typeof fileSource>) => T): T | null => {
+  const open = (suffix: string) => {
     try {
-      return create(fileSource(path.join(directory, `${date}${suffix}.bin`)));
+      return fileSource(path.join(directory, `${date}${suffix}.bin`));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") problems.push(`${suffix.slice(1)} file: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
   };
+  const depth = open(".depth");
+  const chain = open(".chain");
   const files: SideFiles = {
-    depth: open(".depth", createDepthIndex),
-    chain: open(".chain", createChainIndex),
+    depth: depth && createDepthIndex(depth),
+    chain: chain && createChainIndex(chain),
+    // The same file, read forward record by record.
+    ofi: depth && createDepthOfi(depth),
     problems,
     async refresh() {
       for (const name of ["depth", "chain"] as const) {
@@ -113,6 +120,7 @@ export async function loadSideFiles(directory: string, date: string): Promise<Si
           problems.push(`${name} file: ${error instanceof Error ? error.message : String(error)}`);
           files[name]?.close();
           files[name] = null;
+          if (name === "depth") files.ofi = null;
         }
       }
     },

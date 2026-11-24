@@ -77,6 +77,7 @@ export const PREDICTORS: readonly Predictor[] = [
       name: s.name,
       idea: `The Pulse signal "${s.name}": its long vote calls up, its short vote down.`,
       kind: "signal",
+      since: s.since,
       call: (now) => {
         const vote = now[`sig_${s.id}`];
         return vote === 1 ? 1 : vote === -1 ? -1 : null;

@@ -144,7 +144,7 @@ export function createJournalSessions({
         throw error;
       }
       const summary = day.aggregator.summary({ builtAt: now(), readMs: 0, bytes: day.position - day.carry.length });
-      return { ...day.series.apply(summary, Infinity), readMs: Math.round((performance.now() - started) * 10) / 10 };
+      return { ...(await day.series.apply(summary, Infinity)), readMs: Math.round((performance.now() - started) * 10) / 10 };
     },
   };
 }

@@ -17,6 +17,7 @@ import {
 } from "../../lib/engine/protocol.ts";
 import type { PredictionView } from "../../lib/decide/predict.ts";
 import type { DecideView } from "../../lib/decide/score.ts";
+import type { OfiReplayStatus } from "../../lib/engine/ofi.ts";
 import type { DecisionRequest, TradingCommandResult, TradingHistory, TradingStatus } from "../../lib/engine/trading.ts";
 import type { LogHub } from "../telemetry/logger.ts";
 import type { Logger } from "../telemetry/logger.ts";
@@ -52,6 +53,10 @@ export interface ControlServerOptions {
   predictions?: () => Promise<PredictionView>;
   /** Handles a `POST /v1/replay` body: switch the feed to a recorded day and back, and steer it. */
   replay?: (body: unknown) => Promise<ReplayCommandResult>;
+  ofiReplay?: {
+    start(date: string | null): OfiReplayStatus;
+    status(date: string | null): OfiReplayStatus;
+  };
   /** Paper trading: its state, its commands (`POST /v1/trading`) and its stored runs. */
   trading?: {
     status(): TradingStatus;
@@ -132,6 +137,10 @@ export function createControlServer(options: ControlServerOptions): ControlServe
       }
       if (url.pathname === "/v1/replay" && request.method === "POST" && options.replay) {
         return json(response, 200, await options.replay(await readJson(request)));
+      }
+      if (url.pathname === "/v1/replay/ofi" && options.ofiReplay) {
+        const date = url.searchParams.get("date");
+        return json(response, 200, request.method === "POST" ? options.ofiReplay.start(date) : options.ofiReplay.status(date));
       }
       if (url.pathname === "/v1/trading" && request.method === "POST" && options.trading) {
         return json(response, 200, await options.trading.command(await readJson(request)));
